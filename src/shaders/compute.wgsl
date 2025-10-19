@@ -282,7 +282,7 @@ fn createCamera(aspect_ratio: f32) -> Camera {
 }
 
 fn getRay(camera: Camera, s: f32, t: f32, seed: vec2<u32>) -> Ray {
-    var rd: vec3<f32> = camera.origin;
+    var rd: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
     if (camera.defocus_angle > 0.0) {
         let p = randInUnitDisk(seed);
         rd = (camera.defocus_disk_u * p.x + camera.defocus_disk_v * p.y);
@@ -358,10 +358,6 @@ fn rayColor(initial_ray: Ray, world: array<Sphere, NUM_SPHERES>, seed: vec2<u32>
 
             // Add light from emissive materials
             accumulated_color += rec.material.emissive * attenuation;
-            // If the material emits light, terminate the path to avoid double counting
-            if ((rec.material.emissive.x + rec.material.emissive.y + rec.material.emissive.z) > 0.0) {
-                break;
-            }
 
             var scatterRec: ScatterRecord;
             if (rec.material.mat_type == 0u) { // Lambertian
@@ -376,21 +372,15 @@ fn rayColor(initial_ray: Ray, world: array<Sphere, NUM_SPHERES>, seed: vec2<u32>
                 attenuation *= scatterRec.attenuation;
                 ray = scatterRec.scattered;
             } else {
-                // Ray was absorbed, stop tracing
-                break;
+                break; // Ray absorbed
             }
 
         } else {
-            // Ray hit the sky (background)
-            let unit_direction = normalize(ray.direction);
-            let a = 0.5 * (unit_direction.y + 1.0);
-            let sky_color = (1.0 - a) * vec3<f32>(1.0, 1.0, 1.0) + a * vec3<f32>(0.5, 0.7, 1.0);
-            // Dark scene: sky emits no light
-            accumulated_color += vec3<f32>(0.0, 0.0, 0.0) * attenuation;
+            // Background is black in this scene
             break;
         }
 
-        // Russian Roulette for path termination to avoid infinite bounces
+        // Russian Roulette termination
         if (depth > 4u) {
             let p = max(attenuation.x, max(attenuation.y, attenuation.z));
             if (rand(current_seed) > p) {

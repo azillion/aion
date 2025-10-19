@@ -213,7 +213,7 @@ export class Renderer {
   }
 
   private _serializeSystemState(bodies: Body[]): Float32Array {
-    const floatsPerSphere = 20; // 80 bytes per sphere to match WGSL layout
+    const floatsPerSphere = 16; // 64 bytes per sphere to match WGSL layout
     const sphereData = new Float32Array(bodies.length * floatsPerSphere);
     const sphereDataU32 = new Uint32Array(sphereData.buffer);
 
@@ -227,39 +227,33 @@ export class Renderer {
       sphereData[f_base + 1] = body.position[1] * scale;
       sphereData[f_base + 2] = body.position[2] * scale - 2.0;
 
-      // padding at slot 3
+      // Sphere.radius (f32) -> slot 3
+      sphereData[f_base + 3] = body.radius * scale * 100;
 
-      // Sphere.radius (f32) -> slot 4 (offset 16 bytes)
-      sphereData[f_base + 4] = body.radius * scale * 100;
+      // Material starts at slot 4 (offset 16 bytes)
+      // material.albedo (vec3f) -> slots 4, 5, 6
+      sphereData[f_base + 4] = body.albedo[0];
+      sphereData[f_base + 5] = body.albedo[1];
+      sphereData[f_base + 6] = body.albedo[2];
 
-      // padding at slots 5,6,7 (struct alignment to 32 bytes)
+      // padding at slot 7 to align next vec3 to 32 bytes
 
-      // Material starts at slot 8 (offset 32 bytes)
-      // material.albedo (vec3f) -> slots 8, 9, 10
-      sphereData[f_base + 8] = body.albedo[0];
-      sphereData[f_base + 9] = body.albedo[1];
-      sphereData[f_base + 10] = body.albedo[2];
-
-      // padding at slot 11
-
-      // material.emissive (vec3f) -> slots 12, 13, 14
+      // material.emissive (vec3f) -> slots 8, 9, 10
       const emissive = body.emissive ?? [0, 0, 0];
-      sphereData[f_base + 12] = emissive[0];
-      sphereData[f_base + 13] = emissive[1];
-      sphereData[f_base + 14] = emissive[2];
+      sphereData[f_base + 8] = emissive[0];
+      sphereData[f_base + 9] = emissive[1];
+      sphereData[f_base + 10] = emissive[2];
 
-      // padding at slot 15
+      // material.fuzziness (f32) -> slot 11 (offset 44 bytes)
+      sphereData[f_base + 11] = 0.0;
 
-      // material.fuzziness (f32) -> slot 16 (offset 64 bytes)
-      sphereData[f_base + 16] = 0.0;
+      // material.refraction_index (f32) -> slot 12 (offset 48 bytes)
+      sphereData[f_base + 12] = 1.0;
 
-      // material.refraction_index (f32) -> slot 17 (offset 68 bytes)
-      sphereData[f_base + 17] = 1.0;
+      // material.mat_type (u32) -> slot 13 (offset 52 bytes)
+      sphereDataU32[u_base + 13] = 0; // Lambertian
 
-      // material.mat_type (u32) -> slot 18 (offset 72 bytes)
-      sphereDataU32[u_base + 18] = 0; // Lambertian
-
-      // slot 19 is padding (struct size 80 bytes)
+      // slots 14, 15 are padding to reach 64 bytes
     });
     return sphereData;
   }
