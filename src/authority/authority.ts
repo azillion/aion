@@ -11,4 +11,10 @@ export interface Authority {
 	 * @param deltaTime The time elapsed in seconds.
 	 */
 	tick(deltaTime: number): Promise<void>;
+
+	/**
+	 * Sets the simulation's time scale.
+	 * @param scale A multiplier for the passage of time.
+	 */
+	setTimeScale(scale: number): void;
 }

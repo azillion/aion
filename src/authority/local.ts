@@ -4,6 +4,7 @@ import { G } from '../shared/constants';
 
 export class LocalAuthority implements Authority {
 	private state: SystemState;
+	private timeScalar: number;
 
 	constructor() {
 		const sun: Body = {
@@ -47,6 +48,9 @@ export class LocalAuthority implements Authority {
 			timestamp: Date.now(),
 			bodies: [sun, earth, moon],
 		};
+
+		// Default to 30 days of simulated time per real second
+		this.timeScalar = 30 * 24 * 60 * 60;
 	}
 
 	async query(): Promise<SystemState> {
@@ -54,8 +58,7 @@ export class LocalAuthority implements Authority {
 	}
 
 	async tick(deltaTime: number): Promise<void> {
-		const timeScalar = 30 * 24 * 60 * 60; // Simulate 30 days per second
-		const dt = deltaTime * timeScalar;
+		const dt = deltaTime * this.timeScalar;
 
 		const accelerations: Vec3[] = this.state.bodies.map(() => [0, 0, 0]);
 
@@ -104,5 +107,9 @@ export class LocalAuthority implements Authority {
 		}
 
 		this.state.timestamp += dt * 1000;
+	}
+
+	public setTimeScale(scale: number): void {
+		this.timeScalar = scale;
 	}
 }
