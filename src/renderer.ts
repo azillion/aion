@@ -2,6 +2,7 @@ import computeShaderWGSL from './shaders/compute.wgsl?raw';
 import renderShaderWGSL from './shaders/render.wgsl?raw';
 import type { Authority } from './authority/authority';
 import type { Body } from './shared/types';
+import { Camera } from './camera';
 
 export class Renderer {
 
@@ -16,10 +17,13 @@ export class Renderer {
   private renderBindGroup!: GPUBindGroup;
   private authority: Authority;
   private spheresBuffer!: GPUBuffer;
+  private cameraUniformBuffer!: GPUBuffer;
+  private camera!: Camera;
 
   constructor(canvas: HTMLCanvasElement, authority: Authority) {
     this.canvas = canvas;
     this.authority = authority;
+    this.camera = new Camera(this.canvas);
   }
 
   private async initWebGPU() {
@@ -70,7 +74,8 @@ export class Renderer {
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: spheresBuffer } },
-        { binding: 1, resource: texture.createView() }
+        { binding: 1, resource: texture.createView() },
+        { binding: 2, resource: { buffer: this.cameraUniformBuffer } }
       ]
     });
 
@@ -142,6 +147,20 @@ export class Renderer {
     this.context = context;
     this.presentationFormat = presentationFormat;
 
+    this.cameraUniformBuffer = this.device.createBuffer({
+      size: 256,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Initialize camera uniforms before any rendering
+    {
+      const cameraData = new Float32Array(12);
+      cameraData.set(this.camera.eye, 0);
+      cameraData.set(this.camera.look_at, 4);
+      cameraData.set(this.camera.up, 8);
+      this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
+    }
+
     const width = this.canvas.getBoundingClientRect().width;
     const aspectRation = 16.0 / 9.0;
     const height = Math.floor(width / aspectRation);
@@ -194,24 +213,53 @@ export class Renderer {
   }
 
   private _serializeSystemState(bodies: Body[]): Float32Array {
-    const floatsPerSphere = 12;
+    const floatsPerSphere = 20; // 80 bytes per sphere to match WGSL layout
     const sphereData = new Float32Array(bodies.length * floatsPerSphere);
+    const sphereDataU32 = new Uint32Array(sphereData.buffer);
+
     bodies.forEach((body, i) => {
-      const offset = i * floatsPerSphere;
+      const f_base = i * floatsPerSphere; // float index base
+      const u_base = f_base;              // u32 index base
       const scale = 1 / 1.5e8; // Scales 1 AU to 1 unit
 
-      sphereData[offset + 0] = body.position[0] * scale;
-      sphereData[offset + 1] = body.position[1] * scale;
-      sphereData[offset + 2] = body.position[2] * scale - 2.0;
-      sphereData[offset + 3] = body.radius * scale * 100;
-      sphereData[offset + 4] = body.albedo[0];
-      sphereData[offset + 5] = body.albedo[1];
-      sphereData[offset + 6] = body.albedo[2];
-      sphereData[offset + 7] = 0; // mat_type (Lambertian)
-      sphereData[offset + 8] = 0; // fuzziness
-      sphereData[offset + 9] = 1.0; // refraction index
-      sphereData[offset + 10] = 0.0; // padding
-      sphereData[offset + 11] = 0.0; // padding
+      // Sphere.center (vec3f) -> slots 0, 1, 2
+      sphereData[f_base + 0] = body.position[0] * scale;
+      sphereData[f_base + 1] = body.position[1] * scale;
+      sphereData[f_base + 2] = body.position[2] * scale - 2.0;
+
+      // padding at slot 3
+
+      // Sphere.radius (f32) -> slot 4 (offset 16 bytes)
+      sphereData[f_base + 4] = body.radius * scale * 100;
+
+      // padding at slots 5,6,7 (struct alignment to 32 bytes)
+
+      // Material starts at slot 8 (offset 32 bytes)
+      // material.albedo (vec3f) -> slots 8, 9, 10
+      sphereData[f_base + 8] = body.albedo[0];
+      sphereData[f_base + 9] = body.albedo[1];
+      sphereData[f_base + 10] = body.albedo[2];
+
+      // padding at slot 11
+
+      // material.emissive (vec3f) -> slots 12, 13, 14
+      const emissive = body.emissive ?? [0, 0, 0];
+      sphereData[f_base + 12] = emissive[0];
+      sphereData[f_base + 13] = emissive[1];
+      sphereData[f_base + 14] = emissive[2];
+
+      // padding at slot 15
+
+      // material.fuzziness (f32) -> slot 16 (offset 64 bytes)
+      sphereData[f_base + 16] = 0.0;
+
+      // material.refraction_index (f32) -> slot 17 (offset 68 bytes)
+      sphereData[f_base + 17] = 1.0;
+
+      // material.mat_type (u32) -> slot 18 (offset 72 bytes)
+      sphereDataU32[u_base + 18] = 0; // Lambertian
+
+      // slot 19 is padding (struct size 80 bytes)
     });
     return sphereData;
   }
@@ -220,6 +268,12 @@ export class Renderer {
     await this.authority.tick(1 / 60.0);
     const systemState = await this.authority.query();
     const sphereData = this._serializeSystemState(systemState.bodies);
+    // Upload camera uniforms (eye, target, up)
+    const cameraData = new Float32Array(12);
+    cameraData.set(this.camera.eye, 0);
+    cameraData.set(this.camera.look_at, 4);
+    cameraData.set(this.camera.up, 8);
+    this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
     this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
     this._render();
     requestAnimationFrame(() => this._update());

@@ -4,6 +4,13 @@ const SEED: vec2<f32> = vec2<f32>(69.68, 4.20);
 const MAX_DEPTH: u32 = 100;
 // NUM_SPHERES is injected dynamically by the host code
 
+// Camera uniforms provided by the host
+struct CameraUniforms {
+    eye: vec3<f32>,
+    look_at: vec3<f32>,
+    up: vec3<f32>,
+}
+
 fn lerp(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
     return a * (1.0 - t) + b * t;
 }
@@ -126,6 +133,7 @@ const INTERVAL_UNIVERSE: Interval = Interval(-INFINITY, INFINITY);
 
 struct Material {
     albedo: vec3<f32>,
+    emissive: vec3<f32>,
     fuzziness: f32,
     refraction_index: f32,
     mat_type: u32,
@@ -243,12 +251,12 @@ struct Camera {
 
 fn createCamera(aspect_ratio: f32) -> Camera {
     let samples_per_pixel: u32 = 1u; // reduce noise and debug visibility
-    let vfov = 45.0;
-    let lookfrom = vec3<f32>(0.0, 0.5, 2.0);
-    let lookat = vec3<f32>(0.0, 0.0, -2.0);
-    let vup = vec3<f32>(0.0, 1.0, 0.0);
+    let vfov = 25.0;
+    let lookfrom = camera.eye;
+    let lookat = camera.look_at;
+    let vup = camera.up;
     let defocus_angle = 0.0; // disable DOF to avoid over-blur
-    let focus_distance = 2.0;
+    let focus_distance = length(lookfrom - lookat);
 
     let theta = degreesToRadians(vfov);
     let h = tan(theta / 2.0);
@@ -291,11 +299,7 @@ struct Ray {
     direction: vec3<f32>
 }
 
-const MATERIAL_GROUND: Material = Material(vec3<f32>(0.8, 0.8, 0.0), 0.0, 0.0, 0u);
-const MATERIAL_CENTER: Material = Material(vec3<f32>(0.1, 0.2, 0.5), 0.0, 0.0, 0u);
-const MATERIAL_LEFT: Material = Material(vec3<f32>(0.8, 0.8, 0.8), 0.0, 1.5, 2u);
-const MATERIAL_BUBBLE: Material = Material(vec3<f32>(1.0, 1.0, 1.0), 0.0, 1.0/1.5, 2u);
-const MATERIAL_RIGHT: Material = Material(vec3<f32>(0.8, 0.6, 0.2), 1.0, 0.0, 1u);
+// Removed unused material constants now that scene materials are provided via storage buffer
 
 const R = cos(PI / 4.0);
 
@@ -341,47 +345,62 @@ fn scatterDielectric(r: Ray, rec: HitRecord, material: Material, seed: vec2<u32>
 }
 
 fn rayColor(initial_ray: Ray, world: array<Sphere, NUM_SPHERES>, seed: vec2<u32>) -> vec3<f32> {
+    var accumulated_color = vec3<f32>(0.0, 0.0, 0.0);
+    var attenuation = vec3<f32>(1.0, 1.0, 1.0);
     var ray = initial_ray;
-    var color = vec3<f32>(1.0, 1.0, 1.0);
     var current_seed = seed;
-    
+
     for (var depth = 0u; depth < MAX_DEPTH; depth++) {
-        if (depth == MAX_DEPTH - 1u) {
-            color *= 0.0;
-        }
         let rec = hit_spheres(ray, world, createInterval(0.001, INFINITY));
+
         if (rec.hit) {
             current_seed = vec2<u32>(hash(current_seed), depth);
 
-            let direction = rec.normal + randUnitVector(current_seed);
+            // Add light from emissive materials
+            accumulated_color += rec.material.emissive * attenuation;
+            // If the material emits light, terminate the path to avoid double counting
+            if ((rec.material.emissive.x + rec.material.emissive.y + rec.material.emissive.z) > 0.0) {
+                break;
+            }
 
             var scatterRec: ScatterRecord;
-
-            if (rec.material.mat_type == 0u) {
+            if (rec.material.mat_type == 0u) { // Lambertian
                 scatterRec = scatterLambertian(ray, rec, rec.material, current_seed);
-            } else if (rec.material.mat_type == 1u) {
+            } else if (rec.material.mat_type == 1u) { // Metal
                 scatterRec = scatterMetal(ray, rec, rec.material, current_seed);
-            } else if (rec.material.mat_type == 2u) {
+            } else { // Dielectric
                 scatterRec = scatterDielectric(ray, rec, rec.material, current_seed);
-            } else {
-                return vec3<f32>(1.0, 0.0, 1.0);
             }
 
             if (scatterRec.is_scattered) {
+                attenuation *= scatterRec.attenuation;
                 ray = scatterRec.scattered;
-                color *= scatterRec.attenuation;
             } else {
-                return vec3<f32>(0.0, 0.0, 0.0);
+                // Ray was absorbed, stop tracing
+                break;
             }
+
         } else {
+            // Ray hit the sky (background)
             let unit_direction = normalize(ray.direction);
             let a = 0.5 * (unit_direction.y + 1.0);
-            color *= (1.0 - a) * vec3<f32>(1.0, 1.0, 1.0) + a * vec3<f32>(0.5, 0.7, 1.0);
+            let sky_color = (1.0 - a) * vec3<f32>(1.0, 1.0, 1.0) + a * vec3<f32>(0.5, 0.7, 1.0);
+            // Dark scene: sky emits no light
+            accumulated_color += vec3<f32>(0.0, 0.0, 0.0) * attenuation;
             break;
+        }
+
+        // Russian Roulette for path termination to avoid infinite bounces
+        if (depth > 4u) {
+            let p = max(attenuation.x, max(attenuation.y, attenuation.z));
+            if (rand(current_seed) > p) {
+                break;
+            }
+            attenuation = attenuation / max(p, 1e-3);
         }
     }
     
-    return color;
+    return accumulated_color;
 }
 
 fn rayAt(ray: Ray, t: f32) -> vec3<f32> {
@@ -390,8 +409,9 @@ fn rayAt(ray: Ray, t: f32) -> vec3<f32> {
 
 // Scene is now generated on CPU and uploaded via storage buffer
 
-@group(0) @binding(0) var<storage, read_write> spheres: array<Sphere, NUM_SPHERES>;
+@group(0) @binding(0) var<storage, read> spheres: array<Sphere, NUM_SPHERES>;
 @group(0) @binding(1) var output: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var<uniform> camera: CameraUniforms;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
