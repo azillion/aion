@@ -1,10 +1,16 @@
 import computeShaderWGSL from './shaders/compute.wgsl?raw';
 import postfxShaderWGSL from './shaders/postfx.wgsl?raw';
+import galaxyShaderWGSL from './shaders/galaxy.wgsl?raw';
+import { AppState, ViewMode } from './state';
 import { themes } from './theme';
 import { spectralResponses } from './spectral';
 import type { Authority } from './authority/authority';
 import type { Body } from './shared/types';
 import { Camera } from './camera';
+import { Galaxy } from './galaxy';
+import type { Star } from './galaxy';
+import type { Vec3 } from './shared/types';
+import { mat4 } from 'gl-matrix';
 
 export class Renderer {
 
@@ -28,11 +34,19 @@ export class Renderer {
   private currentThemeName: string = 'amber';
   private currentResponseName: string = 'Visible (Y)';
   private lastDeltaTime = 1/60;
+  private state: AppState;
+  private galaxyPipeline!: GPURenderPipeline;
+  private starBuffer!: GPUBuffer;
+  private galaxyCameraUniformBuffer!: GPUBuffer;
+  private galaxy!: Galaxy;
+  private galaxyBindGroup!: GPUBindGroup;
+  private galaxyDepthTexture!: GPUTexture;
 
-  constructor(canvas: HTMLCanvasElement, authority: Authority) {
+  constructor(canvas: HTMLCanvasElement, authority: Authority, state: AppState) {
     this.canvas = canvas;
     this.authority = authority;
     this.camera = new Camera(this.canvas);
+    this.state = state;
   }
 
   public setTheme(themeName: string, responseName: string, deltaTime?: number): void {
@@ -165,6 +179,21 @@ export class Renderer {
     this.device = device;
     this.context = context;
     this.presentationFormat = presentationFormat;
+    // Galaxy resources
+    this.galaxy = new Galaxy(1337, 20000, 200);
+    const starData = this._serializeStars(this.galaxy.stars);
+    this.starBuffer = this.device.createBuffer({
+      size: starData.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(this.starBuffer, 0, starData.buffer as ArrayBuffer, 0, starData.byteLength);
+
+    // 128 bytes for alignment (64 for viewProjection, 16 for right vec3 padded, 16 for up vec3 padded)
+    this.galaxyCameraUniformBuffer = this.device.createBuffer({
+      size: 128,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
 
     this.cameraUniformBuffer = this.device.createBuffer({
       size: 256,
@@ -201,6 +230,16 @@ export class Renderer {
     this.renderPipeline = this.createPostFXPipeline(this.presentationFormat);
     this.presentPipeline = this.createPresentPipeline(this.presentationFormat);
 
+    // Galaxy pipeline and bind group
+    this._createGalaxyPipeline();
+    this.galaxyBindGroup = this.device.createBindGroup({
+      layout: this.galaxyPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.galaxyCameraUniformBuffer } },
+        { binding: 1, resource: { buffer: this.starBuffer } },
+      ],
+    });
+
     this.sampler = this.device.createSampler({
       magFilter: "linear",
       minFilter: "linear"
@@ -227,6 +266,13 @@ export class Renderer {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
     });
 
+    // Depth texture for galaxy raster path
+    this.galaxyDepthTexture = this.device.createTexture({
+      size: this.textureSize,
+      format: 'depth24plus',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
         const renderTime = performance.now();
@@ -251,6 +297,12 @@ export class Renderer {
           size: this.textureSize,
           format: this.presentationFormat,
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+        });
+        // Recreate galaxy depth texture on resize
+        this.galaxyDepthTexture = this.device.createTexture({
+          size: this.textureSize,
+          format: 'depth24plus',
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
         });
         this._render();
         console.log("Rerender time:", performance.now() - renderTime);
@@ -311,82 +363,155 @@ export class Renderer {
     const deltaTime = 1 / 60.0;
     await this.authority.tick(deltaTime);
     const systemState = await this.authority.query();
-    // Update camera target based on focused body (scale matches serialize)
-    this.camera.update(systemState.bodies, 1 / 1.5e8);
-    const sphereData = this._serializeSystemState(systemState.bodies);
-    // Upload camera uniforms (eye, target, up)
-    const cameraData = new Float32Array(12);
-    cameraData.set(this.camera.eye, 0);
-    cameraData.set(this.camera.look_at, 4);
-    cameraData.set(this.camera.up, 8);
-    this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
-    this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
+    if (this.state.viewMode === ViewMode.System) {
+      // Update camera target based on focused body (scale matches serialize)
+      this.camera.update(systemState.bodies, 1 / 1.5e8);
+      const sphereData = this._serializeSystemState(systemState.bodies);
+      // Upload camera uniforms (eye, target, up)
+      const cameraData = new Float32Array(12);
+      cameraData.set(this.camera.eye, 0);
+      cameraData.set(this.camera.look_at, 4);
+      cameraData.set(this.camera.up, 8);
+      this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
+      this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
+    } else {
+      // Galaxy camera: build view-projection and extract right/up for billboards
+      const proj = mat4.create();
+      const aspect = this.textureSize.height > 0 ? (this.textureSize.width / this.textureSize.height) : 16/9;
+      mat4.perspective(proj, Math.PI / 4, aspect, 0.1, 2000.0);
+      const view = mat4.create();
+      // Use camera.look_at as target (class uses look_at)
+      mat4.lookAt(view, this.camera.eye as unknown as number[], this.camera.look_at as unknown as number[], this.camera.up as unknown as number[]);
+      const viewProj = mat4.multiply(mat4.create(), proj, view);
+
+      // Extract camera right/up from view matrix columns
+      const camRight: Vec3 = [view[0], view[4], view[8]];
+      const camUp: Vec3 = [view[1], view[5], view[9]];
+
+      const camData = new Float32Array(32); // 128 bytes
+      camData.set(viewProj, 0);
+      camData.set(camRight, 16);
+      camData.set(camUp, 20);
+      this.device.queue.writeBuffer(this.galaxyCameraUniformBuffer, 0, camData);
+    }
     this.setTheme('amber', 'Visible (Y)', deltaTime);
     this._render();
     requestAnimationFrame(() => this._update());
   }
 
   private _render() {
-    const sourceTexture = this.frameCount % 2 === 0 ? this.postFxTextureB : this.postFxTextureA;
-    const destinationTexture = this.frameCount % 2 === 0 ? this.postFxTextureA : this.postFxTextureB;
-
-    // Create per-frame bind group to include prev frame texture at binding 3
-    const postFxBindGroup = this.device.createBindGroup({
-      layout: this.renderPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.sampler },
-        { binding: 1, resource: this.computeShader.texture.createView() },
-        { binding: 2, resource: { buffer: this.themeUniformBuffer } },
-        { binding: 3, resource: sourceTexture.createView() },
-      ]
-    });
-
     const commandEncoder = this.device.createCommandEncoder();
 
-    const computePass = commandEncoder.beginComputePass();
-    computePass.setPipeline(this.computeShader.pipeline);
-    computePass.setBindGroup(0, this.computeShader.bindGroup);
-    computePass.dispatchWorkgroups(Math.ceil(this.textureSize.width / 8), Math.ceil(this.textureSize.height / 8));
-    computePass.end();
+    if (this.state.viewMode === ViewMode.System) {
+      const sourceTexture = this.frameCount % 2 === 0 ? this.postFxTextureB : this.postFxTextureA;
+      const destinationTexture = this.frameCount % 2 === 0 ? this.postFxTextureA : this.postFxTextureB;
 
-    // Pass 1: Render PostFX into offscreen destination ping-pong texture
-    const postPass = commandEncoder.beginRenderPass({
-      colorAttachments: [{
-        view: destinationTexture.createView(),
-        loadOp: "clear",
-        storeOp: "store",
-        clearValue: { r: 0, g: 0, b: 0, a: 1 }
-      }]
-    });
-    postPass.setPipeline(this.renderPipeline);
-    postPass.setBindGroup(0, postFxBindGroup);
-    postPass.draw(6);
-    postPass.end();
+      // Create per-frame bind group to include prev frame texture at binding 3
+      const postFxBindGroup = this.device.createBindGroup({
+        layout: this.renderPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.sampler },
+          { binding: 1, resource: this.computeShader.texture.createView() },
+          { binding: 2, resource: { buffer: this.themeUniformBuffer } },
+          { binding: 3, resource: sourceTexture.createView() },
+        ]
+      });
 
-    // Pass 2: Present the destination texture to the canvas
-    const currentTexture = this.context.getCurrentTexture();
-    const presentPass = commandEncoder.beginRenderPass({
-      colorAttachments: [{
-        view: currentTexture.createView(),
-        loadOp: "clear",
-        storeOp: "store",
-        clearValue: { r: 0, g: 0, b: 0, a: 1 }
-      }]
-    });
-    // Build a bind group that feeds the destination texture into the present shader at binding 1
-    const presentBindGroup = this.device.createBindGroup({
-      layout: this.presentPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.sampler },
-        { binding: 1, resource: destinationTexture.createView() },
-      ]
-    });
-    presentPass.setPipeline(this.presentPipeline);
-    presentPass.setBindGroup(0, presentBindGroup);
-    presentPass.draw(6);
-    presentPass.end();
+      const computePass = commandEncoder.beginComputePass();
+      computePass.setPipeline(this.computeShader.pipeline);
+      computePass.setBindGroup(0, this.computeShader.bindGroup);
+      computePass.dispatchWorkgroups(Math.ceil(this.textureSize.width / 8), Math.ceil(this.textureSize.height / 8));
+      computePass.end();
+
+      // Pass 1: Render PostFX into offscreen destination ping-pong texture
+      const postPass = commandEncoder.beginRenderPass({
+        colorAttachments: [{
+          view: destinationTexture.createView(),
+          loadOp: "clear",
+          storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 1 }
+        }]
+      });
+      postPass.setPipeline(this.renderPipeline);
+      postPass.setBindGroup(0, postFxBindGroup);
+      postPass.draw(6);
+      postPass.end();
+
+      // Pass 2: Present the destination texture to the canvas
+      const currentTexture = this.context.getCurrentTexture();
+      const presentPass = commandEncoder.beginRenderPass({
+        colorAttachments: [{
+          view: currentTexture.createView(),
+          loadOp: "clear",
+          storeOp: "store",
+          clearValue: { r: 0, g: 0, b: 0, a: 1 }
+        }]
+      });
+      // Build a bind group that feeds the destination texture into the present shader at binding 1
+      const presentBindGroup = this.device.createBindGroup({
+        layout: this.presentPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.sampler },
+          { binding: 1, resource: destinationTexture.createView() },
+        ]
+      });
+      presentPass.setPipeline(this.presentPipeline);
+      presentPass.setBindGroup(0, presentBindGroup);
+      presentPass.draw(6);
+      presentPass.end();
+
+    } else {
+      const currentTexture = this.context.getCurrentTexture();
+      const renderPass = commandEncoder.beginRenderPass({
+        colorAttachments: [{
+          view: currentTexture.createView(),
+          loadOp: "clear",
+          storeOp: "store",
+          clearValue: { r: 0.08, g: 0.0, b: 0.12, a: 1.0 } // purple background for galaxy view
+        }],
+        depthStencilAttachment: {
+          view: this.galaxyDepthTexture.createView(),
+          depthClearValue: 1.0,
+          depthLoadOp: 'clear',
+          depthStoreOp: 'store',
+        },
+      });
+      renderPass.setPipeline(this.galaxyPipeline);
+      renderPass.setBindGroup(0, this.galaxyBindGroup);
+      renderPass.draw(4, this.galaxy.stars.length);
+      renderPass.end();
+    }
 
     this.device.queue.submit([commandEncoder.finish()]);
     this.frameCount++;
+  }
+
+  private _createGalaxyPipeline() {
+    const module = this.device.createShaderModule({ code: galaxyShaderWGSL });
+    this.galaxyPipeline = this.device.createRenderPipeline({
+      layout: "auto",
+      vertex: { module, entryPoint: "vertexMain" },
+      fragment: { module, entryPoint: "fragmentMain", targets: [{ format: this.presentationFormat }] },
+      primitive: { topology: "triangle-strip" },
+      depthStencil: {
+        format: 'depth24plus',
+        depthWriteEnabled: true,
+        depthCompare: 'less',
+      },
+    });
+  }
+
+  private _serializeStars(stars: Star[]): Float32Array {
+    // Layout: position.xyz, color.xyz, size (with implicit alignment)
+    const floatsPerStar = 8;
+    const data = new Float32Array(stars.length * floatsPerStar);
+    for (let i = 0; i < stars.length; i++) {
+      const base = i * floatsPerStar;
+      const s = stars[i];
+      data.set(s.position, base + 0);
+      data.set(s.color, base + 4);
+      data[base + 7] = s.size;
+    }
+    return data;
   }
 }

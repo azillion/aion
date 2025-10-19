@@ -2,14 +2,16 @@ import "./style.css";
 import { Renderer } from "./renderer";
 import { LocalAuthority } from "./authority/local";
 import { UI } from "./ui";
+import { AppState } from "./state";
 
 // initWebGPU moved into Renderer
 
 async function main() {
     const canvas = document.getElementById("canvas") as HTMLCanvasElement;
     const authority = new LocalAuthority();
-    const renderer = new Renderer(canvas, authority);
-    new UI(renderer);
+    const state = new AppState();
+    const renderer = new Renderer(canvas, authority, state);
+    new UI(renderer, state);
     await renderer.start();
 }
 
