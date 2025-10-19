@@ -6,13 +6,13 @@ export class Camera {
 	public up: Vec3 = [0, 1, 0];
 
 	public focusBodyId: string | null = null;
+	private pendingFrame = false;
 
 	private canvas: HTMLCanvasElement;
 	private isDragging = false;
 	private lastMouseX = 0;
 	private lastMouseY = 0;
-	private minDistance = 0.05;
-	private maxDistance = 10.0;
+	private minDistance = 0.005;
 
 	constructor(canvas: HTMLCanvasElement) {
 		this.canvas = canvas;
@@ -24,6 +24,7 @@ export class Camera {
 
 	public setFocus(bodyId: string): void {
 		this.focusBodyId = bodyId;
+		this.pendingFrame = true;
 	}
 
 	public update(bodies: Body[], scale: number): void {
@@ -50,6 +51,38 @@ export class Camera {
 			this.eye[0] += dx;
 			this.eye[1] += dy;
 			this.eye[2] += dz;
+
+			// If focus just changed, adjust zoom to fit the focused body on screen
+			if (this.pendingFrame) {
+				// Match shader's camera vertical FOV (degrees)
+				const vfovDeg = 25.0;
+				const vfovRad = (vfovDeg * Math.PI) / 180.0;
+				const tanHalfV = Math.tan(vfovRad / 2.0) || 1e-6;
+				const aspect = this.canvas.height > 0 ? (this.canvas.width / this.canvas.height) : 16 / 9;
+				// Match render radius scaling used in _serializeSystemState
+				const radiusWorld = (focusBody.radius * scale * 100);
+				const padding = 1.2; // slightly back off to avoid clipping
+				const distVert = (radiusWorld * padding) / tanHalfV;
+				const distHorz = (radiusWorld * padding) / (Math.max(1e-6, aspect) * tanHalfV);
+				let desiredDist = Math.max(distVert, distHorz);
+				desiredDist = Math.max(this.minDistance, desiredDist);
+
+				const dirX = this.eye[0] - this.look_at[0];
+				const dirY = this.eye[1] - this.look_at[1];
+				const dirZ = this.eye[2] - this.look_at[2];
+				const len = Math.hypot(dirX, dirY, dirZ);
+				const nx = (len > 1e-6) ? (dirX / len) : 0;
+				const ny = (len > 1e-6) ? (dirY / len) : 0;
+				const nz = (len > 1e-6) ? (dirZ / len) : 1; // default to +Z if degenerate
+
+				this.eye = [
+					this.look_at[0] + nx * desiredDist,
+					this.look_at[1] + ny * desiredDist,
+					this.look_at[2] + nz * desiredDist,
+				];
+
+				this.pendingFrame = false;
+			}
 		}
 	}
 
@@ -138,7 +171,7 @@ export class Camera {
 		const ny = dirY / len;
 		const nz = dirZ / len;
 
-		const nextDist = Math.max(this.minDistance, Math.min(this.maxDistance, len * multiplier));
+		const nextDist = Math.max(this.minDistance, len * multiplier);
 		this.eye = [
 			this.look_at[0] + nx * nextDist,
 			this.look_at[1] + ny * nextDist,

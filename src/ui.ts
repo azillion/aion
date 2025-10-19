@@ -1,47 +1,57 @@
 import { GUI } from 'dat.gui';
-import type { Authority } from './authority/authority';
-import type { Camera } from './camera';
+import type { Renderer } from './renderer';
+import { spectralResponses } from './spectral';
+import { themes } from './theme';
 
 export class UI {
-	private authority: Authority;
-	private camera: Camera;
-	private gui: GUI;
-	private settings = {
-		'Time Scale (days/sec)': 30,
-		'Focus': 'Sun',
-	};
+    private renderer: Renderer;
+    private gui: GUI;
+    private settings = {
+        'Time Scale (days/sec)': 30,
+        'Focus': 'Sun',
+        'Theme': 'amber',
+        'Sensor': 'Visible (Y)',
+    };
 
-	constructor(authority: Authority, camera: Camera) {
-		this.authority = authority;
-		this.camera = camera;
-		this.gui = new GUI();
+    constructor(renderer: Renderer) {
+        this.renderer = renderer;
+        this.gui = new GUI();
 
-		this.gui
-			.add(this.settings, 'Time Scale (days/sec)', 0, 365)
-			.onChange((value: number) => {
-				const secondsPerDay = 24 * 60 * 60;
-				this.authority.setTimeScale(value * secondsPerDay);
-			});
+        this.gui
+            .add(this.settings, 'Time Scale (days/sec)', 0, 365)
+            .onChange((value: number) => {
+                const secondsPerDay = 24 * 60 * 60;
+                this.renderer.authority.setTimeScale(value * secondsPerDay);
+            });
 
+        this._createSceneControls();
 
-		this._createSceneControls();
-	}
+        this.gui.add(this.settings, 'Theme', Object.keys(themes))
+            .onChange(() => this.updateTheme());
 
-	private async _createSceneControls() {
-		const initialState = await this.authority.query();
-		const bodyNames = initialState.bodies.map(b => b.name);
-		const bodyIds = initialState.bodies.map(b => b.id);
+        this.gui.add(this.settings, 'Sensor', Object.keys(spectralResponses))
+            .onChange(() => this.updateTheme());
+    }
 
-		this.settings['Focus'] = bodyNames[0];
-		this.camera.setFocus(bodyIds[0]);
+    private updateTheme = () => {
+        this.renderer.setTheme(this.settings['Theme'], this.settings['Sensor']);
+    }
 
-		this.gui.add(this.settings, 'Focus', bodyNames)
-			.onChange((selectedName: string) => {
-				const selectedIndex = bodyNames.indexOf(selectedName);
-				const selectedId = bodyIds[selectedIndex];
-				this.camera.setFocus(selectedId);
-			});
-	}
+    private async _createSceneControls() {
+        const initialState = await this.renderer.authority.query();
+        const bodyNames = initialState.bodies.map(b => b.name);
+        const bodyIds = initialState.bodies.map(b => b.id);
+
+        this.settings['Focus'] = bodyNames[0];
+        this.renderer.camera.setFocus(bodyIds[0]);
+
+        this.gui.add(this.settings, 'Focus', bodyNames)
+            .onChange((selectedName: string) => {
+                const selectedIndex = bodyNames.indexOf(selectedName);
+                const selectedId = bodyIds[selectedIndex];
+                this.renderer.camera.setFocus(selectedId);
+            });
+    }
 }
 
 

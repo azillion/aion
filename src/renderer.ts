@@ -1,5 +1,7 @@
 import computeShaderWGSL from './shaders/compute.wgsl?raw';
-import renderShaderWGSL from './shaders/render.wgsl?raw';
+import postfxShaderWGSL from './shaders/postfx.wgsl?raw';
+import { themes } from './theme';
+import { spectralResponses } from './spectral';
 import type { Authority } from './authority/authority';
 import type { Body } from './shared/types';
 import { Camera } from './camera';
@@ -13,17 +15,47 @@ export class Renderer {
   private textureSize!: { width: number, height: number };
   private computeShader!: { pipeline: GPUComputePipeline, bindGroup: GPUBindGroup, texture: GPUTexture };
   private renderPipeline!: GPURenderPipeline;
+  private presentPipeline!: GPURenderPipeline;
   private sampler!: GPUSampler;
-  private renderBindGroup!: GPUBindGroup;
-  private authority: Authority;
+  private themeUniformBuffer!: GPUBuffer;
+  public authority: Authority;
   private spheresBuffer!: GPUBuffer;
   private cameraUniformBuffer!: GPUBuffer;
   public camera!: Camera;
+  private postFxTextureA!: GPUTexture;
+  private postFxTextureB!: GPUTexture;
+  private frameCount = 0;
+  private currentThemeName: string = 'amber';
+  private currentResponseName: string = 'Visible (Y)';
+  private lastDeltaTime = 1/60;
 
   constructor(canvas: HTMLCanvasElement, authority: Authority) {
     this.canvas = canvas;
     this.authority = authority;
     this.camera = new Camera(this.canvas);
+  }
+
+  public setTheme(themeName: string, responseName: string, deltaTime?: number): void {
+    this.currentThemeName = themeName;
+    this.currentResponseName = responseName;
+    if (deltaTime !== undefined) this.lastDeltaTime = deltaTime;
+
+    const theme = themes[this.currentThemeName as keyof typeof themes];
+    const response = spectralResponses[this.currentResponseName];
+
+    if (!theme || !response) {
+      console.error("Invalid theme or response name");
+      return;
+    }
+
+    // 80-byte buffer, write first 68 bytes used; pad the rest implicitly
+    const themeData = new Float32Array(20);
+    themeData.set(theme.bg, 0);
+    themeData.set(theme.fg, 4);
+    themeData.set(theme.accent, 8);
+    themeData.set(response, 12);
+    themeData[16] = this.lastDeltaTime;
+    this.device.queue.writeBuffer(this.themeUniformBuffer, 0, themeData);
   }
 
   private async initWebGPU() {
@@ -65,7 +97,7 @@ export class Renderer {
 
     const texture = this.device.createTexture({
       size: textureSize,
-      format: 'rgba8unorm',
+      format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING
     });
 
@@ -82,10 +114,10 @@ export class Renderer {
     return { pipeline, bindGroup, texture };
   }
 
-  private createRenderPipeline(format: GPUTextureFormat) {
+  private createPostFXPipeline(format: GPUTextureFormat) {
     const module = this.device.createShaderModule({
-      label: "Render shader",
-      code: renderShaderWGSL
+      label: "PostFX shader",
+      code: postfxShaderWGSL
     });
 
     return this.device.createRenderPipeline({
@@ -100,19 +132,31 @@ export class Renderer {
         targets: [{ format }]
       },
       primitive: {
-        topology: "triangle-strip",
-        stripIndexFormat: "uint32"
+        topology: "triangle-list"
       }
     });
   }
 
-  private updateBindGroups() {
-    this.renderBindGroup = this.device.createBindGroup({
-      layout: this.renderPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.sampler },
-        { binding: 1, resource: this.computeShader.texture.createView() }
-      ]
+  private createPresentPipeline(format: GPUTextureFormat) {
+    const module = this.device.createShaderModule({
+      label: "Present shader",
+      code: postfxShaderWGSL
+    });
+
+    return this.device.createRenderPipeline({
+      layout: "auto",
+      vertex: {
+        module,
+        entryPoint: "vertexMain"
+      },
+      fragment: {
+        module,
+        entryPoint: "presentFragment",
+        targets: [{ format }]
+      },
+      primitive: {
+        topology: "triangle-list"
+      }
     });
   }
 
@@ -154,14 +198,34 @@ export class Renderer {
     this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
 
     this.computeShader = this.createComputeShader(this.textureSize, numBodies, this.spheresBuffer);
-    this.renderPipeline = this.createRenderPipeline(this.presentationFormat);
+    this.renderPipeline = this.createPostFXPipeline(this.presentationFormat);
+    this.presentPipeline = this.createPresentPipeline(this.presentationFormat);
 
     this.sampler = this.device.createSampler({
       magFilter: "linear",
       minFilter: "linear"
     });
 
-    this.updateBindGroups();
+    // Theme uniform buffer (4 x vec3 padded + f32 deltaTime). Use 80 bytes for alignment simplicity
+    this.themeUniformBuffer = this.device.createBuffer({
+      size: 80,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Upload default theme and response
+    this.setTheme(this.currentThemeName, this.currentResponseName, this.lastDeltaTime);
+
+    // Create ping-pong textures for persistence (match presentation format for compatibility)
+    this.postFxTextureA = this.device.createTexture({
+      size: this.textureSize,
+      format: this.presentationFormat,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+    });
+    this.postFxTextureB = this.device.createTexture({
+      size: this.textureSize,
+      format: this.presentationFormat,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+    });
 
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
@@ -177,7 +241,17 @@ export class Renderer {
 
         this.textureSize = { width: canvas.width, height: canvas.height };
         this.computeShader = this.createComputeShader(this.textureSize, numBodies, this.spheresBuffer);
-        this.updateBindGroups();
+        // Recreate ping-pong textures on resize
+        this.postFxTextureA = this.device.createTexture({
+          size: this.textureSize,
+          format: this.presentationFormat,
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+        });
+        this.postFxTextureB = this.device.createTexture({
+          size: this.textureSize,
+          format: this.presentationFormat,
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+        });
         this._render();
         console.log("Rerender time:", performance.now() - renderTime);
       }
@@ -234,7 +308,8 @@ export class Renderer {
   }
 
   private async _update() {
-    await this.authority.tick(1 / 60.0);
+    const deltaTime = 1 / 60.0;
+    await this.authority.tick(deltaTime);
     const systemState = await this.authority.query();
     // Update camera target based on focused body (scale matches serialize)
     this.camera.update(systemState.bodies, 1 / 1.5e8);
@@ -246,11 +321,26 @@ export class Renderer {
     cameraData.set(this.camera.up, 8);
     this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
     this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
+    this.setTheme('amber', 'Visible (Y)', deltaTime);
     this._render();
     requestAnimationFrame(() => this._update());
   }
 
   private _render() {
+    const sourceTexture = this.frameCount % 2 === 0 ? this.postFxTextureB : this.postFxTextureA;
+    const destinationTexture = this.frameCount % 2 === 0 ? this.postFxTextureA : this.postFxTextureB;
+
+    // Create per-frame bind group to include prev frame texture at binding 3
+    const postFxBindGroup = this.device.createBindGroup({
+      layout: this.renderPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.sampler },
+        { binding: 1, resource: this.computeShader.texture.createView() },
+        { binding: 2, resource: { buffer: this.themeUniformBuffer } },
+        { binding: 3, resource: sourceTexture.createView() },
+      ]
+    });
+
     const commandEncoder = this.device.createCommandEncoder();
 
     const computePass = commandEncoder.beginComputePass();
@@ -259,19 +349,44 @@ export class Renderer {
     computePass.dispatchWorkgroups(Math.ceil(this.textureSize.width / 8), Math.ceil(this.textureSize.height / 8));
     computePass.end();
 
-    const renderPass = commandEncoder.beginRenderPass({
+    // Pass 1: Render PostFX into offscreen destination ping-pong texture
+    const postPass = commandEncoder.beginRenderPass({
       colorAttachments: [{
-        view: this.context.getCurrentTexture().createView(),
+        view: destinationTexture.createView(),
         loadOp: "clear",
         storeOp: "store",
         clearValue: { r: 0, g: 0, b: 0, a: 1 }
       }]
     });
-    renderPass.setPipeline(this.renderPipeline);
-    renderPass.setBindGroup(0, this.renderBindGroup);
-    renderPass.draw(4);
-    renderPass.end();
+    postPass.setPipeline(this.renderPipeline);
+    postPass.setBindGroup(0, postFxBindGroup);
+    postPass.draw(6);
+    postPass.end();
+
+    // Pass 2: Present the destination texture to the canvas
+    const currentTexture = this.context.getCurrentTexture();
+    const presentPass = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: currentTexture.createView(),
+        loadOp: "clear",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 1 }
+      }]
+    });
+    // Build a bind group that feeds the destination texture into the present shader at binding 1
+    const presentBindGroup = this.device.createBindGroup({
+      layout: this.presentPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.sampler },
+        { binding: 1, resource: destinationTexture.createView() },
+      ]
+    });
+    presentPass.setPipeline(this.presentPipeline);
+    presentPass.setBindGroup(0, presentBindGroup);
+    presentPass.draw(6);
+    presentPass.end();
 
     this.device.queue.submit([commandEncoder.finish()]);
+    this.frameCount++;
   }
 }

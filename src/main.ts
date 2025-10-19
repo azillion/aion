@@ -9,7 +9,7 @@ async function main() {
     const canvas = document.getElementById("canvas") as HTMLCanvasElement;
     const authority = new LocalAuthority();
     const renderer = new Renderer(canvas, authority);
-    new UI(authority, renderer.camera);
+    new UI(renderer);
     await renderer.start();
 }
 

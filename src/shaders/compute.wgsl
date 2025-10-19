@@ -400,7 +400,7 @@ fn rayAt(ray: Ray, t: f32) -> vec3<f32> {
 // Scene is now generated on CPU and uploaded via storage buffer
 
 @group(0) @binding(0) var<storage, read> spheres: array<Sphere, NUM_SPHERES>;
-@group(0) @binding(1) var output: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(1) var output: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var<uniform> camera: CameraUniforms;
 
 @compute @workgroup_size(8, 8)
