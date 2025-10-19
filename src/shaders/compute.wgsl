@@ -2,7 +2,7 @@ const PI: f32 = 3.1415926535897932385;
 const INFINITY: f32 = 1e38;
 const SEED: vec2<f32> = vec2<f32>(69.68, 4.20);
 const MAX_DEPTH: u32 = 100;
-const NUM_SPHERES: u32 = 30u;
+// NUM_SPHERES is injected dynamically by the host code
 
 fn lerp(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
     return a * (1.0 - t) + b * t;
@@ -242,13 +242,13 @@ struct Camera {
 }
 
 fn createCamera(aspect_ratio: f32) -> Camera {
-    let samples_per_pixel: u32 = 20u;
-    let vfov = 20.0;
-    let lookfrom = vec3<f32>(13.0, 2.0, 3.0);
-    let lookat = vec3<f32>(0.0, 0.0, 0.0);
+    let samples_per_pixel: u32 = 1u; // reduce noise and debug visibility
+    let vfov = 45.0;
+    let lookfrom = vec3<f32>(0.0, 0.5, 2.0);
+    let lookat = vec3<f32>(0.0, 0.0, -2.0);
     let vup = vec3<f32>(0.0, 1.0, 0.0);
-    let defocus_angle = 0.6;
-    let focus_distance = 10.0;
+    let defocus_angle = 0.0; // disable DOF to avoid over-blur
+    let focus_distance = 2.0;
 
     let theta = degreesToRadians(vfov);
     let h = tan(theta / 2.0);

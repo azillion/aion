@@ -1,9 +1,9 @@
 import computeShaderWGSL from './shaders/compute.wgsl?raw';
 import renderShaderWGSL from './shaders/render.wgsl?raw';
-import { createRandomScene, serializeScene } from './scene';
+import type { Authority } from './authority/authority';
+import type { Body } from './shared/types';
 
 export class Renderer {
-  private static readonly NUM_SPHERES = 30;
 
   private canvas: HTMLCanvasElement;
   private device!: GPUDevice;
@@ -14,9 +14,12 @@ export class Renderer {
   private renderPipeline!: GPURenderPipeline;
   private sampler!: GPUSampler;
   private renderBindGroup!: GPUBindGroup;
+  private authority: Authority;
+  private spheresBuffer!: GPUBuffer;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, authority: Authority) {
     this.canvas = canvas;
+    this.authority = authority;
   }
 
   private async initWebGPU() {
@@ -41,10 +44,10 @@ export class Renderer {
     return { device, context, presentationFormat };
   }
 
-  private createComputeShader(textureSize: { width: number, height: number }) {
+  private createComputeShader(textureSize: { width: number, height: number }, numBodies: number, spheresBuffer: GPUBuffer) {
     const module = this.device.createShaderModule({
       label: "Compute shader",
-      code: computeShaderWGSL
+      code: `const NUM_SPHERES: u32 = ${numBodies};\n` + computeShaderWGSL
     });
 
     const pipeline = this.device.createComputePipeline({
@@ -55,17 +58,6 @@ export class Renderer {
         entryPoint: "main"
       }
     });
-
-    const spheres = createRandomScene();
-    const sphereData = serializeScene(spheres);
-
-    const spheresBuffer = this.device.createBuffer({
-      size: sphereData.byteLength,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-
-    // Use ArrayBuffer overload to satisfy types
-    this.device.queue.writeBuffer(spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
 
     const texture = this.device.createTexture({
       size: textureSize,
@@ -157,7 +149,17 @@ export class Renderer {
     this.canvas.height = Math.max(1, Math.min(height, this.device.limits.maxTextureDimension2D));
     this.textureSize = { width: this.canvas.width, height: this.canvas.height };
 
-    this.computeShader = this.createComputeShader(this.textureSize);
+    const systemState = await this.authority.query();
+    const sphereData = this._serializeSystemState(systemState.bodies);
+    const numBodies = systemState.bodies.length;
+
+    this.spheresBuffer = this.device.createBuffer({
+      size: sphereData.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
+
+    this.computeShader = this.createComputeShader(this.textureSize, numBodies, this.spheresBuffer);
     this.renderPipeline = this.createRenderPipeline(this.presentationFormat);
 
     this.sampler = this.device.createSampler({
@@ -180,16 +182,71 @@ export class Renderer {
         });
 
         this.textureSize = { width: canvas.width, height: canvas.height };
-        this.computeShader = this.createComputeShader(this.textureSize);
+        this.computeShader = this.createComputeShader(this.textureSize, numBodies, this.spheresBuffer);
         this.updateBindGroups();
-        this.render();
+        this._render();
         console.log("Rerender time:", performance.now() - renderTime);
       }
     });
     observer.observe(this.canvas);
 
-    this.render();
+    this._update();
+  }
+
+  private _serializeSystemState(bodies: Body[]): Float32Array {
+    const floatsPerSphere = 12;
+    const sphereData = new Float32Array(bodies.length * floatsPerSphere);
+    bodies.forEach((body, i) => {
+      const offset = i * floatsPerSphere;
+      const scale = 1 / 1.5e8; // Scales 1 AU to 1 unit
+
+      sphereData[offset + 0] = body.position[0] * scale;
+      sphereData[offset + 1] = body.position[1] * scale;
+      sphereData[offset + 2] = body.position[2] * scale - 2.0;
+      sphereData[offset + 3] = body.radius * scale * 100;
+      sphereData[offset + 4] = body.albedo[0];
+      sphereData[offset + 5] = body.albedo[1];
+      sphereData[offset + 6] = body.albedo[2];
+      sphereData[offset + 7] = 0; // mat_type (Lambertian)
+      sphereData[offset + 8] = 0; // fuzziness
+      sphereData[offset + 9] = 1.0; // refraction index
+      sphereData[offset + 10] = 0.0; // padding
+      sphereData[offset + 11] = 0.0; // padding
+    });
+    return sphereData;
+  }
+
+  private async _update() {
+    await this.authority.tick(1 / 60.0);
+    const systemState = await this.authority.query();
+    const sphereData = this._serializeSystemState(systemState.bodies);
+    this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
+    this._render();
+    requestAnimationFrame(() => this._update());
+  }
+
+  private _render() {
+    const commandEncoder = this.device.createCommandEncoder();
+
+    const computePass = commandEncoder.beginComputePass();
+    computePass.setPipeline(this.computeShader.pipeline);
+    computePass.setBindGroup(0, this.computeShader.bindGroup);
+    computePass.dispatchWorkgroups(Math.ceil(this.textureSize.width / 8), Math.ceil(this.textureSize.height / 8));
+    computePass.end();
+
+    const renderPass = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: this.context.getCurrentTexture().createView(),
+        loadOp: "clear",
+        storeOp: "store",
+        clearValue: { r: 0, g: 0, b: 0, a: 1 }
+      }]
+    });
+    renderPass.setPipeline(this.renderPipeline);
+    renderPass.setBindGroup(0, this.renderBindGroup);
+    renderPass.draw(4);
+    renderPass.end();
+
+    this.device.queue.submit([commandEncoder.finish()]);
   }
 }
-
-
