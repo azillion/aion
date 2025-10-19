@@ -18,7 +18,7 @@ export class Renderer {
   private authority: Authority;
   private spheresBuffer!: GPUBuffer;
   private cameraUniformBuffer!: GPUBuffer;
-  private camera!: Camera;
+  public camera!: Camera;
 
   constructor(canvas: HTMLCanvasElement, authority: Authority) {
     this.canvas = canvas;
@@ -114,31 +114,6 @@ export class Renderer {
         { binding: 1, resource: this.computeShader.texture.createView() }
       ]
     });
-  }
-
-  private render() {
-    const commandEncoder = this.device.createCommandEncoder();
-
-    const computePass = commandEncoder.beginComputePass();
-    computePass.setPipeline(this.computeShader.pipeline);
-    computePass.setBindGroup(0, this.computeShader.bindGroup);
-    computePass.dispatchWorkgroups(Math.ceil(this.textureSize.width / 8), Math.ceil(this.textureSize.height / 8));
-    computePass.end();
-
-    const renderPass = commandEncoder.beginRenderPass({
-      colorAttachments: [{
-        view: this.context.getCurrentTexture().createView(),
-        loadOp: "clear",
-        storeOp: "store",
-        clearValue: { r: 0, g: 0, b: 0, a: 1 }
-      }]
-    });
-    renderPass.setPipeline(this.renderPipeline);
-    renderPass.setBindGroup(0, this.renderBindGroup);
-    renderPass.draw(4);
-    renderPass.end();
-
-    this.device.queue.submit([commandEncoder.finish()]);
   }
 
   public async start() {
@@ -261,6 +236,8 @@ export class Renderer {
   private async _update() {
     await this.authority.tick(1 / 60.0);
     const systemState = await this.authority.query();
+    // Update camera target based on focused body (scale matches serialize)
+    this.camera.update(systemState.bodies, 1 / 1.5e8);
     const sphereData = this._serializeSystemState(systemState.bodies);
     // Upload camera uniforms (eye, target, up)
     const cameraData = new Float32Array(12);

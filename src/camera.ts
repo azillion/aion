@@ -1,28 +1,75 @@
-import type { Vec3 } from './shared/types';
+import type { Vec3, Body } from './shared/types';
 
 export class Camera {
 	public eye: Vec3 = [0, 0.3, 1.0];
 	public look_at: Vec3 = [0, 0, -2.0];
 	public up: Vec3 = [0, 1, 0];
 
+	public focusBodyId: string | null = null;
+
 	private canvas: HTMLCanvasElement;
 	private isDragging = false;
 	private lastMouseX = 0;
 	private lastMouseY = 0;
-	private zoom = 1.0;
+	private minDistance = 0.05;
+	private maxDistance = 10.0;
 
 	constructor(canvas: HTMLCanvasElement) {
 		this.canvas = canvas;
 		this.canvas.addEventListener('mousedown', this.onMouseDown);
 		this.canvas.addEventListener('mouseup', this.onMouseUp);
 		this.canvas.addEventListener('mousemove', this.onMouseMove);
-		this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
+		window.addEventListener('keydown', this.onKeyDown);
+	}
+
+	public setFocus(bodyId: string): void {
+		this.focusBodyId = bodyId;
+	}
+
+	public update(bodies: Body[], scale: number): void {
+		if (this.focusBodyId === null) return;
+
+		const focusBody = bodies.find(b => b.id === this.focusBodyId);
+		if (focusBody) {
+			const prevTargetX = this.look_at[0];
+			const prevTargetY = this.look_at[1];
+			const prevTargetZ = this.look_at[2];
+
+			const nextTargetX = focusBody.position[0] * scale;
+			const nextTargetY = focusBody.position[1] * scale;
+			const nextTargetZ = focusBody.position[2] * scale - 2.0;
+
+			const dx = nextTargetX - prevTargetX;
+			const dy = nextTargetY - prevTargetY;
+			const dz = nextTargetZ - prevTargetZ;
+
+			// Translate camera to preserve relative offset while tracking the moving target
+			this.look_at[0] = nextTargetX;
+			this.look_at[1] = nextTargetY;
+			this.look_at[2] = nextTargetZ;
+			this.eye[0] += dx;
+			this.eye[1] += dy;
+			this.eye[2] += dz;
+		}
 	}
 
 	private onMouseDown = (event: MouseEvent) => {
 		this.isDragging = true;
 		this.lastMouseX = event.clientX;
 		this.lastMouseY = event.clientY;
+	};
+
+	private onKeyDown = (event: KeyboardEvent) => {
+		if (event.ctrlKey || event.metaKey || event.altKey) return;
+		const target = event.target as HTMLElement | null;
+		if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || (target as HTMLElement).isContentEditable)) return;
+		const key = event.key;
+		const code = event.code;
+		if (key === '+' || key === '=' || code === 'NumpadAdd') {
+			this.zoomIn();
+		} else if (key === '-' || key === '_' || code === 'NumpadSubtract') {
+			this.zoomOut();
+		}
 	};
 
 	private onMouseUp = () => {
@@ -74,11 +121,15 @@ export class Camera {
 		this.lastMouseY = event.clientY;
 	};
 
-	private onWheel = (event: WheelEvent) => {
-		event.preventDefault();
-		this.zoom += event.deltaY * -0.001;
-		this.zoom = Math.max(0.1, Math.min(this.zoom, 5.0));
+	public zoomIn(): void {
+		this._zoomBy(0.9);
+	}
 
+	public zoomOut(): void {
+		this._zoomBy(1.1);
+	}
+
+	private _zoomBy(multiplier: number): void {
 		const dirX = this.eye[0] - this.look_at[0];
 		const dirY = this.eye[1] - this.look_at[1];
 		const dirZ = this.eye[2] - this.look_at[2];
@@ -87,9 +138,13 @@ export class Camera {
 		const ny = dirY / len;
 		const nz = dirZ / len;
 
-		const dist = len * this.zoom;
-		this.eye = [this.look_at[0] + nx * dist, this.look_at[1] + ny * dist, this.look_at[2] + nz * dist];
-	};
+		const nextDist = Math.max(this.minDistance, Math.min(this.maxDistance, len * multiplier));
+		this.eye = [
+			this.look_at[0] + nx * nextDist,
+			this.look_at[1] + ny * nextDist,
+			this.look_at[2] + nz * nextDist,
+		];
+	}
 }
 
 
