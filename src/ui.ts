@@ -2,7 +2,7 @@ import { GUI } from 'dat.gui';
 import type { Renderer } from './renderer';
 import { spectralResponses } from './spectral';
 import { themes } from './theme';
-import { AppState, ViewMode } from './state';
+import { AppState, CameraMode } from './state';
 import { G } from './shared/constants';
 
 export class UI {
@@ -11,19 +11,21 @@ export class UI {
     private gui: GUI;
     private focusController: dat.GUIController | null = null;
     private settings = {
-        'Time Scale (days/sec)': 30,
+        'Time Scale (days/sec)': 1,
         'Focus': 'Sun',
         'Theme': 'amber',
         'Sensor': 'Visible (Y)',
         'Show Orbits': false,
         'Add Asteroid': () => this.addAsteroid(),
         'Toggle View': () => {
-            if (this.state.viewMode === ViewMode.System) {
-                this.state.viewMode = ViewMode.Galaxy;
+            if (this.state.cameraMode === CameraMode.SYSTEM_ORBITAL) {
+                this.state.cameraMode = CameraMode.SHIP_RELATIVE;
+            } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
+                this.state.cameraMode = CameraMode.GALACTIC_MAP;
                 this.renderer.camera.eye = [0, 0, 150];
                 this.renderer.camera.look_at = [0, 0, 0];
             } else {
-                this.state.viewMode = ViewMode.System;
+                this.state.cameraMode = CameraMode.SYSTEM_ORBITAL;
                 this.renderer.camera.eye = [0, 0.3, 1.0];
                 this.renderer.camera.look_at = [0, 0, -2.0];
             }
@@ -36,7 +38,7 @@ export class UI {
         this.gui = new GUI();
 
         this.gui
-            .add(this.settings, 'Time Scale (days/sec)', 0, 365)
+            .add(this.settings, 'Time Scale (days/sec)', 0, 30)
             .onChange((value: number) => {
                 const secondsPerDay = 24 * 60 * 60;
                 this.renderer.authority.setTimeScale(value * secondsPerDay);
@@ -75,8 +77,14 @@ export class UI {
         const bodyNames = initialState.bodies.map(b => b.name);
         const bodyIds = initialState.bodies.map(b => b.id);
 
-        this.settings['Focus'] = bodyNames[0];
-        this.renderer.camera.setFocus(bodyIds[0]);
+        const playerIndex = bodyIds.indexOf('player-ship');
+        if (playerIndex !== -1) {
+            this.settings['Focus'] = 'AION-1';
+            this.renderer.camera.setFocus('player-ship');
+        } else {
+            this.settings['Focus'] = bodyNames[0];
+            this.renderer.camera.setFocus(bodyIds[0]);
+        }
 
         this.focusController = this.gui.add(this.settings, 'Focus', bodyNames)
             .onChange((selectedName: string) => {

@@ -1,4 +1,5 @@
-import type { Vec3, Body } from './shared/types';
+import type { Vec3, Body, Ship } from './shared/types';
+import { vec3, quat } from 'gl-matrix';
 
 export class Camera {
 	public eye: Vec3 = [0, 0.5, 5.0];
@@ -172,6 +173,24 @@ export class Camera {
 			this.look_at[1] + ny * nextDist,
 			this.look_at[2] + nz * nextDist,
 		];
+	}
+
+	public updateShipRelative(ship: Ship): void {
+		// First-person: eye at ship position; forward from orientation quaternion
+		this.eye = ship.position;
+		const q = quat.fromValues(ship.orientation[0], ship.orientation[1], ship.orientation[2], ship.orientation[3]);
+		const baseForward = vec3.fromValues(0, 0, -1);
+		const baseUp = vec3.fromValues(0, 1, 0);
+		const forward = vec3.create();
+		const up = vec3.create();
+		vec3.transformQuat(forward, baseForward, q);
+		vec3.transformQuat(up, baseUp, q);
+		this.look_at = [
+			ship.position[0] + forward[0],
+			ship.position[1] + forward[1],
+			ship.position[2] + forward[2],
+		];
+		this.up = [up[0], up[1], up[2]];
 	}
 }
 

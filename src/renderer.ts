@@ -1,13 +1,14 @@
 import computeShaderWGSL from './shaders/compute.wgsl?raw';
 import postfxShaderWGSL from './shaders/postfx.wgsl?raw';
 import galaxyShaderWGSL from './shaders/galaxy.wgsl?raw';
-import { AppState, ViewMode } from './state';
+import { AppState, CameraMode } from './state';
 import orbitsShaderWGSL from './shaders/orbits.wgsl?raw';
 import { themes } from './theme';
 import { G } from './shared/constants';
 import { spectralResponses } from './spectral';
 import type { Authority } from './authority/authority';
-import type { Body } from './shared/types';
+import type { Body, Ship } from './shared/types';
+import { InputManager } from './input';
 import { Camera } from './camera';
 import { Galaxy } from './galaxy';
 import type { Star } from './galaxy';
@@ -93,12 +94,14 @@ export class Renderer {
   private readonly ORBIT_SAMPLES = 256;
   private lastSystemScale: number = 1.0;
   private lastKnownBodyCount = 0;
+  private input: InputManager;
 
-  constructor(canvas: HTMLCanvasElement, authority: Authority, state: AppState) {
+  constructor(canvas: HTMLCanvasElement, authority: Authority, state: AppState, input: InputManager) {
     this.canvas = canvas;
     this.authority = authority;
     this.camera = new Camera(this.canvas);
     this.state = state;
+    this.input = input;
   }
 
   public setTheme(themeName: string, responseName: string, deltaTime?: number): void {
@@ -239,6 +242,21 @@ export class Renderer {
     });
   }
 
+  // Clear a renderable texture to a solid color (defaults to opaque black)
+  private _clearTexture(texture: GPUTexture, color: { r: number, g: number, b: number, a: number } = { r: 0, g: 0, b: 0, a: 1 }): void {
+    const encoder = this.device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: texture.createView(),
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: color,
+      }]
+    });
+    pass.end();
+    this.device.queue.submit([encoder.finish()]);
+  }
+
   public async start() {
     const { device, context, presentationFormat } = await this.initWebGPU();
     this.device = device;
@@ -333,6 +351,8 @@ export class Renderer {
       format: this.presentationFormat,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
+    // Ensure orbits texture starts cleared so sampling adds no unintended brightness
+    this._clearTexture(this.orbitsTexture);
 
     // Galaxy pipeline and bind group
     this._createGalaxyPipeline();
@@ -369,6 +389,9 @@ export class Renderer {
       format: this.presentationFormat,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
     });
+    // Clear both ping-pong textures so the first frame's prev-frame sampling is black
+    this._clearTexture(this.postFxTextureA);
+    this._clearTexture(this.postFxTextureB);
 
     // Depth texture for galaxy raster path
     this.galaxyDepthTexture = this.device.createTexture({
@@ -405,6 +428,9 @@ export class Renderer {
           format: this.presentationFormat,
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
         });
+        // Clear ping-pong targets after resize to avoid sampling uninitialized data
+        this._clearTexture(this.postFxTextureA);
+        this._clearTexture(this.postFxTextureB);
         // Recreate galaxy depth texture on resize
         this.galaxyDepthTexture = this.device.createTexture({
           size: this.textureSize,
@@ -417,6 +443,7 @@ export class Renderer {
           format: this.presentationFormat,
           usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
         });
+        this._clearTexture(this.orbitsTexture);
         this._render();
         console.log("Rerender time:", performance.now() - renderTime);
       }
@@ -426,7 +453,7 @@ export class Renderer {
     this._update();
   }
 
-  private _serializeSystemState(bodies: Body[], focusBodyId: string | null): { sphereData: Float32Array, focusBodyRenderedRadius: number, systemScale: number } {
+  private _serializeSystemState(bodies: Body[], focusBodyId: string | null, fixedScale?: number): { sphereData: Float32Array, focusBodyRenderedRadius: number, systemScale: number } {
     const floatsPerSphere = 16; // 64 bytes per sphere to match WGSL layout
     const sphereData = new Float32Array(bodies.length * floatsPerSphere);
     const sphereDataU32 = new Uint32Array(sphereData.buffer);
@@ -450,7 +477,10 @@ export class Renderer {
       const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
       return Math.max(maxDist, dist);
     }, 0);
-    const systemScale = systemRadius > 0 ? VISUAL_SETTINGS.systemViewSize / systemRadius : 1.0;
+    let systemScale = systemRadius > 0 ? VISUAL_SETTINGS.systemViewSize / systemRadius : 1.0;
+    if (fixedScale !== undefined && fixedScale > 0) {
+      systemScale = fixedScale;
+    }
 
     // Determine current viewing context
     const focusBody = focusBodyId ? (bodies.find(b => b.id === focusBodyId) || null) : null;
@@ -463,43 +493,50 @@ export class Renderer {
       const f_base = i * floatsPerSphere; // float index base
       const u_base = f_base;              // u32 index base
 
-      // Compute desired render radius based on context
-      let desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.maxExaggeration;
-      if (isLocalContext && contextParent) {
-        if (body.id === contextParent.id) {
-          // Size context parent as a fraction of closest child's orbit
-          const children = bodies.filter(b => hierarchy.get(b.id) === contextParent.id);
-          if (children.length > 0) {
-            const closestDist = children.reduce((minD, c) => {
-              const dx = c.position[0] - contextParent.position[0];
-              const dy = c.position[1] - contextParent.position[1];
-              const dz = c.position[2] - contextParent.position[2];
-              const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
-              return Math.min(minD, d);
-            }, Number.POSITIVE_INFINITY);
-            const orbitRadiusWorld = isFinite(closestDist) ? closestDist : 0;
-            desiredRenderRadius = orbitRadiusWorld * systemScale * VISUAL_SETTINGS.parentOrbitFillFactor;
+      let renderedRadius: number;
+      const isStar = body.emissive && (body.emissive[0] > 1.0 || body.emissive[1] > 1.0);
+
+      if (isStar) {
+        // Stars should not be exaggerated. Their size is relative to the system scale.
+        // We give them a minimum size to ensure they are visible.
+        renderedRadius = Math.max(0.1, body.radius * systemScale);
+      } else {
+        // All other bodies (planets, moons) get exaggerated for visibility.
+        let desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.maxExaggeration;
+        if (isLocalContext && contextParent) {
+          if (body.id === contextParent.id) {
+            const children = bodies.filter(b => hierarchy.get(b.id) === contextParent.id);
+            if (children.length > 0) {
+              const closestDist = children.reduce((minD, c) => {
+                const dx = c.position[0] - contextParent.position[0];
+                const dy = c.position[1] - contextParent.position[1];
+                const dz = c.position[2] - contextParent.position[2];
+                const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                return Math.min(minD, d);
+              }, Number.POSITIVE_INFINITY);
+              const orbitRadiusWorld = isFinite(closestDist) ? closestDist : 0;
+              desiredRenderRadius = orbitRadiusWorld * systemScale * VISUAL_SETTINGS.parentOrbitFillFactor;
+            } else {
+              desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.minExaggeration;
+            }
+          } else if (hierarchy.get(body.id) === contextParent.id) {
+            desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.maxExaggeration;
           } else {
-            // No children; fall back to minimum exaggeration
             desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.minExaggeration;
           }
-        } else if (hierarchy.get(body.id) === contextParent.id) {
-          // Child of context parent: make large
-          desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.maxExaggeration;
         } else {
-          // Other bodies: make small
-          desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.minExaggeration;
+          desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.maxExaggeration;
         }
-      } else {
-        // System view: large exaggeration globally
-        desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.maxExaggeration;
-      }
 
-      // Derive final exaggeration factor and clamp
-      const denom = Math.max(1e-12, body.radius * systemScale);
-      const unclampedFactor = desiredRenderRadius / denom;
-      const finalExaggeration = Math.min(VISUAL_SETTINGS.maxExaggeration, Math.max(VISUAL_SETTINGS.minExaggeration, unclampedFactor));
-      const renderedRadius = body.radius * systemScale * finalExaggeration;
+        const denom = Math.max(1e-12, body.radius * systemScale);
+        const unclampedFactor = desiredRenderRadius / denom;
+        const finalExaggeration = Math.min(VISUAL_SETTINGS.maxExaggeration, Math.max(VISUAL_SETTINGS.minExaggeration, unclampedFactor));
+        renderedRadius = body.radius * systemScale * finalExaggeration;
+      }
+      
+      if (body.id === focusBodyId) {
+        focusBodyRenderedRadius = renderedRadius;
+      }
       if (body.id === focusBodyId) {
         focusBodyRenderedRadius = renderedRadius;
       }
@@ -542,58 +579,22 @@ export class Renderer {
 
   private async _update() {
     const deltaTime = 1 / 60.0;
-    await this.authority.tick(deltaTime);
+    const inputState = { deltaX: this.input.deltaX, deltaY: this.input.deltaY, keys: this.input.keys };
+    await this.authority.tick(deltaTime, inputState);
     const systemState = await this.authority.query();
     if (systemState.bodies.length !== this.lastKnownBodyCount) {
       this._reinitializeComputeResources(systemState.bodies.length);
     }
-    if (this.state.viewMode === ViewMode.System) {
-      // Update camera target based on focused body (scale matches serialize)
-      const { sphereData, focusBodyRenderedRadius, systemScale } = this._serializeSystemState(systemState.bodies, this.camera.focusBodyId);
-      this.camera.update(systemState.bodies, systemScale);
-      this.lastSystemScale = systemScale;
-      if (this.camera.pendingFrame) {
-        this.camera.completePendingFrame(focusBodyRenderedRadius);
+    let bodiesToRender: Body[] = systemState.bodies;
+    let mode = this.state.cameraMode;
+    if (mode === CameraMode.SHIP_RELATIVE) {
+      const playerShipId = this.state.playerShipId;
+      const playerShip = playerShipId ? systemState.bodies.find(b => b.id === playerShipId) as Ship | undefined : undefined;
+      if (playerShip) {
+        this.camera.updateShipRelative(playerShip);
       }
-      // Upload camera uniforms (eye, target, up, distance_to_target)
-      const cameraData = new Float32Array(16);
-      const eye = this.camera.eye;
-      const lookAt = this.camera.look_at;
-      const dist = Math.hypot(eye[0] - lookAt[0], eye[1] - lookAt[1], eye[2] - lookAt[2]);
-      // Camera-relative uniforms: eye at origin, look_at relative to eye
-      cameraData.set([0, 0, 0], 0);
-      const relativeLookAt: Vec3 = [
-        lookAt[0] - eye[0],
-        lookAt[1] - eye[1],
-        lookAt[2] - eye[2],
-      ];
-      cameraData.set(relativeLookAt, 4);
-      cameraData.set(this.camera.up, 8);
-      cameraData[12] = dist; // distance_to_target
-      this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
-      this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
-      this._lastBodiesForMask = systemState.bodies;
-
-      // Update analytic orbits and uniforms if enabled
-      if (this.state.showOrbits) {
-        this._updateAnalyticOrbits(systemState.bodies, systemScale);
-
-        // Update orbits uniforms (viewProjection + color)
-        const proj = mat4.create();
-        const aspect = this.textureSize.height > 0 ? (this.textureSize.width / this.textureSize.height) : 16/9;
-        mat4.perspective(proj, Math.PI * 25 / 180, aspect, 0.00001, 10000.0);
-        const view = mat4.create();
-        mat4.lookAt(view, this.camera.eye as unknown as number[], this.camera.look_at as unknown as number[], this.camera.up as unknown as number[]);
-        const viewProj = mat4.multiply(mat4.create(), proj, view);
-
-        const theme = themes[this.currentThemeName as keyof typeof themes];
-        const color = theme.accent;
-        const u = new Float32Array(20);
-        u.set(viewProj, 0);
-        u.set(color, 16);
-        this.device.queue.writeBuffer(this.orbitsUniformBuffer, 0, u);
-      }
-    } else {
+      bodiesToRender = systemState.bodies.filter(b => b.id !== this.state.playerShipId);
+    } else if (mode !== CameraMode.SYSTEM_ORBITAL) {
       // Galaxy camera: build view-projection and extract right/up for billboards
       const proj = mat4.create();
       const aspect = this.textureSize.height > 0 ? (this.textureSize.width / this.textureSize.height) : 16/9;
@@ -612,16 +613,99 @@ export class Renderer {
       camData.set(camRight, 16);
       camData.set(camUp, 20);
       this.device.queue.writeBuffer(this.galaxyCameraUniformBuffer, 0, camData);
+      this.setTheme(this.currentThemeName, this.currentResponseName, deltaTime);
+      this._render();
+      this.input.tick();
+      requestAnimationFrame(() => this._update());
+      return;
     }
+
+    // Shared serialization and camera uniform updates for compute path
+    // First pass to obtain systemScale; for ship mode we'll fix scale to prevent zoom drift
+    let sphereData: Float32Array;
+    let focusBodyRenderedRadius: number;
+    let systemScale: number;
+    {
+      const tmp = this._serializeSystemState(bodiesToRender, this.camera.focusBodyId);
+      sphereData = tmp.sphereData;
+      focusBodyRenderedRadius = tmp.focusBodyRenderedRadius;
+      systemScale = tmp.systemScale;
+    }
+    if (mode === CameraMode.SHIP_RELATIVE) {
+      // Freeze scale to initial value the first time we enter ship mode to avoid zoom-out effect
+      if (!Number.isFinite(this.lastSystemScale) || this.lastSystemScale <= 0) {
+        this.lastSystemScale = systemScale;
+      }
+      const tmp2 = this._serializeSystemState(bodiesToRender, this.camera.focusBodyId, this.lastSystemScale);
+      sphereData = tmp2.sphereData;
+      systemScale = tmp2.systemScale;
+    }
+
+    if (mode === CameraMode.SYSTEM_ORBITAL) {
+      this.camera.update(systemState.bodies, systemScale);
+      this.lastSystemScale = systemScale;
+      if (this.camera.pendingFrame) {
+        this.camera.completePendingFrame(focusBodyRenderedRadius);
+      }
+    } else {
+      this.lastSystemScale = systemScale;
+    }
+    // Upload camera uniforms (eye, target, up, distance_to_target)
+    const cameraData = new Float32Array(16);
+    let eyeForUniform: Vec3 = this.camera.eye;
+    let lookAtForUniform: Vec3 = this.camera.look_at;
+    if (mode === CameraMode.SHIP_RELATIVE) {
+      eyeForUniform = [eyeForUniform[0] * systemScale, eyeForUniform[1] * systemScale, eyeForUniform[2] * systemScale];
+      lookAtForUniform = [lookAtForUniform[0] * systemScale, lookAtForUniform[1] * systemScale, lookAtForUniform[2] * systemScale];
+    }
+    const dist = Math.hypot(eyeForUniform[0] - lookAtForUniform[0], eyeForUniform[1] - lookAtForUniform[1], eyeForUniform[2] - lookAtForUniform[2]);
+    cameraData.set([0, 0, 0], 0);
+    const relativeLookAt: Vec3 = [
+      lookAtForUniform[0] - eyeForUniform[0],
+      lookAtForUniform[1] - eyeForUniform[1],
+      lookAtForUniform[2] - eyeForUniform[2],
+    ];
+    cameraData.set(relativeLookAt, 4);
+    cameraData.set(this.camera.up, 8);
+    cameraData[12] = dist;
+    this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
+
+    // Pad sphere buffer to full body count to match compute shader expectations
+    const floatsPerSphere = 16;
+    const expectedCount = this.lastKnownBodyCount;
+    const upload = new Float32Array(Math.max(1, expectedCount * floatsPerSphere));
+    upload.set(sphereData, 0);
+    this.device.queue.writeBuffer(this.spheresBuffer, 0, upload.buffer as ArrayBuffer, 0, upload.byteLength);
+    this._lastBodiesForMask = systemState.bodies;
+
+    // Update analytic orbits and uniforms if enabled
+    if (this.state.showOrbits) {
+      this._updateAnalyticOrbits(systemState.bodies, systemScale);
+      const proj = mat4.create();
+      const aspect = this.textureSize.height > 0 ? (this.textureSize.width / this.textureSize.height) : 16/9;
+      mat4.perspective(proj, Math.PI * 25 / 180, aspect, 0.00001, 10000.0);
+      const view = mat4.create();
+      mat4.lookAt(view, this.camera.eye as unknown as number[], this.camera.look_at as unknown as number[], this.camera.up as unknown as number[]);
+      const viewProj = mat4.multiply(mat4.create(), proj, view);
+      const theme = themes[this.currentThemeName as keyof typeof themes];
+      const color = theme.accent;
+      const u = new Float32Array(20);
+      u.set(viewProj, 0);
+      u.set(color, 16);
+      this.device.queue.writeBuffer(this.orbitsUniformBuffer, 0, u);
+    }
+
     this.setTheme(this.currentThemeName, this.currentResponseName, deltaTime);
     this._render();
+    this.input.tick();
     requestAnimationFrame(() => this._update());
   }
 
   private _render() {
     const commandEncoder = this.device.createCommandEncoder();
+    const themeBg = themes[this.currentThemeName as keyof typeof themes]?.bg ?? [0, 0, 0];
 
-    if (this.state.viewMode === ViewMode.System) {
+    if (this.state.cameraMode !== CameraMode.GALACTIC_MAP) {
       const sourceTexture = this.frameCount % 2 === 0 ? this.postFxTextureB : this.postFxTextureA;
       const destinationTexture = this.frameCount % 2 === 0 ? this.postFxTextureA : this.postFxTextureB;
 
@@ -701,7 +785,7 @@ export class Renderer {
           view: destinationTexture.createView(),
           loadOp: "clear",
           storeOp: "store",
-          clearValue: { r: 0, g: 0, b: 0, a: 1 }
+          clearValue: { r: themeBg[0], g: themeBg[1], b: themeBg[2], a: 1 }
         }]
       });
       postPass.setPipeline(this.renderPipeline);
@@ -737,7 +821,7 @@ export class Renderer {
           view: currentTexture.createView(),
           loadOp: "clear",
           storeOp: "store",
-          clearValue: { r: 0, g: 0, b: 0, a: 1 }
+          clearValue: { r: themeBg[0], g: themeBg[1], b: themeBg[2], a: 1 }
         }]
       });
       // Build a bind group that feeds the destination texture into the present shader at binding 1

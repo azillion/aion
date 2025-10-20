@@ -137,7 +137,7 @@ fn hit_sphere(sphere: Sphere, r: Ray, ray_t: Interval) -> HitRecord {
         }
     }
 
-    rec.t = root;
+	rec.t = root;
     rec.p = rayAt(r, rec.t);
     let outward_normal = (rec.p - sphere.center) / sphere.radius;
     rec.front_face = dot(r.direction, outward_normal) < 0.0;

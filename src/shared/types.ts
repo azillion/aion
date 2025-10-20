@@ -11,6 +11,11 @@ export interface Body {
 	emissive?: Vec3;
 }
 
+export interface Ship extends Body {
+	orientation: [number, number, number, number];
+	thrust: Vec3;
+}
+
 export interface SystemState {
 	timestamp: number;
 	bodies: Body[];

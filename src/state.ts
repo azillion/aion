@@ -1,11 +1,13 @@
-export enum ViewMode {
-  System,
-  Galaxy,
+export enum CameraMode {
+  SHIP_RELATIVE,
+  SYSTEM_ORBITAL,
+  GALACTIC_MAP,
 }
 
 export class AppState {
-  public viewMode: ViewMode = ViewMode.System;
+  public cameraMode: CameraMode = CameraMode.SHIP_RELATIVE;
   public showOrbits: boolean = false;
+  public playerShipId: string | null = null;
 }
 
 
