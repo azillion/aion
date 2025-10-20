@@ -4,10 +4,10 @@ import galaxyShaderWGSL from './shaders/galaxy.wgsl?raw';
 import { AppState, ViewMode } from './state';
 import orbitsShaderWGSL from './shaders/orbits.wgsl?raw';
 import { themes } from './theme';
+import { G } from './shared/constants';
 import { spectralResponses } from './spectral';
 import type { Authority } from './authority/authority';
 import type { Body } from './shared/types';
-import { G } from './shared/constants';
 import { Camera } from './camera';
 import { Galaxy } from './galaxy';
 import type { Star } from './galaxy';
@@ -41,6 +41,14 @@ function buildSystemHierarchy(bodies: Body[]): Map<string, string | null> {
   return parentMap;
 }
 
+const VISUAL_SETTINGS = {
+  systemViewSize: 20.0,
+  parentOrbitFillFactor: 0.1,
+  moonToParentSizeRatio: 0.25,
+  minExaggeration: 10.0,
+  maxExaggeration: 500.0,
+} as const;
+
 export class Renderer {
 
   private canvas: HTMLCanvasElement;
@@ -70,14 +78,20 @@ export class Renderer {
   private galaxy!: Galaxy;
   private galaxyBindGroup!: GPUBindGroup;
   private galaxyDepthTexture!: GPUTexture;
+  private orbitsTexture!: GPUTexture;
   // Orbits overlay
   private orbitsPipeline!: GPURenderPipeline;
   private orbitsUniformBuffer!: GPUBuffer;
   private orbitsBindGroup!: GPUBindGroup;
+  private orbitMaskUniform!: GPUBuffer;
   private orbitBuffers: GPUBuffer[] = [];
   private orbitCPUData: Float32Array[] = [];
   private orbitCounts: number[] = [];
   private readonly ORBIT_MAX_POINTS = 2048;
+  private readonly ORBIT_TAIL_HIDE = 0;
+  private _lastBodiesForMask: Body[] = [];
+  private readonly ORBIT_SAMPLES = 256;
+  private lastSystemScale: number = 1.0;
 
   constructor(canvas: HTMLCanvasElement, authority: Authority, state: AppState) {
     this.canvas = canvas;
@@ -285,6 +299,11 @@ export class Renderer {
       size: 80,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    // Orbit mask uniform: struct size is 272 bytes (matches WGSL OrbitMask)
+    this.orbitMaskUniform = this.device.createBuffer({
+      size: 272,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     this.orbitsBindGroup = this.device.createBindGroup({
       layout: this.orbitsPipeline.getBindGroupLayout(0),
       entries: [
@@ -298,6 +317,14 @@ export class Renderer {
     }));
     this.orbitCPUData = systemState.bodies.map(() => new Float32Array(this.ORBIT_MAX_POINTS * 3));
     this.orbitCounts = systemState.bodies.map(() => 0);
+    this._lastBodiesForMask = systemState.bodies;
+
+    // Orbits render target
+    this.orbitsTexture = this.device.createTexture({
+      size: this.textureSize,
+      format: this.presentationFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
 
     // Galaxy pipeline and bind group
     this._createGalaxyPipeline();
@@ -376,6 +403,12 @@ export class Renderer {
           format: 'depth24plus',
           usage: GPUTextureUsage.RENDER_ATTACHMENT,
         });
+        // Recreate orbits render target on resize
+        this.orbitsTexture = this.device.createTexture({
+          size: this.textureSize,
+          format: this.presentationFormat,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        });
         this._render();
         console.log("Rerender time:", performance.now() - renderTime);
       }
@@ -385,62 +418,88 @@ export class Renderer {
     this._update();
   }
 
-  private _serializeSystemState(bodies: Body[], focusBodyId: string | null): { sphereData: Float32Array, focusBodyRenderedRadius: number } {
+  private _serializeSystemState(bodies: Body[], focusBodyId: string | null): { sphereData: Float32Array, focusBodyRenderedRadius: number, systemScale: number } {
     const floatsPerSphere = 16; // 64 bytes per sphere to match WGSL layout
     const sphereData = new Float32Array(bodies.length * floatsPerSphere);
     const sphereDataU32 = new Uint32Array(sphereData.buffer);
-    const scale = 1 / 1.5e8; // Scales 1 AU to 1 unit
     const eye: Vec3 = this.camera.eye;
 
-    const SYSTEM_EXAGGERATION = 100.0;
     let focusBodyRenderedRadius = 0;
 
-    const focusBody = bodies.find(b => b.id === focusBodyId) || null;
-    const centralBody = bodies.reduce((a, b) => a.mass > b.mass ? a : b);
-    const contextParent = focusBody && focusBody.id !== centralBody.id ? focusBody : centralBody;
+    // Determine hierarchy and primary center
+    const hierarchy = buildSystemHierarchy(bodies);
+    const systemCenters = bodies.filter(b => hierarchy.get(b.id) === null);
+    const primaryCenter = systemCenters.length > 0
+      ? systemCenters.reduce((a, b) => a.mass > b.mass ? a : b)
+      : bodies.reduce((a, b) => a.mass > b.mass ? a : b);
 
-    // Determine the exaggeration factor for the current context
-    let contextExaggeration = SYSTEM_EXAGGERATION;
-    if (contextParent !== centralBody) {
-      // Consider bodies less massive than the context parent and not the central body as potential moons
-      const moons = bodies.filter(b => b.mass < contextParent.mass && b.id !== centralBody.id);
-      if (moons.length > 0) {
-        const closestMoonDist = Math.min(...moons.map(moon => {
-          const dx = moon.position[0] - contextParent.position[0];
-          const dy = moon.position[1] - contextParent.position[1];
-          const dz = moon.position[2] - contextParent.position[2];
-          return Math.sqrt(dx*dx + dy*dy + dz*dz);
-        }));
-        const safetyMargin = 0.8;
-        const maxSafeRadius = (closestMoonDist * scale) * safetyMargin;
-        const baseRadius = contextParent.radius * scale;
-        contextExaggeration = maxSafeRadius / baseRadius;
-      }
-    }
+    // Compute system scale normalization
+    const systemRadius = bodies.reduce((maxDist, b) => {
+      if (b.id === primaryCenter.id) return maxDist;
+      const dx = b.position[0] - primaryCenter.position[0];
+      const dy = b.position[1] - primaryCenter.position[1];
+      const dz = b.position[2] - primaryCenter.position[2];
+      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      return Math.max(maxDist, dist);
+    }, 0);
+    const systemScale = systemRadius > 0 ? VISUAL_SETTINGS.systemViewSize / systemRadius : 1.0;
+
+    // Determine current viewing context
+    const focusBody = focusBodyId ? (bodies.find(b => b.id === focusBodyId) || null) : null;
+    const isLocalContext = !!(focusBody && hierarchy.get(focusBody.id) !== null);
+    const contextParent = isLocalContext ? focusBody : null;
+
+    
 
     bodies.forEach((body, i) => {
       const f_base = i * floatsPerSphere; // float index base
       const u_base = f_base;              // u32 index base
 
-      // Exaggeration factor per-body based on context
-      let exaggerationFactor = SYSTEM_EXAGGERATION;
-      if (contextParent !== centralBody) {
-        const isContext = body.id === contextParent.id;
-        const isPotentialMoon = body.mass < contextParent.mass && body.id !== centralBody.id;
-        if (isContext || isPotentialMoon) {
-          exaggerationFactor = contextExaggeration;
+      // Compute desired render radius based on context
+      let desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.maxExaggeration;
+      if (isLocalContext && contextParent) {
+        if (body.id === contextParent.id) {
+          // Size context parent as a fraction of closest child's orbit
+          const children = bodies.filter(b => hierarchy.get(b.id) === contextParent.id);
+          if (children.length > 0) {
+            const closestDist = children.reduce((minD, c) => {
+              const dx = c.position[0] - contextParent.position[0];
+              const dy = c.position[1] - contextParent.position[1];
+              const dz = c.position[2] - contextParent.position[2];
+              const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
+              return Math.min(minD, d);
+            }, Number.POSITIVE_INFINITY);
+            const orbitRadiusWorld = isFinite(closestDist) ? closestDist : 0;
+            desiredRenderRadius = orbitRadiusWorld * systemScale * VISUAL_SETTINGS.parentOrbitFillFactor;
+          } else {
+            // No children; fall back to minimum exaggeration
+            desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.minExaggeration;
+          }
+        } else if (hierarchy.get(body.id) === contextParent.id) {
+          // Child of context parent: make large
+          desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.maxExaggeration;
+        } else {
+          // Other bodies: make small
+          desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.minExaggeration;
         }
+      } else {
+        // System view: large exaggeration globally
+        desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.maxExaggeration;
       }
 
-      const renderedRadius = body.radius * scale * exaggerationFactor;
+      // Derive final exaggeration factor and clamp
+      const denom = Math.max(1e-12, body.radius * systemScale);
+      const unclampedFactor = desiredRenderRadius / denom;
+      const finalExaggeration = Math.min(VISUAL_SETTINGS.maxExaggeration, Math.max(VISUAL_SETTINGS.minExaggeration, unclampedFactor));
+      const renderedRadius = body.radius * systemScale * finalExaggeration;
       if (body.id === focusBodyId) {
         focusBodyRenderedRadius = renderedRadius;
       }
 
       // Sphere.center (vec3f) in camera-relative coordinates -> slots 0, 1, 2
-      sphereData[f_base + 0] = (body.position[0] * scale) - eye[0];
-      sphereData[f_base + 1] = (body.position[1] * scale) - eye[1];
-      sphereData[f_base + 2] = (body.position[2] * scale) - eye[2];
+      sphereData[f_base + 0] = (body.position[0] * systemScale) - eye[0];
+      sphereData[f_base + 1] = (body.position[1] * systemScale) - eye[1];
+      sphereData[f_base + 2] = (body.position[2] * systemScale) - eye[2];
 
       // Sphere.radius (f32) -> slot 3
       sphereData[f_base + 3] = renderedRadius;
@@ -470,7 +529,7 @@ export class Renderer {
 
       // slots 14, 15 are padding to reach 64 bytes
     });
-    return { sphereData, focusBodyRenderedRadius };
+    return { sphereData, focusBodyRenderedRadius, systemScale };
   }
 
   private async _update() {
@@ -479,8 +538,9 @@ export class Renderer {
     const systemState = await this.authority.query();
     if (this.state.viewMode === ViewMode.System) {
       // Update camera target based on focused body (scale matches serialize)
-      this.camera.update(systemState.bodies, 1 / 1.5e8);
-      const { sphereData, focusBodyRenderedRadius } = this._serializeSystemState(systemState.bodies, this.camera.focusBodyId);
+      const { sphereData, focusBodyRenderedRadius, systemScale } = this._serializeSystemState(systemState.bodies, this.camera.focusBodyId);
+      this.camera.update(systemState.bodies, systemScale);
+      this.lastSystemScale = systemScale;
       if (this.camera.pendingFrame) {
         this.camera.completePendingFrame(focusBodyRenderedRadius);
       }
@@ -501,38 +561,11 @@ export class Renderer {
       cameraData[12] = dist; // distance_to_target
       this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
       this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
+      this._lastBodiesForMask = systemState.bodies;
 
-      // Update orbit trails and uniforms if enabled
+      // Update analytic orbits and uniforms if enabled
       if (this.state.showOrbits) {
-        const scale = 1 / 1.5e8;
-        // Append current positions (scaled) to trails
-        for (let i = 0; i < systemState.bodies.length; i++) {
-          const b = systemState.bodies[i];
-          const arr = this.orbitCPUData[i];
-          let n = this.orbitCounts[i];
-          const px = b.position[0] * scale;
-          const py = b.position[1] * scale;
-          const pz = b.position[2] * scale;
-          if (n < this.ORBIT_MAX_POINTS) {
-            const base = n * 3;
-            arr[base + 0] = px;
-            arr[base + 1] = py;
-            arr[base + 2] = pz;
-            n++;
-          } else {
-            // shift left by one vec3
-            arr.copyWithin(0, 3);
-            const base = (this.ORBIT_MAX_POINTS - 1) * 3;
-            arr[base + 0] = px;
-            arr[base + 1] = py;
-            arr[base + 2] = pz;
-            n = this.ORBIT_MAX_POINTS;
-          }
-          this.orbitCounts[i] = n;
-          // upload current trail
-          const bytes = n * 3 * 4;
-          this.device.queue.writeBuffer(this.orbitBuffers[i], 0, arr.buffer as ArrayBuffer, 0, bytes);
-        }
+        this._updateAnalyticOrbits(systemState.bodies, systemScale);
 
         // Update orbits uniforms (viewProjection + color)
         const proj = mat4.create();
@@ -546,7 +579,7 @@ export class Renderer {
         const color = theme.accent;
         const u = new Float32Array(20);
         u.set(viewProj, 0);
-        u.set(color, 16); // write into vec4 slot starting at 16 (only first 3 used)
+        u.set(color, 16);
         this.device.queue.writeBuffer(this.orbitsUniformBuffer, 0, u);
       }
     } else {
@@ -582,6 +615,57 @@ export class Renderer {
       const destinationTexture = this.frameCount % 2 === 0 ? this.postFxTextureA : this.postFxTextureB;
 
       // Create per-frame bind group to include prev frame texture at binding 3
+      // Build orbit mask uniforms (pack up to 16 bodies for simplicity)
+      if (this.state.showOrbits) {
+        const maxCenters = 16;
+        const u32Count = Math.min(this._lastBodiesForMask.length, maxCenters);
+        const buf = new ArrayBuffer(272);
+        const u32 = new Uint32Array(buf);
+        const f32 = new Float32Array(buf);
+        u32[0] = u32Count; // count as u32
+        const radiusPx = 6.0;
+        f32[1] = radiusPx;
+        f32[2] = this.textureSize.width;
+        f32[3] = this.textureSize.height;
+        // Project positions to screen space with current system scale
+        const scale = this.lastSystemScale;
+        for (let i = 0; i < u32Count; i++) {
+          const b = this._lastBodiesForMask[i];
+          const x = (b.position[0] * scale) - this.camera.eye[0];
+          const y = (b.position[1] * scale) - this.camera.eye[1];
+          const z = (b.position[2] * scale) - this.camera.eye[2];
+          // Naive pinhole projection in view space using compute camera params
+          const look = [this.camera.look_at[0] - this.camera.eye[0], this.camera.look_at[1] - this.camera.eye[1], this.camera.look_at[2] - this.camera.eye[2]] as unknown as number[];
+          const forwardLen = Math.hypot(look[0], look[1], look[2]) || 1;
+          const fx = look[0] / forwardLen, fy = look[1] / forwardLen, fz = look[2] / forwardLen;
+          // build right and up
+          const up = this.camera.up as unknown as number[];
+          const rx = up[1]*fz - up[2]*fy;
+          const ry = up[2]*fx - up[0]*fz;
+          const rz = up[0]*fy - up[1]*fx;
+          const rLen = Math.hypot(rx, ry, rz) || 1;
+          const rnx = rx/rLen, rny = ry/rLen, rnz = rz/rLen;
+          const ux = fy*rnz - fz*rny;
+          const uy = fz*rnx - fx*rnz;
+          const uz = fx*rny - fy*rnx;
+          const vx = x*rnx + y*rny + z*rnz;
+          const vy = x*ux + y*uy + z*uz;
+          const vz = x*fx + y*fy + z*fz;
+          const fov = 25 * Math.PI / 180;
+          const projScale = 1 / Math.tan(fov/2);
+          const ndcX = (vx / Math.max(1e-4, vz)) * projScale;
+          const ndcY = (vy / Math.max(1e-4, vz)) * projScale;
+          const px = (ndcX * 0.5 + 0.5) * this.textureSize.width;
+          const py = (1.0 - (ndcY * 0.5 + 0.5)) * this.textureSize.height;
+          const base = 4 + i*4;
+          f32[base+0] = px;
+          f32[base+1] = py;
+          f32[base+2] = 0.0;
+          f32[base+3] = 0.0;
+        }
+        this.device.queue.writeBuffer(this.orbitMaskUniform, 0, buf);
+      }
+
       const postFxBindGroup = this.device.createBindGroup({
         layout: this.renderPipeline.getBindGroupLayout(0),
         entries: [
@@ -589,6 +673,8 @@ export class Renderer {
           { binding: 1, resource: this.computeShader.texture.createView() },
           { binding: 2, resource: { buffer: this.themeUniformBuffer } },
           { binding: 3, resource: sourceTexture.createView() },
+          { binding: 4, resource: this.orbitsTexture.createView() },
+          { binding: 5, resource: { buffer: this.orbitMaskUniform } },
         ]
       });
 
@@ -612,19 +698,20 @@ export class Renderer {
       postPass.draw(6);
       postPass.end();
 
-      // Optional Pass 1.5: Draw orbits into the destination texture
+      // Optional Pass 1.5: Draw orbits into the orbits texture, then composite in PostFX
       if (this.state.showOrbits) {
         const orbitsPass = commandEncoder.beginRenderPass({
           colorAttachments: [{
-            view: destinationTexture.createView(),
-            loadOp: 'load',
+            view: this.orbitsTexture.createView(),
+            loadOp: 'clear',
             storeOp: 'store',
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
           }]
         });
         orbitsPass.setPipeline(this.orbitsPipeline);
         orbitsPass.setBindGroup(0, this.orbitsBindGroup);
         for (let i = 0; i < this.orbitBuffers.length; i++) {
-          const count = this.orbitCounts[i];
+          const count = Math.max(0, this.orbitCounts[i] - this.ORBIT_TAIL_HIDE);
           if (count < 2) continue;
           orbitsPass.setVertexBuffer(0, this.orbitBuffers[i]);
           orbitsPass.draw(count);
@@ -728,6 +815,104 @@ export class Renderer {
       },
       primitive: { topology: 'line-strip' },
     });
+  }
+
+  // Compute analytic Keplerian ellipse (osculating) for each body around its strongest parent
+  private _updateAnalyticOrbits(bodies: Body[], systemScale: number) {
+    const hierarchy = buildSystemHierarchy(bodies);
+    for (let i = 0; i < bodies.length; i++) {
+      const body = bodies[i];
+      const parentId = hierarchy.get(body.id);
+      if (!parentId) {
+        this.orbitCounts[i] = 0;
+        continue;
+      }
+      const parent = bodies.find(b => b.id === parentId);
+      if (!parent) {
+        this.orbitCounts[i] = 0;
+        continue;
+      }
+
+      // Relative state in world km
+      const rx = body.position[0] - parent.position[0];
+      const ry = body.position[1] - parent.position[1];
+      const rz = body.position[2] - parent.position[2];
+      const vx = body.velocity[0] - parent.velocity[0];
+      const vy = body.velocity[1] - parent.velocity[1];
+      const vz = body.velocity[2] - parent.velocity[2];
+
+      const r = Math.hypot(rx, ry, rz);
+      const v = Math.hypot(vx, vy, vz);
+      const mu = G * (parent.mass + body.mass);
+
+      // Specific angular momentum h = r x v
+      const hx = ry * vz - rz * vy;
+      const hy = rz * vx - rx * vz;
+      const hz = rx * vy - ry * vx;
+      const h = Math.hypot(hx, hy, hz) || 1e-9;
+
+      // Eccentricity vector e = (v x h)/mu - r/|r|
+      const cx = vy * hz - vz * hy;
+      const cy = vz * hx - vx * hz;
+      const cz = vx * hy - vy * hx;
+      const ex = cx / mu - rx / r;
+      const ey = cy / mu - ry / r;
+      const ez = cz / mu - rz / r;
+      const e = Math.hypot(ex, ey, ez);
+
+      // Semi-major axis a from vis-viva: v^2 = mu*(2/r - 1/a)
+      const invA = 2 / r - (v * v) / mu;
+      if (!isFinite(invA) || invA <= 0) {
+        this.orbitCounts[i] = 0; // Parabolic/hyperbolic: skip
+        continue;
+      }
+      const a = 1 / invA;
+      const bSemi = a * Math.sqrt(Math.max(0, 1 - e * e));
+
+      // Perifocal basis (P, Q, W)
+      const hnx = hx / h, hny = hy / h, hnz = hz / h; // W = h-hat
+      // P along eccentricity (periapsis direction). If nearly circular, use radial direction.
+      let Px: number, Py: number, Pz: number;
+      if (e > 1e-6) {
+        const invEL = 1.0 / e;
+        Px = ex * invEL; Py = ey * invEL; Pz = ez * invEL;
+      } else {
+        const invR = 1.0 / Math.max(1e-9, r);
+        Px = rx * invR; Py = ry * invR; Pz = rz * invR;
+      }
+      // Ensure P is orthogonalized within the plane (remove any tiny component along W)
+      const dotPW = Px * hnx + Py * hny + Pz * hnz;
+      Px -= dotPW * hnx; Py -= dotPW * hny; Pz -= dotPW * hnz;
+      const pLen = Math.hypot(Px, Py, Pz) || 1;
+      Px /= pLen; Py /= pLen; Pz /= pLen;
+      // Q = W x P
+      let Qx = hny * Pz - hnz * Py;
+      let Qy = hnz * Px - hnx * Pz;
+      let Qz = hnx * Py - hny * Px;
+      const qLen = Math.hypot(Qx, Qy, Qz) || 1;
+      Qx /= qLen; Qy /= qLen; Qz /= qLen;
+
+      // Center at parent position; generate ellipse points in world km, then scale to render units
+      const arr = this.orbitCPUData[i];
+      const N = Math.min(this.ORBIT_SAMPLES + 1, this.ORBIT_MAX_POINTS); // close the ring by repeating first point
+      for (let k = 0; k < N; k++) {
+        const theta = (k / (N - 1)) * Math.PI * 2;
+        const cosT = Math.cos(theta);
+        const sinT = Math.sin(theta);
+        const xPeri = a * (cosT - e);
+        const yPeri = bSemi * sinT;
+        const wx = Px * xPeri + Qx * yPeri;
+        const wy = Py * xPeri + Qy * yPeri;
+        const wz = Pz * xPeri + Qz * yPeri;
+        const base = k * 3;
+        arr[base + 0] = (parent.position[0] + wx) * systemScale;
+        arr[base + 1] = (parent.position[1] + wy) * systemScale;
+        arr[base + 2] = (parent.position[2] + wz) * systemScale;
+      }
+      this.orbitCounts[i] = N;
+      const bytes = N * 3 * 4;
+      this.device.queue.writeBuffer(this.orbitBuffers[i], 0, arr.buffer as ArrayBuffer, 0, bytes);
+    }
   }
 
   public clearOrbitHistory(): void {

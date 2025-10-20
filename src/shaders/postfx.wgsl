@@ -10,6 +10,15 @@ struct Theme {
 @group(0) @binding(1) var sceneTexture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> theme: Theme;
 @group(0) @binding(3) var prevFrameTexture: texture_2d<f32>;
+@group(0) @binding(4) var orbitsTexture: texture_2d<f32>;
+
+struct OrbitMask {
+    count: u32,
+    radiusPx: f32,
+    screenSize: vec2<f32>,
+    centersPx: array<vec4<f32>, 16>,
+};
+@group(0) @binding(5) var<uniform> orbitMask: OrbitMask;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -62,6 +71,24 @@ fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f
     let distFromCenter = length(uv - vec2<f32>(0.5, 0.5));
     let vignette = 1.0 - smoothstep(vignetteFalloff, 1.0, distFromCenter) * vignetteStrength;
     var finalColorWithVignette = finalColor * vignette;
+
+    // Sample orbits overlay with the same warp.
+    var orbitsColor = textureSample(orbitsTexture, sceneSampler, warpedUV).rgb;
+
+    // Build a soft circular mask around bodies to make them readable over orbits
+    var mask: f32 = 1.0;
+    let fragPx = fragCoord.xy;
+    let rPx = orbitMask.radiusPx;
+    // Smooth edge for better look
+    let inner = rPx * 0.6;
+    for (var i: u32 = 0u; i < orbitMask.count; i = i + 1u) {
+        let c = orbitMask.centersPx[i].xy;
+        let d = distance(fragPx, c);
+        let m = smoothstep(inner, rPx, d);
+        mask = min(mask, m);
+    }
+    orbitsColor *= mask;
+    finalColorWithVignette += orbitsColor;
 
     // Scanlines: dim every other row using integer row index
     let y = i32(floor(fragCoord.y));
