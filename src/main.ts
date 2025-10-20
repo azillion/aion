@@ -3,8 +3,7 @@ import { Renderer } from "./renderer";
 import { LocalAuthority } from "./authority/local";
 import { UI } from "./ui";
 import { AppState } from "./state";
-
-// initWebGPU moved into Renderer
+let renderTime = performance.now();
 
 async function main() {
     const canvas = document.getElementById("canvas") as HTMLCanvasElement;

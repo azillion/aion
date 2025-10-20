@@ -202,10 +202,20 @@ export class Renderer {
 
     // Initialize camera uniforms before any rendering
     {
-      const cameraData = new Float32Array(12);
-      cameraData.set(this.camera.eye, 0);
-      cameraData.set(this.camera.look_at, 4);
+      const cameraData = new Float32Array(16);
+      const eye = this.camera.eye;
+      const lookAt = this.camera.look_at;
+      const dist = Math.hypot(eye[0] - lookAt[0], eye[1] - lookAt[1], eye[2] - lookAt[2]);
+      // Camera-relative uniforms: eye at origin, look_at relative to eye
+      cameraData.set([0, 0, 0], 0);
+      const relativeLookAt: Vec3 = [
+        lookAt[0] - eye[0],
+        lookAt[1] - eye[1],
+        lookAt[2] - eye[2],
+      ];
+      cameraData.set(relativeLookAt, 4);
       cameraData.set(this.camera.up, 8);
+      cameraData[12] = dist; // distance_to_target
       this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
     }
 
@@ -217,7 +227,8 @@ export class Renderer {
     this.textureSize = { width: this.canvas.width, height: this.canvas.height };
 
     const systemState = await this.authority.query();
-    const sphereData = this._serializeSystemState(systemState.bodies);
+    const initSerialized = this._serializeSystemState(systemState.bodies, this.camera.focusBodyId);
+    const sphereData = initSerialized.sphereData;
     const numBodies = systemState.bodies.length;
 
     this.spheresBuffer = this.device.createBuffer({
@@ -273,7 +284,7 @@ export class Renderer {
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
 
-    const observer = new ResizeObserver(entries => {
+    const observer = new ResizeObserver(async entries => {
       for (const entry of entries) {
         const renderTime = performance.now();
         const canvas = entry.target as HTMLCanvasElement;
@@ -286,7 +297,10 @@ export class Renderer {
         });
 
         this.textureSize = { width: canvas.width, height: canvas.height };
-        this.computeShader = this.createComputeShader(this.textureSize, numBodies, this.spheresBuffer);
+        // Recreate compute pipeline with up-to-date body count
+        const currentState = await this.authority.query();
+        const correctNumBodies = currentState.bodies.length;
+        this.computeShader = this.createComputeShader(this.textureSize, correctNumBodies, this.spheresBuffer);
         // Recreate ping-pong textures on resize
         this.postFxTextureA = this.device.createTexture({
           size: this.textureSize,
@@ -313,23 +327,65 @@ export class Renderer {
     this._update();
   }
 
-  private _serializeSystemState(bodies: Body[]): Float32Array {
+  private _serializeSystemState(bodies: Body[], focusBodyId: string | null): { sphereData: Float32Array, focusBodyRenderedRadius: number } {
     const floatsPerSphere = 16; // 64 bytes per sphere to match WGSL layout
     const sphereData = new Float32Array(bodies.length * floatsPerSphere);
     const sphereDataU32 = new Uint32Array(sphereData.buffer);
+    const scale = 1 / 1.5e8; // Scales 1 AU to 1 unit
+    const eye: Vec3 = this.camera.eye;
+
+    const SYSTEM_EXAGGERATION = 100.0;
+    let focusBodyRenderedRadius = 0;
+
+    const focusBody = bodies.find(b => b.id === focusBodyId) || null;
+    const centralBody = bodies.reduce((a, b) => a.mass > b.mass ? a : b);
+    const contextParent = focusBody && focusBody.id !== centralBody.id ? focusBody : centralBody;
+
+    // Determine the exaggeration factor for the current context
+    let contextExaggeration = SYSTEM_EXAGGERATION;
+    if (contextParent !== centralBody) {
+      // Consider bodies less massive than the context parent and not the central body as potential moons
+      const moons = bodies.filter(b => b.mass < contextParent.mass && b.id !== centralBody.id);
+      if (moons.length > 0) {
+        const closestMoonDist = Math.min(...moons.map(moon => {
+          const dx = moon.position[0] - contextParent.position[0];
+          const dy = moon.position[1] - contextParent.position[1];
+          const dz = moon.position[2] - contextParent.position[2];
+          return Math.sqrt(dx*dx + dy*dy + dz*dz);
+        }));
+        const safetyMargin = 0.8;
+        const maxSafeRadius = (closestMoonDist * scale) * safetyMargin;
+        const baseRadius = contextParent.radius * scale;
+        contextExaggeration = maxSafeRadius / baseRadius;
+      }
+    }
 
     bodies.forEach((body, i) => {
       const f_base = i * floatsPerSphere; // float index base
       const u_base = f_base;              // u32 index base
-      const scale = 1 / 1.5e8; // Scales 1 AU to 1 unit
 
-      // Sphere.center (vec3f) -> slots 0, 1, 2
-      sphereData[f_base + 0] = body.position[0] * scale;
-      sphereData[f_base + 1] = body.position[1] * scale;
-      sphereData[f_base + 2] = body.position[2] * scale - 2.0;
+      // Exaggeration factor per-body based on context
+      let exaggerationFactor = SYSTEM_EXAGGERATION;
+      if (contextParent !== centralBody) {
+        const isContext = body.id === contextParent.id;
+        const isPotentialMoon = body.mass < contextParent.mass && body.id !== centralBody.id;
+        if (isContext || isPotentialMoon) {
+          exaggerationFactor = contextExaggeration;
+        }
+      }
+
+      const renderedRadius = body.radius * scale * exaggerationFactor;
+      if (body.id === focusBodyId) {
+        focusBodyRenderedRadius = renderedRadius;
+      }
+
+      // Sphere.center (vec3f) in camera-relative coordinates -> slots 0, 1, 2
+      sphereData[f_base + 0] = (body.position[0] * scale) - eye[0];
+      sphereData[f_base + 1] = (body.position[1] * scale) - eye[1];
+      sphereData[f_base + 2] = (body.position[2] * scale) - eye[2];
 
       // Sphere.radius (f32) -> slot 3
-      sphereData[f_base + 3] = body.radius * scale * 100;
+      sphereData[f_base + 3] = renderedRadius;
 
       // Material starts at slot 4 (offset 16 bytes)
       // material.albedo (vec3f) -> slots 4, 5, 6
@@ -356,7 +412,7 @@ export class Renderer {
 
       // slots 14, 15 are padding to reach 64 bytes
     });
-    return sphereData;
+    return { sphereData, focusBodyRenderedRadius };
   }
 
   private async _update() {
@@ -366,12 +422,25 @@ export class Renderer {
     if (this.state.viewMode === ViewMode.System) {
       // Update camera target based on focused body (scale matches serialize)
       this.camera.update(systemState.bodies, 1 / 1.5e8);
-      const sphereData = this._serializeSystemState(systemState.bodies);
-      // Upload camera uniforms (eye, target, up)
-      const cameraData = new Float32Array(12);
-      cameraData.set(this.camera.eye, 0);
-      cameraData.set(this.camera.look_at, 4);
+      const { sphereData, focusBodyRenderedRadius } = this._serializeSystemState(systemState.bodies, this.camera.focusBodyId);
+      if (this.camera.pendingFrame) {
+        this.camera.completePendingFrame(focusBodyRenderedRadius);
+      }
+      // Upload camera uniforms (eye, target, up, distance_to_target)
+      const cameraData = new Float32Array(16);
+      const eye = this.camera.eye;
+      const lookAt = this.camera.look_at;
+      const dist = Math.hypot(eye[0] - lookAt[0], eye[1] - lookAt[1], eye[2] - lookAt[2]);
+      // Camera-relative uniforms: eye at origin, look_at relative to eye
+      cameraData.set([0, 0, 0], 0);
+      const relativeLookAt: Vec3 = [
+        lookAt[0] - eye[0],
+        lookAt[1] - eye[1],
+        lookAt[2] - eye[2],
+      ];
+      cameraData.set(relativeLookAt, 4);
       cameraData.set(this.camera.up, 8);
+      cameraData[12] = dist; // distance_to_target
       this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
       this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
     } else {
@@ -394,7 +463,7 @@ export class Renderer {
       camData.set(camUp, 20);
       this.device.queue.writeBuffer(this.galaxyCameraUniformBuffer, 0, camData);
     }
-    this.setTheme('amber', 'Visible (Y)', deltaTime);
+    this.setTheme(this.currentThemeName, this.currentResponseName, deltaTime);
     this._render();
     requestAnimationFrame(() => this._update());
   }

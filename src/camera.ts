@@ -1,12 +1,12 @@
 import type { Vec3, Body } from './shared/types';
 
 export class Camera {
-	public eye: Vec3 = [0, 0.3, 1.0];
-	public look_at: Vec3 = [0, 0, -2.0];
+	public eye: Vec3 = [0, 0.5, 5.0];
+	public look_at: Vec3 = [0, 0, 0];
 	public up: Vec3 = [0, 1, 0];
 
 	public focusBodyId: string | null = null;
-	private pendingFrame = false;
+	public pendingFrame = false;
 
 	private canvas: HTMLCanvasElement;
 	private isDragging = false;
@@ -32,58 +32,53 @@ export class Camera {
 
 		const focusBody = bodies.find(b => b.id === this.focusBodyId);
 		if (focusBody) {
-			const prevTargetX = this.look_at[0];
-			const prevTargetY = this.look_at[1];
-			const prevTargetZ = this.look_at[2];
+			const prevTarget = this.look_at;
 
 			const nextTargetX = focusBody.position[0] * scale;
 			const nextTargetY = focusBody.position[1] * scale;
-			const nextTargetZ = focusBody.position[2] * scale - 2.0;
+			const nextTargetZ = focusBody.position[2] * scale;
 
-			const dx = nextTargetX - prevTargetX;
-			const dy = nextTargetY - prevTargetY;
-			const dz = nextTargetZ - prevTargetZ;
+			// Calculate how much the target has moved
+			const dx = nextTargetX - prevTarget[0];
+			const dy = nextTargetY - prevTarget[1];
+			const dz = nextTargetZ - prevTarget[2];
 
-			// Translate camera to preserve relative offset while tracking the moving target
+			// Update the look_at point to the new position
 			this.look_at[0] = nextTargetX;
 			this.look_at[1] = nextTargetY;
 			this.look_at[2] = nextTargetZ;
+
+			// Simply translate the camera's eye by the same amount
 			this.eye[0] += dx;
 			this.eye[1] += dy;
 			this.eye[2] += dz;
 
-			// If focus just changed, adjust zoom to fit the focused body on screen
-			if (this.pendingFrame) {
-				// Match shader's camera vertical FOV (degrees)
-				const vfovDeg = 25.0;
-				const vfovRad = (vfovDeg * Math.PI) / 180.0;
-				const tanHalfV = Math.tan(vfovRad / 2.0) || 1e-6;
-				const aspect = this.canvas.height > 0 ? (this.canvas.width / this.canvas.height) : 16 / 9;
-				// Match render radius scaling used in _serializeSystemState
-				const radiusWorld = (focusBody.radius * scale * 100);
-				const padding = 1.2; // slightly back off to avoid clipping
-				const distVert = (radiusWorld * padding) / tanHalfV;
-				const distHorz = (radiusWorld * padding) / (Math.max(1e-6, aspect) * tanHalfV);
-				let desiredDist = Math.max(distVert, distHorz);
-				desiredDist = Math.max(this.minDistance, desiredDist);
-
-				const dirX = this.eye[0] - this.look_at[0];
-				const dirY = this.eye[1] - this.look_at[1];
-				const dirZ = this.eye[2] - this.look_at[2];
-				const len = Math.hypot(dirX, dirY, dirZ);
-				const nx = (len > 1e-6) ? (dirX / len) : 0;
-				const ny = (len > 1e-6) ? (dirY / len) : 0;
-				const nz = (len > 1e-6) ? (dirZ / len) : 1; // default to +Z if degenerate
-
-				this.eye = [
-					this.look_at[0] + nx * desiredDist,
-					this.look_at[1] + ny * desiredDist,
-					this.look_at[2] + nz * desiredDist,
-				];
-
-				this.pendingFrame = false;
-			}
+			// Framing now occurs via completePendingFrame(radiusWorld) invoked by renderer
 		}
+	}
+
+	public completePendingFrame(radiusWorld: number): void {
+		if (!this.pendingFrame) return;
+
+		let desiredDist = radiusWorld * 4.0;
+		desiredDist = Math.max(this.minDistance, desiredDist);
+
+		const viewDirX = 0.5;
+		const viewDirY = 0.5;
+		const viewDirZ = 1.0;
+		const len = Math.hypot(viewDirX, viewDirY, viewDirZ) || 1;
+
+		const nx = viewDirX / len;
+		const ny = viewDirY / len;
+		const nz = viewDirZ / len;
+
+		this.eye = [
+			this.look_at[0] + nx * desiredDist,
+			this.look_at[1] + ny * desiredDist,
+			this.look_at[2] + nz * desiredDist,
+		];
+
+		this.pendingFrame = false;
 	}
 
 	private onMouseDown = (event: MouseEvent) => {

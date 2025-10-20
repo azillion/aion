@@ -44,16 +44,14 @@ fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f
     // Sample HDR scene color
     let hdrColor = textureSample(sceneTexture, sceneSampler, warpedUV).rgb;
 
-    // Luminance and posterization using theme response
+    // Luminance using theme response (smooth, no posterization)
     let luminance = dot(hdrColor, theme.response);
-    let toneLevels = 4.0;
-    let posterizedLuminance = floor(luminance * toneLevels) / toneLevels;
 
     // Phosphor persistence: sample previous frame and decay its luminance
     let prevFrameColor = textureSample(prevFrameTexture, sceneSampler, warpedUV).rgb;
     let prevLuminance = dot(prevFrameColor, vec3<f32>(0.2126, 0.7152, 0.0722));
     let persistenceFactor = exp(-theme.deltaTime / 0.25);
-    let persistedLuminance = max(posterizedLuminance, prevLuminance * persistenceFactor);
+    let persistedLuminance = max(luminance, prevLuminance * persistenceFactor);
 
     // Theme application using persisted luminance
     var finalColor = theme.fg * persistedLuminance + theme.bg * (1.0 - persistedLuminance);

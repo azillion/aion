@@ -15,7 +15,7 @@ export class LocalAuthority implements Authority {
 			radius: 696340,
 			mass: 1.989e30,
 			albedo: [1.0, 1.0, 0.9],
-			emissive: [1.0, 1.0, 0.9],
+			emissive: [10.0, 10.0, 9.0],
 		};
 
 		const earth_dist = 149.6e6; // 1 AU in km
@@ -24,8 +24,10 @@ export class LocalAuthority implements Authority {
 		const earth: Body = {
 			id: 'earth',
 			name: 'Earth',
-			position: [earth_dist, 0, 0],
-			velocity: [0, earth_vel, 0], // Correct orbital velocity
+			// Start Earth on the Y axis to give the camera a side-on, lit view
+			position: [0, earth_dist, 0],
+			// Velocity tangential to position for circular orbit
+			velocity: [-earth_vel, 0, 0],
 			radius: 6371,
 			mass: 5.972e24,
 			albedo: [0.2, 0.3, 0.8],
@@ -34,15 +36,15 @@ export class LocalAuthority implements Authority {
 		const moon_dist = 384400; // Lunar distance from Earth
 		const moon_vel = Math.sqrt(G * earth.mass / moon_dist);
 
-		const moon: Body = {
-			id: 'moon',
-			name: 'Moon',
-			position: [earth_dist + moon_dist, 0, 0],
-			velocity: [0, earth_vel + moon_vel, 0], // Earth's velocity + Moon's orbital velocity
-			radius: 1737,
-			mass: 7.347e22,
-			albedo: [0.5, 0.5, 0.5],
-		};
+        const moon: Body = {
+            id: 'moon',
+            name: 'Moon',
+            position: [0, earth_dist - moon_dist, 0],
+            velocity: [-earth_vel + moon_vel, 0, 0],
+            radius: 1737,
+            mass: 7.347e22,
+            albedo: [0.5, 0.5, 0.5],
+          };
 
 		this.state = {
 			timestamp: Date.now(),
@@ -50,7 +52,7 @@ export class LocalAuthority implements Authority {
 		};
 
 		// Default to 30 days of simulated time per real second
-		this.timeScalar = 30 * 24 * 60 * 60;
+		this.timeScalar = 15 * 24 * 60 * 60;
 	}
 
 	async query(): Promise<SystemState> {
