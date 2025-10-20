@@ -287,7 +287,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var s = 0u; s < camera.samples_per_pixel; s++) {
         let seed = vec2<u32>(coords.x + dims.x * coords.y, s);
         let u = (f32(coords.x) + rand(seed)) / f32(dims.x);
-        let v = (f32(coords.y) + rand(seed + vec2<u32>(1u, 1u))) / f32(dims.y);
+        let v = 1.0 - (f32(coords.y) + rand(seed + vec2<u32>(1u, 1u))) / f32(dims.y);
         let ray = getRay(camera, u, v, seed);
         pixel_color += rayColor(ray, spheres, seed);
     }

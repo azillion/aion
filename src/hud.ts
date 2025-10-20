@@ -98,7 +98,7 @@ export class HUDManager {
     const ndcX = clip[0] / w;
     const ndcY = clip[1] / w;
     let px = (ndcX * 0.5 + 0.5) * viewport.width;
-    let py = (ndcY * 0.5 + 0.5) * viewport.height;
+    let py = (-ndcY * 0.5 + 0.5) * viewport.height;
 
     const inView = px >= 0 && px <= viewport.width && py >= 0 && py <= viewport.height;
     if (inView) return { x: px, y: py, inView: true };
