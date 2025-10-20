@@ -92,6 +92,7 @@ export class Renderer {
   private _lastBodiesForMask: Body[] = [];
   private readonly ORBIT_SAMPLES = 256;
   private lastSystemScale: number = 1.0;
+  private lastKnownBodyCount = 0;
 
   constructor(canvas: HTMLCanvasElement, authority: Authority, state: AppState) {
     this.canvas = canvas;
@@ -177,6 +178,19 @@ export class Renderer {
     });
 
     return { pipeline, bindGroup, texture };
+  }
+
+  private _reinitializeComputeResources(numBodies: number) {
+    const floatsPerSphere = 16;
+    if (this.spheresBuffer) {
+      try { this.spheresBuffer.destroy(); } catch {}
+    }
+    this.spheresBuffer = this.device.createBuffer({
+      size: Math.max(1, numBodies * floatsPerSphere * 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.computeShader = this.createComputeShader(this.textureSize, numBodies, this.spheresBuffer);
+    this.lastKnownBodyCount = numBodies;
   }
 
   private createPostFXPipeline(format: GPUTextureFormat) {
@@ -278,17 +292,11 @@ export class Renderer {
     this.textureSize = { width: this.canvas.width, height: this.canvas.height };
 
     const systemState = await this.authority.query();
+    const numBodies = systemState.bodies.length;
+    this._reinitializeComputeResources(numBodies);
     const initSerialized = this._serializeSystemState(systemState.bodies, this.camera.focusBodyId);
     const sphereData = initSerialized.sphereData;
-    const numBodies = systemState.bodies.length;
-
-    this.spheresBuffer = this.device.createBuffer({
-      size: sphereData.byteLength,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
     this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
-
-    this.computeShader = this.createComputeShader(this.textureSize, numBodies, this.spheresBuffer);
     this.renderPipeline = this.createPostFXPipeline(this.presentationFormat);
     this.presentPipeline = this.createPresentPipeline(this.presentationFormat);
 
@@ -536,6 +544,9 @@ export class Renderer {
     const deltaTime = 1 / 60.0;
     await this.authority.tick(deltaTime);
     const systemState = await this.authority.query();
+    if (systemState.bodies.length !== this.lastKnownBodyCount) {
+      this._reinitializeComputeResources(systemState.bodies.length);
+    }
     if (this.state.viewMode === ViewMode.System) {
       // Update camera target based on focused body (scale matches serialize)
       const { sphereData, focusBodyRenderedRadius, systemScale } = this._serializeSystemState(systemState.bodies, this.camera.focusBodyId);

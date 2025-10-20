@@ -114,4 +114,10 @@ export class LocalAuthority implements Authority {
 	public setTimeScale(scale: number): void {
 		this.timeScalar = scale;
 	}
+
+	public addBody(body: Omit<Body, 'id'>): void {
+		const uniqueId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+		const fullBody: Body = { id: uniqueId, ...body };
+		this.state.bodies.push(fullBody);
+	}
 }

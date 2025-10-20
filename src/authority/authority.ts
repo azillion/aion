@@ -1,4 +1,4 @@
-import type { SystemState } from '../shared/types';
+import type { Body, SystemState } from '../shared/types';
 
 export interface Authority {
 	/**
@@ -17,4 +17,9 @@ export interface Authority {
 	 * @param scale A multiplier for the passage of time.
 	 */
 	setTimeScale(scale: number): void;
+
+	/**
+	 * Adds a new body to the simulation.
+	 */
+	addBody(body: Omit<Body, 'id'>): void;
 }
