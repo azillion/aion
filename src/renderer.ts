@@ -2,15 +2,44 @@ import computeShaderWGSL from './shaders/compute.wgsl?raw';
 import postfxShaderWGSL from './shaders/postfx.wgsl?raw';
 import galaxyShaderWGSL from './shaders/galaxy.wgsl?raw';
 import { AppState, ViewMode } from './state';
+import orbitsShaderWGSL from './shaders/orbits.wgsl?raw';
 import { themes } from './theme';
 import { spectralResponses } from './spectral';
 import type { Authority } from './authority/authority';
 import type { Body } from './shared/types';
+import { G } from './shared/constants';
 import { Camera } from './camera';
 import { Galaxy } from './galaxy';
 import type { Star } from './galaxy';
 import type { Vec3 } from './shared/types';
 import { mat4 } from 'gl-matrix';
+
+// Determine parent-child relationships by strongest gravitational influence
+function buildSystemHierarchy(bodies: Body[]): Map<string, string | null> {
+  const parentMap = new Map<string, string | null>();
+  for (let i = 0; i < bodies.length; i++) {
+    const body = bodies[i];
+    let bestParentId: string | null = null;
+    let maxForce = -Infinity;
+    for (let j = 0; j < bodies.length; j++) {
+      if (i === j) continue;
+      const potentialParent = bodies[j];
+      const dx = potentialParent.position[0] - body.position[0];
+      const dy = potentialParent.position[1] - body.position[1];
+      const dz = potentialParent.position[2] - body.position[2];
+      const distSq = dx * dx + dy * dy + dz * dz;
+      if (distSq <= 0) continue;
+      // G is a constant factor and can be omitted for comparison; included for completeness
+      const force = potentialParent.mass / distSq; // (G * m_parent * m_body) / r^2 -> compare by m_parent / r^2
+      if (force > maxForce) {
+        maxForce = force;
+        bestParentId = potentialParent.id;
+      }
+    }
+    parentMap.set(body.id, bestParentId);
+  }
+  return parentMap;
+}
 
 export class Renderer {
 
@@ -41,6 +70,14 @@ export class Renderer {
   private galaxy!: Galaxy;
   private galaxyBindGroup!: GPUBindGroup;
   private galaxyDepthTexture!: GPUTexture;
+  // Orbits overlay
+  private orbitsPipeline!: GPURenderPipeline;
+  private orbitsUniformBuffer!: GPUBuffer;
+  private orbitsBindGroup!: GPUBindGroup;
+  private orbitBuffers: GPUBuffer[] = [];
+  private orbitCPUData: Float32Array[] = [];
+  private orbitCounts: number[] = [];
+  private readonly ORBIT_MAX_POINTS = 2048;
 
   constructor(canvas: HTMLCanvasElement, authority: Authority, state: AppState) {
     this.canvas = canvas;
@@ -240,6 +277,27 @@ export class Renderer {
     this.computeShader = this.createComputeShader(this.textureSize, numBodies, this.spheresBuffer);
     this.renderPipeline = this.createPostFXPipeline(this.presentationFormat);
     this.presentPipeline = this.createPresentPipeline(this.presentationFormat);
+
+    // Orbits pipeline & buffers
+    this._createOrbitsPipeline();
+    // 80 bytes for alignment (64 for viewProjection + 16 padding, store color in first 3 of next vec4)
+    this.orbitsUniformBuffer = this.device.createBuffer({
+      size: 80,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.orbitsBindGroup = this.device.createBindGroup({
+      layout: this.orbitsPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.orbitsUniformBuffer } },
+      ],
+    });
+    // One vertex buffer per body
+    this.orbitBuffers = systemState.bodies.map(() => this.device.createBuffer({
+      size: this.ORBIT_MAX_POINTS * 3 * 4,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    }));
+    this.orbitCPUData = systemState.bodies.map(() => new Float32Array(this.ORBIT_MAX_POINTS * 3));
+    this.orbitCounts = systemState.bodies.map(() => 0);
 
     // Galaxy pipeline and bind group
     this._createGalaxyPipeline();
@@ -443,6 +501,54 @@ export class Renderer {
       cameraData[12] = dist; // distance_to_target
       this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
       this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
+
+      // Update orbit trails and uniforms if enabled
+      if (this.state.showOrbits) {
+        const scale = 1 / 1.5e8;
+        // Append current positions (scaled) to trails
+        for (let i = 0; i < systemState.bodies.length; i++) {
+          const b = systemState.bodies[i];
+          const arr = this.orbitCPUData[i];
+          let n = this.orbitCounts[i];
+          const px = b.position[0] * scale;
+          const py = b.position[1] * scale;
+          const pz = b.position[2] * scale;
+          if (n < this.ORBIT_MAX_POINTS) {
+            const base = n * 3;
+            arr[base + 0] = px;
+            arr[base + 1] = py;
+            arr[base + 2] = pz;
+            n++;
+          } else {
+            // shift left by one vec3
+            arr.copyWithin(0, 3);
+            const base = (this.ORBIT_MAX_POINTS - 1) * 3;
+            arr[base + 0] = px;
+            arr[base + 1] = py;
+            arr[base + 2] = pz;
+            n = this.ORBIT_MAX_POINTS;
+          }
+          this.orbitCounts[i] = n;
+          // upload current trail
+          const bytes = n * 3 * 4;
+          this.device.queue.writeBuffer(this.orbitBuffers[i], 0, arr.buffer as ArrayBuffer, 0, bytes);
+        }
+
+        // Update orbits uniforms (viewProjection + color)
+        const proj = mat4.create();
+        const aspect = this.textureSize.height > 0 ? (this.textureSize.width / this.textureSize.height) : 16/9;
+        mat4.perspective(proj, Math.PI * 25 / 180, aspect, 0.00001, 10000.0);
+        const view = mat4.create();
+        mat4.lookAt(view, this.camera.eye as unknown as number[], this.camera.look_at as unknown as number[], this.camera.up as unknown as number[]);
+        const viewProj = mat4.multiply(mat4.create(), proj, view);
+
+        const theme = themes[this.currentThemeName as keyof typeof themes];
+        const color = theme.accent;
+        const u = new Float32Array(20);
+        u.set(viewProj, 0);
+        u.set(color, 16); // write into vec4 slot starting at 16 (only first 3 used)
+        this.device.queue.writeBuffer(this.orbitsUniformBuffer, 0, u);
+      }
     } else {
       // Galaxy camera: build view-projection and extract right/up for billboards
       const proj = mat4.create();
@@ -506,6 +612,26 @@ export class Renderer {
       postPass.draw(6);
       postPass.end();
 
+      // Optional Pass 1.5: Draw orbits into the destination texture
+      if (this.state.showOrbits) {
+        const orbitsPass = commandEncoder.beginRenderPass({
+          colorAttachments: [{
+            view: destinationTexture.createView(),
+            loadOp: 'load',
+            storeOp: 'store',
+          }]
+        });
+        orbitsPass.setPipeline(this.orbitsPipeline);
+        orbitsPass.setBindGroup(0, this.orbitsBindGroup);
+        for (let i = 0; i < this.orbitBuffers.length; i++) {
+          const count = this.orbitCounts[i];
+          if (count < 2) continue;
+          orbitsPass.setVertexBuffer(0, this.orbitBuffers[i]);
+          orbitsPass.draw(count);
+        }
+        orbitsPass.end();
+      }
+
       // Pass 2: Present the destination texture to the canvas
       const currentTexture = this.context.getCurrentTexture();
       const presentPass = commandEncoder.beginRenderPass({
@@ -568,6 +694,46 @@ export class Renderer {
         depthCompare: 'less',
       },
     });
+  }
+
+  private _createOrbitsPipeline() {
+    const module = this.device.createShaderModule({ code: orbitsShaderWGSL });
+    this.orbitsPipeline = this.device.createRenderPipeline({
+      layout: 'auto',
+      vertex: {
+        module,
+        entryPoint: 'vertexMain',
+        buffers: [
+          {
+            arrayStride: 12,
+            attributes: [
+              { shaderLocation: 0, format: 'float32x3', offset: 0 },
+            ],
+          },
+        ],
+      },
+      fragment: {
+        module,
+        entryPoint: 'fragmentMain',
+        targets: [
+          {
+            format: this.presentationFormat,
+            // Additive blend to overlay lines
+            blend: {
+              color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+              alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+            },
+          },
+        ],
+      },
+      primitive: { topology: 'line-strip' },
+    });
+  }
+
+  public clearOrbitHistory(): void {
+    for (let i = 0; i < this.orbitCounts.length; i++) {
+      this.orbitCounts[i] = 0;
+    }
   }
 
   private _serializeStars(stars: Star[]): Float32Array {

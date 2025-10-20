@@ -13,6 +13,7 @@ export class UI {
         'Focus': 'Sun',
         'Theme': 'amber',
         'Sensor': 'Visible (Y)',
+        'Show Orbits': false,
         'Toggle View': () => {
             if (this.state.viewMode === ViewMode.System) {
                 this.state.viewMode = ViewMode.Galaxy;
@@ -45,6 +46,14 @@ export class UI {
 
         this.gui.add(this.settings, 'Sensor', Object.keys(spectralResponses))
             .onChange(() => this.updateTheme());
+
+        this.gui.add(this.settings, 'Show Orbits')
+            .onChange((value: boolean) => {
+                this.state.showOrbits = value;
+                if (!value) {
+                    this.renderer.clearOrbitHistory();
+                }
+            });
 
         this.gui.add(this.settings, 'Toggle View');
     }

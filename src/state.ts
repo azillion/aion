@@ -5,6 +5,7 @@ export enum ViewMode {
 
 export class AppState {
   public viewMode: ViewMode = ViewMode.System;
+  public showOrbits: boolean = false;
 }
 
 
