@@ -44,10 +44,6 @@ function buildSystemHierarchy(bodies: Body[]): Map<string, string | null> {
 
 const VISUAL_SETTINGS = {
   systemViewSize: 20.0,
-  parentOrbitFillFactor: 0.1,
-  moonToParentSizeRatio: 0.25,
-  minExaggeration: 10.0,
-  maxExaggeration: 500.0,
 } as const;
 
 export class Renderer {
@@ -84,7 +80,7 @@ export class Renderer {
   private orbitsPipeline!: GPURenderPipeline;
   private orbitsUniformBuffer!: GPUBuffer;
   private orbitsBindGroup!: GPUBindGroup;
-  private orbitMaskUniform!: GPUBuffer;
+  private targetInfoUniform!: GPUBuffer;
   private orbitBuffers: GPUBuffer[] = [];
   private orbitCPUData: Float32Array[] = [];
   private orbitCounts: number[] = [];
@@ -325,8 +321,8 @@ export class Renderer {
       size: 80,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    // Orbit mask uniform: struct size is 272 bytes (matches WGSL OrbitMask)
-    this.orbitMaskUniform = this.device.createBuffer({
+    // Target info uniform: struct size is 272 bytes (matches WGSL OrbitMask)
+    this.targetInfoUniform = this.device.createBuffer({
       size: 272,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
@@ -468,7 +464,7 @@ export class Renderer {
       ? systemCenters.reduce((a, b) => a.mass > b.mass ? a : b)
       : bodies.reduce((a, b) => a.mass > b.mass ? a : b);
 
-    // Compute system scale normalization
+    // Compute system scale normalization (will be overridden if fixedScale provided)
     const systemRadius = bodies.reduce((maxDist, b) => {
       if (b.id === primaryCenter.id) return maxDist;
       const dx = b.position[0] - primaryCenter.position[0];
@@ -483,56 +479,14 @@ export class Renderer {
     }
 
     // Determine current viewing context
-    const focusBody = focusBodyId ? (bodies.find(b => b.id === focusBodyId) || null) : null;
-    const isLocalContext = !!(focusBody && hierarchy.get(focusBody.id) !== null);
-    const contextParent = isLocalContext ? focusBody : null;
 
-    
+    const renderScale = systemScale;
 
     bodies.forEach((body, i) => {
       const f_base = i * floatsPerSphere; // float index base
       const u_base = f_base;              // u32 index base
 
-      let renderedRadius: number;
-      const isStar = body.emissive && (body.emissive[0] > 1.0 || body.emissive[1] > 1.0);
-
-      if (isStar) {
-        // Stars should not be exaggerated. Their size is relative to the system scale.
-        // We give them a minimum size to ensure they are visible.
-        renderedRadius = Math.max(0.1, body.radius * systemScale);
-      } else {
-        // All other bodies (planets, moons) get exaggerated for visibility.
-        let desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.maxExaggeration;
-        if (isLocalContext && contextParent) {
-          if (body.id === contextParent.id) {
-            const children = bodies.filter(b => hierarchy.get(b.id) === contextParent.id);
-            if (children.length > 0) {
-              const closestDist = children.reduce((minD, c) => {
-                const dx = c.position[0] - contextParent.position[0];
-                const dy = c.position[1] - contextParent.position[1];
-                const dz = c.position[2] - contextParent.position[2];
-                const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
-                return Math.min(minD, d);
-              }, Number.POSITIVE_INFINITY);
-              const orbitRadiusWorld = isFinite(closestDist) ? closestDist : 0;
-              desiredRenderRadius = orbitRadiusWorld * systemScale * VISUAL_SETTINGS.parentOrbitFillFactor;
-            } else {
-              desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.minExaggeration;
-            }
-          } else if (hierarchy.get(body.id) === contextParent.id) {
-            desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.maxExaggeration;
-          } else {
-            desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.minExaggeration;
-          }
-        } else {
-          desiredRenderRadius = body.radius * systemScale * VISUAL_SETTINGS.maxExaggeration;
-        }
-
-        const denom = Math.max(1e-12, body.radius * systemScale);
-        const unclampedFactor = desiredRenderRadius / denom;
-        const finalExaggeration = Math.min(VISUAL_SETTINGS.maxExaggeration, Math.max(VISUAL_SETTINGS.minExaggeration, unclampedFactor));
-        renderedRadius = body.radius * systemScale * finalExaggeration;
-      }
+      const renderedRadius = body.radius * renderScale;
       
       if (body.id === focusBodyId) {
         focusBodyRenderedRadius = renderedRadius;
@@ -542,9 +496,9 @@ export class Renderer {
       }
 
       // Sphere.center (vec3f) in camera-relative coordinates -> slots 0, 1, 2
-      sphereData[f_base + 0] = (body.position[0] * systemScale) - eye[0];
-      sphereData[f_base + 1] = (body.position[1] * systemScale) - eye[1];
-      sphereData[f_base + 2] = (body.position[2] * systemScale) - eye[2];
+      sphereData[f_base + 0] = (body.position[0] * renderScale) - eye[0];
+      sphereData[f_base + 1] = (body.position[1] * renderScale) - eye[1];
+      sphereData[f_base + 2] = (body.position[2] * renderScale) - eye[2];
 
       // Sphere.radius (f32) -> slot 3
       sphereData[f_base + 3] = renderedRadius;
@@ -620,32 +574,37 @@ export class Renderer {
       return;
     }
 
-    // Shared serialization and camera uniform updates for compute path
-    // First pass to obtain systemScale; for ship mode we'll fix scale to prevent zoom drift
-    let sphereData: Float32Array;
-    let focusBodyRenderedRadius: number;
-    let systemScale: number;
-    {
-      const tmp = this._serializeSystemState(bodiesToRender, this.camera.focusBodyId);
-      sphereData = tmp.sphereData;
-      focusBodyRenderedRadius = tmp.focusBodyRenderedRadius;
-      systemScale = tmp.systemScale;
+    // Determine render scale: fit system in SYSTEM_ORBITAL, otherwise 1:1
+    let currentRenderScale: number;
+    if (mode === CameraMode.SYSTEM_ORBITAL) {
+        const systemRadius = systemState.bodies.reduce((maxDist, b) => {
+            const dist = Math.hypot(b.position[0], b.position[1], b.position[2]);
+            return Math.max(maxDist, dist);
+        }, 0);
+        currentRenderScale = systemRadius > 0 ? VISUAL_SETTINGS.systemViewSize / systemRadius : 1.0;
+    } else {
+        currentRenderScale = 1.0;
     }
-    if (mode === CameraMode.SHIP_RELATIVE) {
-      // Freeze scale to initial value the first time we enter ship mode to avoid zoom-out effect
-      if (!Number.isFinite(this.lastSystemScale) || this.lastSystemScale <= 0) {
-        this.lastSystemScale = systemScale;
-      }
-      const tmp2 = this._serializeSystemState(bodiesToRender, this.camera.focusBodyId, this.lastSystemScale);
-      sphereData = tmp2.sphereData;
-      systemScale = tmp2.systemScale;
-    }
+
+    // Serialize with selected render scale
+    const tmp = this._serializeSystemState(bodiesToRender, this.camera.focusBodyId, currentRenderScale);
+    let sphereData: Float32Array = tmp.sphereData;
+    let systemScale: number = tmp.systemScale;
 
     if (mode === CameraMode.SYSTEM_ORBITAL) {
       this.camera.update(systemState.bodies, systemScale);
       this.lastSystemScale = systemScale;
       if (this.camera.pendingFrame) {
-        this.camera.completePendingFrame(focusBodyRenderedRadius);
+        const vfovDeg = 25.0;
+        const viewportHeight = this.textureSize.height;
+        const focus = this.camera.focusBodyId ? systemState.bodies.find(b => b.id === this.camera.focusBodyId) : null;
+        const radiusWorld = focus ? focus.radius : 1.0;
+        this.camera.completePendingFrame(radiusWorld, {
+          renderScale: systemScale,
+          desiredPixelRadius: 60.0,
+          viewportHeight,
+          vfovDeg,
+        });
       }
     } else {
       this.lastSystemScale = systemScale;
@@ -709,31 +668,26 @@ export class Renderer {
       const sourceTexture = this.frameCount % 2 === 0 ? this.postFxTextureB : this.postFxTextureA;
       const destinationTexture = this.frameCount % 2 === 0 ? this.postFxTextureA : this.postFxTextureB;
 
-      // Create per-frame bind group to include prev frame texture at binding 3
-      // Build orbit mask uniforms (pack up to 16 bodies for simplicity)
-      if (this.state.showOrbits) {
-        const maxCenters = 16;
-        const u32Count = Math.min(this._lastBodiesForMask.length, maxCenters);
+      // Build target info uniform: only the focused body position as a single target
+      {
         const buf = new ArrayBuffer(272);
         const u32 = new Uint32Array(buf);
         const f32 = new Float32Array(buf);
-        u32[0] = u32Count; // count as u32
-        const radiusPx = 6.0;
+        u32[0] = 1; // count = 1
+        const radiusPx = 20.0;
         f32[1] = radiusPx;
         f32[2] = this.textureSize.width;
         f32[3] = this.textureSize.height;
-        // Project positions to screen space with current system scale
         const scale = this.lastSystemScale;
-        for (let i = 0; i < u32Count; i++) {
-          const b = this._lastBodiesForMask[i];
+        const focusId = this.camera.focusBodyId;
+        const b = this._lastBodiesForMask.find(bb => bb.id === focusId) || this._lastBodiesForMask[0];
+        if (b) {
           const x = (b.position[0] * scale) - this.camera.eye[0];
           const y = (b.position[1] * scale) - this.camera.eye[1];
           const z = (b.position[2] * scale) - this.camera.eye[2];
-          // Naive pinhole projection in view space using compute camera params
           const look = [this.camera.look_at[0] - this.camera.eye[0], this.camera.look_at[1] - this.camera.eye[1], this.camera.look_at[2] - this.camera.eye[2]] as unknown as number[];
           const forwardLen = Math.hypot(look[0], look[1], look[2]) || 1;
           const fx = look[0] / forwardLen, fy = look[1] / forwardLen, fz = look[2] / forwardLen;
-          // build right and up
           const up = this.camera.up as unknown as number[];
           const rx = up[1]*fz - up[2]*fy;
           const ry = up[2]*fx - up[0]*fz;
@@ -752,13 +706,13 @@ export class Renderer {
           const ndcY = (vy / Math.max(1e-4, vz)) * projScale;
           const px = (ndcX * 0.5 + 0.5) * this.textureSize.width;
           const py = (1.0 - (ndcY * 0.5 + 0.5)) * this.textureSize.height;
-          const base = 4 + i*4;
+          const base = 4;
           f32[base+0] = px;
           f32[base+1] = py;
           f32[base+2] = 0.0;
           f32[base+3] = 0.0;
         }
-        this.device.queue.writeBuffer(this.orbitMaskUniform, 0, buf);
+        this.device.queue.writeBuffer(this.targetInfoUniform, 0, buf);
       }
 
       const postFxBindGroup = this.device.createBindGroup({
@@ -769,7 +723,7 @@ export class Renderer {
           { binding: 2, resource: { buffer: this.themeUniformBuffer } },
           { binding: 3, resource: sourceTexture.createView() },
           { binding: 4, resource: this.orbitsTexture.createView() },
-          { binding: 5, resource: { buffer: this.orbitMaskUniform } },
+          { binding: 5, resource: { buffer: this.targetInfoUniform } },
         ]
       });
 

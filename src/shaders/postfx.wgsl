@@ -14,11 +14,11 @@ struct Theme {
 
 struct OrbitMask {
     count: u32,
-    radiusPx: f32,
+    targetRadiusPx: f32,
     screenSize: vec2<f32>,
-    centersPx: array<vec4<f32>, 16>,
+    targetsPx: array<vec4<f32>, 16>,
 };
-@group(0) @binding(5) var<uniform> orbitMask: OrbitMask;
+@group(0) @binding(5) var<uniform> targetInfo: OrbitMask;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -78,14 +78,14 @@ fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f
     // Build a soft circular mask around bodies to make them readable over orbits
     var mask: f32 = 1.0;
     let fragPx = fragCoord.xy;
-    let rPx = orbitMask.radiusPx;
+    let rPx = targetInfo.targetRadiusPx;
     // Smooth edge for better look
     let inner = rPx * 0.6;
-    for (var i: u32 = 0u; i < orbitMask.count; i = i + 1u) {
-        let c = orbitMask.centersPx[i].xy;
+    for (var i: u32 = 0u; i < targetInfo.count; i = i + 1u) {
+        let c = targetInfo.targetsPx[i].xy;
         let d = distance(fragPx, c);
-        let m = smoothstep(inner, rPx, d);
-        mask = min(mask, m);
+        let targetMask = smoothstep(inner, rPx, d);
+        mask = min(mask, targetMask);
     }
     orbitsColor *= mask;
     finalColorWithVignette += orbitsColor;

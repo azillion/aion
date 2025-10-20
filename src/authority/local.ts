@@ -16,7 +16,7 @@ export class LocalAuthority implements Authority {
 			radius: 696340,
 			mass: 1.989e30,
 			albedo: [1.0, 1.0, 0.9],
-			emissive: [10.0, 10.0, 9.0],
+			emissive: [1000.0, 1000.0, 900.0],
 		};
 
 		const earth_dist = 149.6e6; // 1 AU in km

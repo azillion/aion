@@ -13,13 +13,14 @@ export class Camera {
 	private isDragging = false;
 	private lastMouseX = 0;
 	private lastMouseY = 0;
-	private minDistance = 0.005;
+	private minDistance = 1e-6;
 
 	constructor(canvas: HTMLCanvasElement) {
 		this.canvas = canvas;
 		this.canvas.addEventListener('mousedown', this.onMouseDown);
 		this.canvas.addEventListener('mouseup', this.onMouseUp);
 		this.canvas.addEventListener('mousemove', this.onMouseMove);
+		this.canvas.addEventListener('wheel', this.onWheel, { passive: false } as any);
 		window.addEventListener('keydown', this.onKeyDown);
 	}
 
@@ -58,20 +59,32 @@ export class Camera {
 		}
 	}
 
-	public completePendingFrame(radiusWorld: number): void {
+	public completePendingFrame(radiusWorld: number, opts?: { renderScale?: number, desiredPixelRadius?: number, viewportHeight?: number, vfovDeg?: number }): void {
 		if (!this.pendingFrame) return;
 
-		let desiredDist = radiusWorld * 4.0;
+		let desiredDist: number;
+		if (opts && opts.desiredPixelRadius && opts.viewportHeight && opts.vfovDeg && opts.renderScale) {
+			const rRender = Math.max(1e-12, radiusWorld * opts.renderScale);
+			const theta = (opts.vfovDeg * Math.PI) / 180.0;
+			const projScale = 1.0 / Math.tan(theta / 2.0);
+			const pixelsPerNdc = 0.5 * opts.viewportHeight;
+			// p_px = (r/z) * projScale * pixelsPerNdc ⇒ z = r * projScale * pixelsPerNdc / p_px
+			desiredDist = (rRender * projScale * pixelsPerNdc) / Math.max(1.0, opts.desiredPixelRadius);
+		} else {
+			const size = (Number.isFinite(radiusWorld) && radiusWorld > 0) ? radiusWorld : 1.0;
+			desiredDist = size * 4.0;
+		}
 		desiredDist = Math.max(this.minDistance, desiredDist);
 
-		const viewDirX = 0.5;
-		const viewDirY = 0.5;
-		const viewDirZ = 1.0;
-		const len = Math.hypot(viewDirX, viewDirY, viewDirZ) || 1;
-
-		const nx = viewDirX / len;
-		const ny = viewDirY / len;
-		const nz = viewDirZ / len;
+		// Move along current view direction to preserve orientation
+		let dirX = this.eye[0] - this.look_at[0];
+		let dirY = this.eye[1] - this.look_at[1];
+		let dirZ = this.eye[2] - this.look_at[2];
+		let len = Math.hypot(dirX, dirY, dirZ);
+		if (len <= 1e-9) { dirX = 0.0; dirY = 0.0; dirZ = 1.0; len = 1.0; }
+		const nx = dirX / len;
+		const ny = dirY / len;
+		const nz = dirZ / len;
 
 		this.eye = [
 			this.look_at[0] + nx * desiredDist,
@@ -86,6 +99,14 @@ export class Camera {
 		this.isDragging = true;
 		this.lastMouseX = event.clientX;
 		this.lastMouseY = event.clientY;
+	};
+
+	private onWheel = (event: WheelEvent) => {
+		// Exponential zoom across large scales; prevent page scroll
+		event.preventDefault();
+		const sensitivity = 0.0015; // tune for responsiveness
+		const multiplier = Math.exp(event.deltaY * sensitivity);
+		this._zoomBy(multiplier);
 	};
 
 	private onKeyDown = (event: KeyboardEvent) => {
