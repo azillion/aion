@@ -9,7 +9,9 @@ import { spectralResponses } from './spectral';
 import type { Authority } from './authority/authority';
 import type { Body, Ship } from './shared/types';
 import { InputManager } from './input';
-import { Camera } from './camera';
+import type { Camera } from './camera';
+import { CameraManager } from './camera/manager';
+import { HUDManager } from './hud';
 import { Galaxy } from './galaxy';
 import type { Star } from './galaxy';
 import type { Vec3 } from './shared/types';
@@ -49,6 +51,7 @@ const VISUAL_SETTINGS = {
 export class Renderer {
 
   private canvas: HTMLCanvasElement;
+  private hudCanvas?: HTMLCanvasElement;
   private device!: GPUDevice;
   private context!: GPUCanvasContext;
   private presentationFormat!: GPUTextureFormat;
@@ -61,7 +64,7 @@ export class Renderer {
   public authority: Authority;
   private spheresBuffer!: GPUBuffer;
   private cameraUniformBuffer!: GPUBuffer;
-  public camera!: Camera;
+  private cameraManager!: CameraManager;
   private postFxTextureA!: GPUTexture;
   private postFxTextureB!: GPUTexture;
   private frameCount = 0;
@@ -91,13 +94,30 @@ export class Renderer {
   private lastSystemScale: number = 1.0;
   private lastKnownBodyCount = 0;
   private input: InputManager;
+  private hud!: HUDManager;
 
   constructor(canvas: HTMLCanvasElement, authority: Authority, state: AppState, input: InputManager) {
     this.canvas = canvas;
     this.authority = authority;
-    this.camera = new Camera(this.canvas);
+    this.cameraManager = new CameraManager(this.canvas);
     this.state = state;
     this.input = input;
+    // HUD setup
+    const hudCanvas = document.getElementById('hud-canvas') as HTMLCanvasElement | null;
+    if (hudCanvas) {
+      this.hudCanvas = hudCanvas;
+      this.hud = new HUDManager(hudCanvas);
+    } else {
+      console.warn('HUD canvas not found');
+    }
+  }
+
+  public getCamera(): Camera {
+    return this.cameraManager.getCamera();
+  }
+
+  private get camera() {
+    return this.cameraManager.getCamera();
   }
 
   public setTheme(themeName: string, responseName: string, deltaTime?: number): void {
@@ -279,24 +299,7 @@ export class Renderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // Initialize camera uniforms before any rendering
-    {
-      const cameraData = new Float32Array(16);
-      const eye = this.camera.eye;
-      const lookAt = this.camera.look_at;
-      const dist = Math.hypot(eye[0] - lookAt[0], eye[1] - lookAt[1], eye[2] - lookAt[2]);
-      // Camera-relative uniforms: eye at origin, look_at relative to eye
-      cameraData.set([0, 0, 0], 0);
-      const relativeLookAt: Vec3 = [
-        lookAt[0] - eye[0],
-        lookAt[1] - eye[1],
-        lookAt[2] - eye[2],
-      ];
-      cameraData.set(relativeLookAt, 4);
-      cameraData.set(this.camera.up, 8);
-      cameraData[12] = dist; // distance_to_target
-      this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
-    }
+    // Defer initial camera uniform write until system scale is known
 
     const width = this.canvas.getBoundingClientRect().width;
     const aspectRation = 16.0 / 9.0;
@@ -304,6 +307,11 @@ export class Renderer {
     this.canvas.width = Math.max(1, Math.min(width, this.device.limits.maxTextureDimension2D));
     this.canvas.height = Math.max(1, Math.min(height, this.device.limits.maxTextureDimension2D));
     this.textureSize = { width: this.canvas.width, height: this.canvas.height };
+    // Sync HUD canvas size
+    if (this.hudCanvas) {
+      this.hudCanvas.width = this.canvas.width;
+      this.hudCanvas.height = this.canvas.height;
+    }
 
     const systemState = await this.authority.query();
     const numBodies = systemState.bodies.length;
@@ -311,6 +319,21 @@ export class Renderer {
     const initSerialized = this._serializeSystemState(systemState.bodies, this.camera.focusBodyId);
     const sphereData = initSerialized.sphereData;
     this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData.buffer as ArrayBuffer, 0, sphereData.byteLength);
+    // Initialize camera uniforms: world is camera-relative, so camera is at origin
+    {
+      const cam = this.camera;
+      const cameraData = new Float32Array(16);
+      cameraData.set([0, 0, 0], 0);
+      const lookAtRelative: Vec3 = [
+        cam.look_at[0] - cam.eye[0],
+        cam.look_at[1] - cam.eye[1],
+        cam.look_at[2] - cam.eye[2],
+      ];
+      cameraData.set(lookAtRelative, 4);
+      cameraData.set(cam.up, 8);
+      cameraData[12] = 0.0;
+      this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
+    }
     this.renderPipeline = this.createPostFXPipeline(this.presentationFormat);
     this.presentPipeline = this.createPresentPipeline(this.presentationFormat);
 
@@ -402,6 +425,11 @@ export class Renderer {
         const canvas = entry.target as HTMLCanvasElement;
         canvas.width = Math.max(1, Math.min(width, this.device.limits.maxTextureDimension2D));
         canvas.height = Math.max(1, Math.min(height, this.device.limits.maxTextureDimension2D));
+        // Resize HUD canvas to match
+        if (this.hudCanvas) {
+          this.hudCanvas.width = canvas.width;
+          this.hudCanvas.height = canvas.height;
+        }
 
         this.context.configure({
           device: this.device,
@@ -544,9 +572,7 @@ export class Renderer {
     if (mode === CameraMode.SHIP_RELATIVE) {
       const playerShipId = this.state.playerShipId;
       const playerShip = playerShipId ? systemState.bodies.find(b => b.id === playerShipId) as Ship | undefined : undefined;
-      if (playerShip) {
-        this.camera.updateShipRelative(playerShip);
-      }
+      this.cameraManager.update(mode, { playerShip });
       bodiesToRender = systemState.bodies.filter(b => b.id !== this.state.playerShipId);
     } else if (mode !== CameraMode.SYSTEM_ORBITAL) {
       // Galaxy camera: build view-projection and extract right/up for billboards
@@ -567,9 +593,10 @@ export class Renderer {
       camData.set(camRight, 16);
       camData.set(camUp, 20);
       this.device.queue.writeBuffer(this.galaxyCameraUniformBuffer, 0, camData);
-      this.setTheme(this.currentThemeName, this.currentResponseName, deltaTime);
-      this._render();
-      this.input.tick();
+    this.setTheme(this.currentThemeName, this.currentResponseName, deltaTime);
+    this._render();
+    // HUD draw for galactic map: currently no bodies data; skip
+    this.input.tick();
       requestAnimationFrame(() => this._update());
       return;
     }
@@ -586,47 +613,37 @@ export class Renderer {
         currentRenderScale = 1.0;
     }
 
+    // Update camera by controller for SYSTEM_ORBITAL prior to serialization
+    if (mode === CameraMode.SYSTEM_ORBITAL) {
+      this.cameraManager.update(mode, {
+        bodies: systemState.bodies,
+        scale: currentRenderScale,
+        viewport: { width: this.textureSize.width, height: this.textureSize.height },
+        vfov: 25.0,
+      });
+    }
     // Serialize with selected render scale
     const tmp = this._serializeSystemState(bodiesToRender, this.camera.focusBodyId, currentRenderScale);
     let sphereData: Float32Array = tmp.sphereData;
     let systemScale: number = tmp.systemScale;
 
     if (mode === CameraMode.SYSTEM_ORBITAL) {
-      this.camera.update(systemState.bodies, systemScale);
       this.lastSystemScale = systemScale;
-      if (this.camera.pendingFrame) {
-        const vfovDeg = 25.0;
-        const viewportHeight = this.textureSize.height;
-        const focus = this.camera.focusBodyId ? systemState.bodies.find(b => b.id === this.camera.focusBodyId) : null;
-        const radiusWorld = focus ? focus.radius : 1.0;
-        this.camera.completePendingFrame(radiusWorld, {
-          renderScale: systemScale,
-          desiredPixelRadius: 60.0,
-          viewportHeight,
-          vfovDeg,
-        });
-      }
     } else {
       this.lastSystemScale = systemScale;
     }
-    // Upload camera uniforms (eye, target, up, distance_to_target)
+    // Upload camera uniforms. The world is camera-relative, so the camera itself is at the origin.
     const cameraData = new Float32Array(16);
-    let eyeForUniform: Vec3 = this.camera.eye;
-    let lookAtForUniform: Vec3 = this.camera.look_at;
-    if (mode === CameraMode.SHIP_RELATIVE) {
-      eyeForUniform = [eyeForUniform[0] * systemScale, eyeForUniform[1] * systemScale, eyeForUniform[2] * systemScale];
-      lookAtForUniform = [lookAtForUniform[0] * systemScale, lookAtForUniform[1] * systemScale, lookAtForUniform[2] * systemScale];
-    }
-    const dist = Math.hypot(eyeForUniform[0] - lookAtForUniform[0], eyeForUniform[1] - lookAtForUniform[1], eyeForUniform[2] - lookAtForUniform[2]);
+    const cam = this.camera;
     cameraData.set([0, 0, 0], 0);
-    const relativeLookAt: Vec3 = [
-      lookAtForUniform[0] - eyeForUniform[0],
-      lookAtForUniform[1] - eyeForUniform[1],
-      lookAtForUniform[2] - eyeForUniform[2],
+    const lookAtRelative: Vec3 = [
+      cam.look_at[0] - cam.eye[0],
+      cam.look_at[1] - cam.eye[1],
+      cam.look_at[2] - cam.eye[2],
     ];
-    cameraData.set(relativeLookAt, 4);
-    cameraData.set(this.camera.up, 8);
-    cameraData[12] = dist;
+    cameraData.set(lookAtRelative, 4);
+    cameraData.set(cam.up, 8);
+    cameraData[12] = 0.0;
     this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
 
     // Pad sphere buffer to full body count to match compute shader expectations
@@ -656,6 +673,23 @@ export class Renderer {
 
     this.setTheme(this.currentThemeName, this.currentResponseName, deltaTime);
     this._render();
+    // Draw HUD markers
+    if (this.hud) {
+      const viewport = { width: this.textureSize.width, height: this.textureSize.height };
+      if (mode === CameraMode.SYSTEM_ORBITAL) {
+        const scaledBodies = systemState.bodies.map(b => ({
+          ...b,
+          position: [
+            b.position[0] * currentRenderScale,
+            b.position[1] * currentRenderScale,
+            b.position[2] * currentRenderScale,
+          ] as Vec3,
+        }));
+        this.hud.draw(scaledBodies, this.camera, viewport, mode, this.state.playerShipId);
+      } else {
+        this.hud.draw(systemState.bodies, this.camera, viewport, mode, this.state.playerShipId);
+      }
+    }
     this.input.tick();
     requestAnimationFrame(() => this._update());
   }

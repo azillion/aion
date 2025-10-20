@@ -17,7 +17,15 @@ body {
   min-height: 100vh;
 }
 
-canvas {
-  display: block;
+#webgpu-canvas,
+#hud-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 100%;
+  height: 100%;
+  display: block;
 }
+
+#webgpu-canvas { z-index: 0; }
+#hud-canvas { z-index: 1; pointer-events: none; }

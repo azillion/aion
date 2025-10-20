@@ -4,10 +4,9 @@ import { LocalAuthority } from "./authority/local";
 import { UI } from "./ui";
 import { AppState } from "./state";
 import { InputManager } from "./input";
-let renderTime = performance.now();
 
 async function main() {
-    const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+    const canvas = document.getElementById("webgpu-canvas") as HTMLCanvasElement;
     const authority = new LocalAuthority();
     const state = new AppState();
     state.playerShipId = 'player-ship';

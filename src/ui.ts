@@ -22,12 +22,14 @@ export class UI {
                 this.state.cameraMode = CameraMode.SHIP_RELATIVE;
             } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
                 this.state.cameraMode = CameraMode.GALACTIC_MAP;
-                this.renderer.camera.eye = [0, 0, 150];
-                this.renderer.camera.look_at = [0, 0, 0];
+                const cam = this.renderer.getCamera();
+                cam.eye = [0, 0, 150];
+                cam.look_at = [0, 0, 0];
             } else {
                 this.state.cameraMode = CameraMode.SYSTEM_ORBITAL;
-                this.renderer.camera.eye = [0, 0.3, 1.0];
-                this.renderer.camera.look_at = [0, 0, -2.0];
+                const cam = this.renderer.getCamera();
+                cam.eye = [0, 0.3, 1.0];
+                cam.look_at = [0, 0, -2.0];
             }
         }
     };
@@ -78,19 +80,24 @@ export class UI {
         const bodyIds = initialState.bodies.map(b => b.id);
 
         const playerIndex = bodyIds.indexOf('player-ship');
+        const cam = this.renderer.getCamera();
         if (playerIndex !== -1) {
             this.settings['Focus'] = 'AION-1';
-            this.renderer.camera.setFocus('player-ship');
+            cam.focusBodyId = 'player-ship';
+            cam.pendingFrame = true;
         } else {
             this.settings['Focus'] = bodyNames[0];
-            this.renderer.camera.setFocus(bodyIds[0]);
+            cam.focusBodyId = bodyIds[0];
+            cam.pendingFrame = true;
         }
 
         this.focusController = this.gui.add(this.settings, 'Focus', bodyNames)
             .onChange((selectedName: string) => {
                 const selectedIndex = bodyNames.indexOf(selectedName);
                 const selectedId = bodyIds[selectedIndex];
-                this.renderer.camera.setFocus(selectedId);
+                const cam2 = this.renderer.getCamera();
+                cam2.focusBodyId = selectedId;
+                cam2.pendingFrame = true;
             });
     }
 
@@ -98,7 +105,7 @@ export class UI {
         const systemState = await this.renderer.authority.query();
         const bodies = systemState.bodies;
         if (bodies.length === 0) return;
-        const focusId = this.renderer.camera.focusBodyId;
+        const focusId = this.renderer.getCamera().focusBodyId;
         const parent = (focusId ? bodies.find(b => b.id === focusId) : null) || bodies[0];
 
         const orbitDistance = Math.max(1, parent.radius * 50);
