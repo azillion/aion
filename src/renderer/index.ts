@@ -145,6 +145,9 @@ export class Renderer {
       renderScale = Scene.calculateRenderScale(systemState.bodies, this.getCamera().focusBodyId);
       this.cameraManager.update(this.state.cameraMode, { bodies: systemState.bodies, scale: renderScale, viewport: this.textureSize, vfov: 25.0 });
       this.scene.update(systemState, this.getCamera(), systemState.bodies, renderScale, true);
+      if (this.state.showOrbits) {
+        this.orbitsPass.update(systemState.bodies, this.scene, this.core, renderScale, this.getCamera().focusBodyId);
+      }
     } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
       renderScale = 1.0;
       const playerShip = systemState.bodies.find(b => b.id === this.state.playerShipId) as Ship | undefined;
@@ -156,8 +159,8 @@ export class Renderer {
     }
 
     this.scene.update(systemState, this.getCamera(), bodiesToRender, renderScale);
-    if (this.state.showOrbits) {
-      this.orbitsPass.update(systemState.bodies, this.scene, this.core, renderScale);
+    if (this.state.showOrbits && this.state.cameraMode !== CameraMode.SYSTEM_MAP) {
+      this.orbitsPass.update(systemState.bodies, this.scene, this.core, renderScale, this.getCamera().focusBodyId);
     }
 
     this.render(renderScale);
@@ -192,7 +195,10 @@ export class Renderer {
     if (this.state.cameraMode === CameraMode.GALACTIC_MAP) {
         this.galaxyPass.run(encoder, context, this.galaxy.stars.length);
     } else if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
-        this.mapPass.run(encoder, context);
+        if (this.state.showOrbits) {
+            this.orbitsPass.run(encoder, context, theme);
+        }
+        this.mapPass.run(encoder, context, theme, this.state.showOrbits);
     } else { // This is now the Ops View (SHIP_RELATIVE)
         this.computePass.run(encoder, context);
         if (this.state.showOrbits) {
