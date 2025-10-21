@@ -207,7 +207,7 @@ export class Renderer {
 
     const themeData = new Float32Array(20);
     themeData.set(theme.bg, 0); themeData.set(theme.fg, 4); themeData.set(theme.accent, 8);
-    themeData.set(response, 12); themeData[16] = this.lastDeltaTime;
+    themeData.set(response, 12); themeData[16] = this.lastDeltaTime; themeData[17] = this.state.crtIntensity;
     this.core.device.queue.writeBuffer(this.themeUniformBuffer, 0, themeData);
     return theme;
   }

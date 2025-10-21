@@ -64,6 +64,8 @@ export class UI {
                 }
             });
 
+        this.gui.add(this.state, 'crtIntensity', 0.0, 1.0).name('CRT Effect');
+
         this.gui.add(this.settings, 'Toggle View');
     }
 

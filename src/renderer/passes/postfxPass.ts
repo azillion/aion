@@ -60,7 +60,7 @@ export class PostFXPass implements IRenderPass {
         view: destinationTexture.createView(),
         loadOp: "clear",
         storeOp: "store",
-        clearValue: { r: theme.bg[0], g: theme.bg[1], b: theme.bg[2], a: 1 }
+        clearValue: { r: 0, g: 0, b: 0, a: 1 }
       }]
     });
     postPass.setPipeline(this.postfxPipeline);
@@ -82,7 +82,7 @@ export class PostFXPass implements IRenderPass {
         view: core.context.getCurrentTexture().createView(),
         loadOp: "clear",
         storeOp: "store",
-        clearValue: { r: theme.bg[0], g: theme.bg[1], b: theme.bg[2], a: 1 }
+        clearValue: { r: 0, g: 0, b: 0, a: 1 }
       }]
     });
     presentPass.setPipeline(this.presentPipeline);

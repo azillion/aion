@@ -1,9 +1,11 @@
 struct Theme {
-    bg: vec3<f32>,
-    fg: vec3<f32>,
-    accent: vec3<f32>,
-    response: vec3<f32>,
-    deltaTime: f32,
+    // Use vec4 for all fields to guarantee 16-byte alignment per field.
+    // params.x = deltaTime, params.y = crtIntensity
+    bg: vec4<f32>,
+    fg: vec4<f32>,
+    accent: vec4<f32>,
+    response: vec4<f32>,
+    params: vec4<f32>,
 };
 
 @group(0) @binding(0) var sceneSampler: sampler;
@@ -43,7 +45,7 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
     // Barrel distortion warp
     var warpedUV = uv;
-    let barrelPower = 0.1;
+    let barrelPower = 0.1 * theme.params.y;
     let center = vec2<f32>(0.5, 0.5);
     let radial = warpedUV - center;
     let r = length(radial);
@@ -54,23 +56,24 @@ fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f
     let hdrColor = textureSample(sceneTexture, sceneSampler, warpedUV).rgb;
 
     // Luminance using theme response (smooth, no posterization)
-    let luminance = dot(hdrColor, theme.response);
+    let luminance = dot(hdrColor, theme.response.rgb);
 
     // Phosphor persistence: sample previous frame and decay its luminance
-    let prevFrameColor = textureSample(prevFrameTexture, sceneSampler, warpedUV).rgb;
-    let prevLuminance = dot(prevFrameColor, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let persistenceFactor = exp(-theme.deltaTime / 0.25);
+    let prevFrameColor = textureSample(prevFrameTexture, sceneSampler, warpedUV).rgb;    
+    let prevLuminance = length(prevFrameColor) / 1.732;
+    let persistenceFactor = exp(-theme.params.x / 0.25);
     let persistedLuminance = max(luminance, prevLuminance * persistenceFactor);
 
-    // Theme application using persisted luminance
-    var finalColor = theme.fg * persistedLuminance + theme.bg * (1.0 - persistedLuminance);
+    // Start with the base CRT background glow, scaled by intensity, then add scene phosphor
+    let backgroundColor = theme.bg.rgb * theme.params.y;
+    var finalColorWithVignette = backgroundColor + theme.fg.rgb * persistedLuminance;
 
     // Vignette
-    let vignetteStrength = 0.8;
+    let vignetteStrength = 0.8 * theme.params.y;
     let vignetteFalloff = 0.5;
     let distFromCenter = length(uv - vec2<f32>(0.5, 0.5));
     let vignette = 1.0 - smoothstep(vignetteFalloff, 1.0, distFromCenter) * vignetteStrength;
-    var finalColorWithVignette = finalColor * vignette;
+    finalColorWithVignette *= vignette;
 
     // Sample orbits overlay with the same warp.
     var orbitsColor = textureSample(orbitsTexture, sceneSampler, warpedUV).rgb;
@@ -92,8 +95,9 @@ fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f
 
     // Scanlines: dim every other row using integer row index
     let y = i32(floor(fragCoord.y));
+    let scanlineFactor = 1.0 - (0.5 * theme.params.y);
     if ((y & 1) == 0) {
-        finalColorWithVignette *= 0.85;
+        finalColorWithVignette *= scanlineFactor;
     }
 
     return vec4<f32>(finalColorWithVignette, 1.0);
