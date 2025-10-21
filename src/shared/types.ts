@@ -20,3 +20,15 @@ export interface SystemState {
 	timestamp: number;
 	bodies: Body[];
 }
+
+export interface Theme {
+  bg: Vec3;
+  fg: Vec3;
+  accent: Vec3;
+}
+
+export interface Star {
+  position: Vec3;
+  color: Vec3;
+  size: number;
+}

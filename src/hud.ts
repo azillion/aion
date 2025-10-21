@@ -13,6 +13,10 @@ export class HUDManager {
     if (!ctx) throw new Error('Failed to get 2D context for HUD');
     this.context = ctx;
   }
+  
+  public getCanvas(): HTMLCanvasElement {
+    return this.canvas;
+  }
 
   public draw(bodies: Body[], camera: Camera, viewport: { width: number, height: number }, cameraMode: CameraMode, playerShipId: string | null): void {
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -142,5 +146,3 @@ export class HUDManager {
     this.context.restore();
   }
 }
-
-

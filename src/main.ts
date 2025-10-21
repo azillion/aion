@@ -1,5 +1,5 @@
 import "./style.css";
-import { Renderer } from "./renderer";
+import { Renderer } from "./renderer/index";
 import { LocalAuthority } from "./authority/local";
 import { UI } from "./ui";
 import { AppState } from "./state";

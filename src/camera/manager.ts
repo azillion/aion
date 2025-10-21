@@ -17,7 +17,7 @@ export class CameraManager {
 	public update(mode: CameraMode, context: any): void {
 		switch (mode) {
 			case CameraMode.SYSTEM_ORBITAL: {
-				this.systemOrbitalController.update(this.camera, context as { bodies: Body[], scale: number, focusBodyRenderedRadius: number });
+				this.systemOrbitalController.update(this.camera, context as { bodies: Body[], scale: number, viewport: { width: number, height: number }, vfov: number });
 				break;
 			}
 			case CameraMode.SHIP_RELATIVE: {

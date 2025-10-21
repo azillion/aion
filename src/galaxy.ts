@@ -1,11 +1,5 @@
 import { PRNG } from './shared/prng';
-import type { Vec3 } from './shared/types';
-
-export interface Star {
-  position: Vec3;
-  color: Vec3;
-  size: number;
-}
+import type { Vec3, Star } from './shared/types';
 
 export class Galaxy {
   public stars: Star[] = [];
@@ -21,7 +15,6 @@ export class Galaxy {
         prng.nextInRange(-halfSize, halfSize)
       ];
       
-      // Simple color variation from white to yellowish/bluish
       const colorR = 1.0 - prng.nextFloat() * 0.2;
       const colorG = 1.0 - prng.nextFloat() * 0.2;
       const colorB = 1.0;
@@ -33,5 +26,3 @@ export class Galaxy {
     }
   }
 }
-
-

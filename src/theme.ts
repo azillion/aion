@@ -1,10 +1,4 @@
-import type { Vec3 } from './shared/types';
-
-export interface Theme {
-  bg: Vec3;
-  fg: Vec3;
-  accent: Vec3;
-}
+import type { Theme } from './shared/types';
 
 export const themes: { [key: string]: Theme } = {
   amber: {
@@ -23,5 +17,3 @@ export const themes: { [key: string]: Theme } = {
     accent: [1.0, 1.0, 1.0],
   },
 };
-
-

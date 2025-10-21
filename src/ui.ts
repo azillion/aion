@@ -1,5 +1,5 @@
 import { GUI } from 'dat.gui';
-import type { Renderer } from './renderer';
+import type { Renderer } from './renderer/index';
 import { spectralResponses } from './spectral';
 import { themes } from './theme';
 import { AppState, CameraMode } from './state';
@@ -131,5 +131,3 @@ export class UI {
         setTimeout(() => this._createSceneControls(), 100);
     }
 }
-
-
