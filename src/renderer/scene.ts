@@ -42,6 +42,7 @@ export class Scene {
   // Camera-related buffers
   public cameraUniformBuffer!: GPUBuffer;
   public galaxyCameraUniformBuffer!: GPUBuffer;
+  public mapCameraUniformBuffer!: GPUBuffer;
 
   public lastKnownBodyCount: number = 0;
   
@@ -56,6 +57,10 @@ export class Scene {
     });
     this.galaxyCameraUniformBuffer = this.device.createBuffer({
       size: 128,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.mapCameraUniformBuffer = this.device.createBuffer({
+      size: 256,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
   }
@@ -85,14 +90,14 @@ export class Scene {
     this.lastKnownBodyCount = numBodies;
   }
 
-  public update(systemState: SystemState, camera: Camera, bodiesToRender: Body[], renderScale: number) {
+  public update(systemState: SystemState, camera: Camera, bodiesToRender: Body[], renderScale: number, useWorldSpace: boolean = false) {
     if (systemState.bodies.length !== this.lastKnownBodyCount) {
       this.recreateSpheresBuffer(systemState.bodies.length);
     }
     
     this._hierarchy = buildSystemHierarchy(systemState.bodies);
 
-    const sphereData = this.serializeSystemState(bodiesToRender, camera, renderScale);
+    const sphereData = this.serializeSystemState(bodiesToRender, camera, renderScale, useWorldSpace);
     this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData);
 
     // Update camera uniform buffer (for compute pass)
@@ -108,7 +113,7 @@ export class Scene {
     this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
   }
 
-  private serializeSystemState(bodies: Body[], camera: Camera, renderScale: number) {
+  private serializeSystemState(bodies: Body[], camera: Camera, renderScale: number, useWorldSpace: boolean) {
     const sphereData = new Float32Array(this.lastKnownBodyCount * FLOATS_PER_SPHERE);
     const sphereDataU32 = new Uint32Array(sphereData.buffer);
 
@@ -118,10 +123,18 @@ export class Scene {
 
       const renderedRadius = body.radius * renderScale;
 
-      // Sphere.center (camera-relative)
-      sphereData[f_base + 0] = (body.position[0] * renderScale) - camera.eye[0];
-      sphereData[f_base + 1] = (body.position[1] * renderScale) - camera.eye[1];
-      sphereData[f_base + 2] = (body.position[2] * renderScale) - camera.eye[2];
+      // Sphere.center
+      if (useWorldSpace) {
+        // For the map, we want scaled world coordinates.
+        sphereData[f_base + 0] = body.position[0] * renderScale;
+        sphereData[f_base + 1] = body.position[1] * renderScale;
+        sphereData[f_base + 2] = body.position[2] * renderScale;
+      } else {
+        // For the 3D view, we need camera-relative coordinates.
+        sphereData[f_base + 0] = (body.position[0] * renderScale) - camera.eye[0];
+        sphereData[f_base + 1] = (body.position[1] * renderScale) - camera.eye[1];
+        sphereData[f_base + 2] = (body.position[2] * renderScale) - camera.eye[2];
+      }
       sphereData[f_base + 3] = renderedRadius; // Sphere.radius
 
       // Material
@@ -135,11 +148,32 @@ export class Scene {
     return sphereData;
   }
   
-  public static calculateRenderScale(bodies: Body[]): number {
-    const systemRadius = bodies.reduce((maxDist, b) => {
+  public static calculateRenderScale(bodies: Body[], focusBodyId: string | null): number {
+    const focusBody = bodies.find(b => b.id === focusBodyId);
+    const hierarchy = buildSystemHierarchy(bodies);
+    let systemRadius = 0;
+
+    if (focusBody && focusBody.name !== 'Sun') {
+      const children = bodies.filter(b => hierarchy.get(b.id) === focusBody.id);
+      if (children.length > 0) {
+        systemRadius = children.reduce((maxDist, b) => {
+          const dist = Math.hypot(
+            b.position[0] - focusBody.position[0],
+            b.position[1] - focusBody.position[1],
+            b.position[2] - focusBody.position[2]
+          );
+          return Math.max(maxDist, dist);
+        }, 0);
+      } else {
+        systemRadius = focusBody.radius * 500;
+      }
+    } else {
+      systemRadius = bodies.reduce((maxDist, b) => {
         const dist = Math.hypot(b.position[0], b.position[1], b.position[2]);
         return Math.max(maxDist, dist);
-    }, 0);
+      }, 0);
+    }
+    
     return systemRadius > 0 ? VISUAL_SETTINGS.systemViewSize / systemRadius : 1.0;
   }
 

@@ -45,7 +45,7 @@ export class HUDManager {
       if (!p) continue;
 
       const isFocus = camera.focusBodyId === body.id;
-      if (cameraMode === CameraMode.SYSTEM_ORBITAL) {
+      if (cameraMode === CameraMode.SYSTEM_MAP) {
         if (!p.inView) continue;
         const x = p.x;
         const y = p.y;
@@ -76,6 +76,18 @@ export class HUDManager {
   }
 
   private _projectToScreen(pos: Vec3, camera: Camera, viewport: { width: number, height: number }): { x: number, y: number, inView: boolean } | null {
+    if (camera.isOrthographic) {
+      const viewProj = mat4.multiply(mat4.create(), camera.projectionMatrix as unknown as number[], camera.viewMatrix as unknown as number[]);
+      const worldPos = vec4.fromValues(pos[0], pos[1], pos[2], 1.0);
+      const clip = vec4.transformMat4(vec4.create(), worldPos, viewProj as unknown as number[]);
+      const w = clip[3];
+      if (!Number.isFinite(w) || w === 0) return null;
+      const ndcX = clip[0] / w;
+      const ndcY = clip[1] / w;
+      let px = (ndcX * 0.5 + 0.5) * viewport.width;
+      let py = (-ndcY * 0.5 + 0.5) * viewport.height;
+      return { x: px, y: py, inView: true };
+    }
     const eye = camera.eye as unknown as number[];
     const look = camera.look_at as unknown as number[];
     const dx = eye[0] - look[0];

@@ -12,6 +12,7 @@ import { ComputePass } from './passes/computePass';
 import { GalaxyPass } from './passes/galaxyPass';
 import { OrbitsPass } from './passes/orbitsPass';
 import { PostFXPass } from './passes/postfxPass';
+import { MapPass } from './passes/mapPass';
 import { themes } from '../theme';
 import { spectralResponses } from '../spectral';
 import type { Body, Ship, Theme } from '../shared/types';
@@ -32,6 +33,7 @@ export class Renderer {
   private galaxyPass!: GalaxyPass;
   private orbitsPass!: OrbitsPass;
   private postfxPass!: PostFXPass;
+  private mapPass!: MapPass;
 
   private textureSize!: { width: number, height: number };
   private mainSceneTexture!: GPUTexture;
@@ -40,7 +42,7 @@ export class Renderer {
   private orbitsTexture!: GPUTexture;
   
   private themeUniformBuffer!: GPUBuffer;
-  private currentThemeName: string = 'amber';
+  private currentThemeName: string = 'white';
   private currentResponseName: string = 'Visible (Y)';
   private lastDeltaTime: number = 1 / 60;
   private frameCount = 0;
@@ -80,11 +82,13 @@ export class Renderer {
     this.galaxyPass = new GalaxyPass();
     this.orbitsPass = new OrbitsPass();
     this.postfxPass = new PostFXPass();
+    this.mapPass = new MapPass();
     
     this.computePass.initialize(this.core, this.scene);
     this.galaxyPass.initialize(this.core, this.scene);
     this.orbitsPass.initialize(this.core, this.scene);
     this.postfxPass.initialize(this.core, this.scene);
+    this.mapPass.initialize(this.core, this.scene);
 
     this.handleResize();
     
@@ -137,9 +141,10 @@ export class Renderer {
     let bodiesToRender: Body[] = systemState.bodies;
     let renderScale: number;
 
-    if (this.state.cameraMode === CameraMode.SYSTEM_ORBITAL) {
-      renderScale = Scene.calculateRenderScale(systemState.bodies);
+    if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
+      renderScale = Scene.calculateRenderScale(systemState.bodies, this.getCamera().focusBodyId);
       this.cameraManager.update(this.state.cameraMode, { bodies: systemState.bodies, scale: renderScale, viewport: this.textureSize, vfov: 25.0 });
+      this.scene.update(systemState, this.getCamera(), systemState.bodies, renderScale, true);
     } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
       renderScale = 1.0;
       const playerShip = systemState.bodies.find(b => b.id === this.state.playerShipId) as Ship | undefined;
@@ -161,7 +166,7 @@ export class Renderer {
         const scaledBodies = systemState.bodies.map(b => ({
             ...b, position: [ b.position[0] * renderScale, b.position[1] * renderScale, b.position[2] * renderScale ] as [number,number,number]
         }));
-        this.hud.draw(this.state.cameraMode === CameraMode.SYSTEM_ORBITAL ? scaledBodies : systemState.bodies, this.getCamera(), this.textureSize, this.state.cameraMode, this.state.playerShipId);
+        this.hud.draw(this.state.cameraMode === CameraMode.SYSTEM_MAP ? scaledBodies : systemState.bodies, this.getCamera(), this.textureSize, this.state.cameraMode, this.state.playerShipId);
     }
 
     requestAnimationFrame(this.updateLoop);
@@ -185,13 +190,15 @@ export class Renderer {
     const encoder = this.core.device.createCommandEncoder();
 
     if (this.state.cameraMode === CameraMode.GALACTIC_MAP) {
-      this.galaxyPass.run(encoder, context, this.galaxy.stars.length);
-    } else {
-      this.computePass.run(encoder, context);
-      if (this.state.showOrbits) {
-        this.orbitsPass.run(encoder, context, theme);
-      }
-      this.postfxPass.run(encoder, context, theme, this.lastSystemState?.bodies ?? []);
+        this.galaxyPass.run(encoder, context, this.galaxy.stars.length);
+    } else if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
+        this.mapPass.run(encoder, context);
+    } else { // This is now the Ops View (SHIP_RELATIVE)
+        this.computePass.run(encoder, context);
+        if (this.state.showOrbits) {
+          this.orbitsPass.run(encoder, context, theme);
+        }
+        this.postfxPass.run(encoder, context, theme, this.lastSystemState?.bodies ?? []);
     }
 
     this.core.device.queue.submit([encoder.finish()]);

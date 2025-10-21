@@ -1,6 +1,6 @@
 export enum CameraMode {
   SHIP_RELATIVE,
-  SYSTEM_ORBITAL,
+  SYSTEM_MAP,
   GALACTIC_MAP,
 }
 

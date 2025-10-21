@@ -50,8 +50,19 @@ export class LocalAuthority implements Authority {
 		const playerShip: Ship = {
 			id: 'player-ship',
 			name: 'AION-1',
-			position: [0, earth_dist + 10000, 0],
-			velocity: [-earth_vel, 0, 0],
+			// Place ship in a 10,000km altitude orbit around Earth
+			// Position is Earth's position plus an offset for the orbit
+			position: [
+				earth.position[0] + (earth.radius + 10000),
+				earth.position[1],
+				earth.position[2]
+			],
+			// Velocity is Earth's velocity plus the tangential orbital velocity
+			velocity: [
+				earth.velocity[0],
+				earth.velocity[1] + Math.sqrt(G * earth.mass / (earth.radius + 10000)),
+				earth.velocity[2]
+			],
 			radius: 0.1,
 			mass: 1e6,
 			albedo: [0.8, 0.8, 0.9],
@@ -65,8 +76,8 @@ export class LocalAuthority implements Authority {
 			bodies: [sun, earth, moon, playerShip],
 		};
 
-		// Default to 1 day of simulated time per real second (more sensible for flight)
-		this.timeScalar = 24 * 60 * 60;
+		// Default to 1.0 for real-time simulation (1 simulated second per 1 real second)
+		this.timeScalar = 1.0;
 	}
 
 	async query(): Promise<SystemState> {

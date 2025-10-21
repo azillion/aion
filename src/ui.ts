@@ -11,25 +11,19 @@ export class UI {
     private gui: GUI;
     private focusController: dat.GUIController | null = null;
     private settings = {
-        'Time Scale (days/sec)': 1,
+        'Time Scale': 1.0,
         'Focus': 'Sun',
-        'Theme': 'amber',
+        'Theme': 'white',
         'Sensor': 'Visible (Y)',
         'Show Orbits': false,
         'Add Asteroid': () => this.addAsteroid(),
         'Toggle View': () => {
-            if (this.state.cameraMode === CameraMode.SYSTEM_ORBITAL) {
+            if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
                 this.state.cameraMode = CameraMode.SHIP_RELATIVE;
             } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
-                this.state.cameraMode = CameraMode.GALACTIC_MAP;
-                const cam = this.renderer.getCamera();
-                cam.eye = [0, 0, 150];
-                cam.look_at = [0, 0, 0];
+                this.state.cameraMode = CameraMode.SYSTEM_MAP;
             } else {
-                this.state.cameraMode = CameraMode.SYSTEM_ORBITAL;
-                const cam = this.renderer.getCamera();
-                cam.eye = [0, 0.3, 1.0];
-                cam.look_at = [0, 0, -2.0];
+                this.state.cameraMode = CameraMode.SHIP_RELATIVE;
             }
         }
     };
@@ -40,10 +34,9 @@ export class UI {
         this.gui = new GUI();
 
         this.gui
-            .add(this.settings, 'Time Scale (days/sec)', 0, 30)
+            .add(this.settings, 'Time Scale', 0, 10000)
             .onChange((value: number) => {
-                const secondsPerDay = 24 * 60 * 60;
-                this.renderer.authority.setTimeScale(value * secondsPerDay);
+                this.renderer.authority.setTimeScale(value);
             });
 
         this._createSceneControls();
