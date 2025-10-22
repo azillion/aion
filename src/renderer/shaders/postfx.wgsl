@@ -52,11 +52,15 @@ fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f
     let distortion = 1.0 + barrelPower * r * r;
     warpedUV = center + radial / distortion;
 
-    // Sample HDR scene color
+    // Sample HDR scene color from the compute pass
     let hdrColor = textureSample(sceneTexture, sceneSampler, warpedUV).rgb;
 
-    // Luminance using theme response (smooth, no posterization)
-    let luminance = dot(hdrColor, theme.response.rgb);
+    // Apply tone mapping to compress HDR values before they enter the feedback loop.
+    // This prevents extreme brightness from "exploding" the persistence effect.
+    let tonemappedColor = hdrColor / (hdrColor + vec3<f32>(1.0));
+
+    // Calculate luminance from the *tonemapped* color for a stable persistence effect.
+    let luminance = dot(tonemappedColor, theme.response.rgb);
 
     // Phosphor persistence: sample previous frame and decay its luminance
     let prevFrameColor = textureSample(prevFrameTexture, sceneSampler, warpedUV).rgb;    
