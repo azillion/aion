@@ -177,7 +177,7 @@ export class LocalAuthority implements Authority {
 
 		// Substep integration for stability
 		let remaining = dt;
-		const maxStep = 60; // seconds per substep
+		const maxStep = 10; // seconds per substep
 		const playerIndex = this.state.bodies.findIndex(b => b.id === 'player-ship');
 		while (remaining > 0) {
 			const h = Math.min(remaining, maxStep);

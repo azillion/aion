@@ -22,7 +22,7 @@ export class OrbitsPass implements IRenderPass {
   public apoapsisPoints: (Vec3 | null)[] = [];
   public ascendingNodePoints: (Vec3 | null)[] = [];
   public descendingNodePoints: (Vec3 | null)[] = [];
-  public predictedPositions: (Vec3 | null)[] = [];
+  
 
   public initialize(core: WebGPUCore, scene: Scene): void {
     const module = core.device.createShaderModule({ code: orbitsShaderWGSL });
@@ -70,7 +70,6 @@ export class OrbitsPass implements IRenderPass {
     this.apoapsisPoints = Array.from({ length: count }, () => null);
     this.ascendingNodePoints = Array.from({ length: count }, () => null);
     this.descendingNodePoints = Array.from({ length: count }, () => null);
-    this.predictedPositions = Array.from({ length: count }, () => null);
   }
 
   public _calculateBarycenter(bodies: Body[]): { position: Vec3, velocity: Vec3, totalMass: number } {
@@ -97,7 +96,7 @@ export class OrbitsPass implements IRenderPass {
     };
   }
 
-  public update(bodies: Body[], _scene: Scene, core: WebGPUCore, systemScale: number, timeOffset: number) {
+  public update(bodies: Body[], _scene: Scene, core: WebGPUCore, systemScale: number) {
     if (bodies.length !== this.orbitVertexBuffers.length) {
         this.resizeOrbitBuffers(core.device, bodies.length);
     }
@@ -119,7 +118,7 @@ export class OrbitsPass implements IRenderPass {
         body.velocity[2] - barycenter.velocity[2]
       ];
 
-      this._calculateAnalyticOrbit(r_vec, v_vec, barycenter.totalMass, i, systemScale, timeOffset);
+      this._calculateAnalyticOrbit(r_vec, v_vec, barycenter.totalMass, i, systemScale);
     }
     
     for (let i = 0; i < bodies.length; i++) {
@@ -130,24 +129,7 @@ export class OrbitsPass implements IRenderPass {
     }
   }
 
-  // Kepler solver: returns true anomaly at given time offset for an ellipse (a>0)
-  private _getTrueAnomalyAtTime(timeOffset: number, a: number, e: number, mu: number): number {
-    if (a <= 0) return 0;
-    const n = Math.sqrt(mu / Math.pow(a, 3));
-    const M = n * timeOffset;
-    let E = M;
-    for (let i = 0; i < 5; i++) {
-      const denom = 1 - e * Math.cos(E);
-      const dE = denom !== 0 ? (E - e * Math.sin(E) - M) / denom : 0;
-      E -= dE;
-    }
-    const sqrt1pe = Math.sqrt(1 + e);
-    const sqrt1me = Math.sqrt(Math.max(0, 1 - e));
-    const nu = 2 * Math.atan2(sqrt1pe * Math.sin(E / 2), sqrt1me * Math.cos(E / 2));
-    return nu;
-  }
-
-  private _calculateAnalyticOrbit(r_vec: Vec3, v_vec: Vec3, totalSystemMass: number, i: number, systemScale: number, timeOffset: number) {
+  private _calculateAnalyticOrbit(r_vec: Vec3, v_vec: Vec3, totalSystemMass: number, i: number, systemScale: number) {
     const r = Math.hypot(...r_vec);
     const v = Math.hypot(...v_vec);
     const mu = G * totalSystemMass;
@@ -157,7 +139,12 @@ export class OrbitsPass implements IRenderPass {
     const e_vec = [c_vec[0] / mu - r_vec[0] / r, c_vec[1] / mu - r_vec[1] / r, c_vec[2] / mu - r_vec[2] / r];
     const e = Math.hypot(...e_vec);
     const invA = 2 / r - (v * v) / mu;
-    if (!isFinite(invA) || invA <= 0) { this.orbitCounts[i] = 0; this.orbitalElements[i] = null; this.predictedPositions[i] = null; return; }
+    // Robustness: skip non-elliptical or numerically unstable cases (e >= 1)
+    if (!isFinite(invA) || invA <= 0 || e >= 1) {
+      this.orbitCounts[i] = 0;
+      this.orbitalElements[i] = null;
+      return;
+    }
     const a = 1 / invA;
     const bSemi = a * Math.sqrt(Math.max(0, 1 - e * e));
 
@@ -187,19 +174,7 @@ export class OrbitsPass implements IRenderPass {
     const dotR_Q = r_vec[0]*Q[0] + r_vec[1]*Q[1] + r_vec[2]*Q[2];
     const dotR_P = r_vec[0]*P[0] + r_vec[1]*P[1] + r_vec[2]*P[2];
     const currentNu = Math.atan2(dotR_Q, dotR_P);
-    const futureNu = this._getTrueAnomalyAtTime(timeOffset, a, e, mu) + currentNu;
-    this.orbitalElements[i] = { a, e, currentTrueAnomaly: futureNu };
-
-    // Calculate and store the predicted position at the time offset (barycentric frame)
-    const r_dist_future = a * (1 - e * e) / (1 + e * Math.cos(futureNu));
-    const futurePosX = r_dist_future * Math.cos(futureNu);
-    const futurePosY = r_dist_future * Math.sin(futureNu);
-    const posInBarycentric: Vec3 = [
-      P[0]*futurePosX + Q[0]*futurePosY,
-      P[1]*futurePosX + Q[1]*futurePosY,
-      P[2]*futurePosX + Q[2]*futurePosY,
-    ];
-    this.predictedPositions[i] = [posInBarycentric[0], posInBarycentric[1], posInBarycentric[2]];
+    this.orbitalElements[i] = { a, e, currentTrueAnomaly: currentNu };
 
     // Calculate and store apsis points
     if (e > 1e-6) {

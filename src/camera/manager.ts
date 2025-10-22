@@ -1,7 +1,6 @@
 import { CameraMode } from '../state';
 import { Camera } from './camera';
 import { SystemMapController, ShipRelativeController } from './controllers';
-import type { Ship } from '../shared/types';
 
 export class CameraManager {
 	private camera: Camera;
@@ -21,7 +20,7 @@ export class CameraManager {
 				break;
 			}
 			case CameraMode.SHIP_RELATIVE: {
-				this.shipRelativeController.update(this.camera, context as { playerShip: Ship | undefined | null });
+				this.shipRelativeController.update(this.camera, context as any);
 				break;
 			}
 			case CameraMode.GALACTIC_MAP: {

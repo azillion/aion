@@ -1,4 +1,5 @@
-import type { Body, SystemState, Vec3, Star } from '../shared/types';
+import type { Body, SystemState, Star } from '../shared/types';
+import { vec3 } from 'gl-matrix';
 import type { WebGPUCore } from './core';
 import type { Camera } from '../camera';
 
@@ -100,16 +101,20 @@ export class Scene {
     const sphereData = this.serializeSystemState(bodiesToRender, camera, renderScale, useWorldSpace);
     this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData);
 
-    // Update camera uniform buffer (for compute pass)
+    // Update camera uniform buffer (for compute pass) with normalized direction + distance
     const cameraData = new Float32Array(16);
     cameraData.set([0, 0, 0], 0); // Eye is at origin in camera-relative space
-    const lookAtRelative: Vec3 = [
-      camera.look_at[0] - camera.eye[0],
-      camera.look_at[1] - camera.eye[1],
-      camera.look_at[2] - camera.eye[2],
-    ];
-    cameraData.set(lookAtRelative, 4);
+    const rel = vec3.subtract(vec3.create(), camera.look_at as unknown as number[], camera.eye as unknown as number[]);
+    const distance = vec3.length(rel);
+    if (distance > 0 && Number.isFinite(distance)) {
+      vec3.scale(rel, rel, 1.0 / distance); // normalize in f64 before storing
+    } else {
+      // Fallback forward if degenerate
+      rel[0] = 0; rel[1] = 0; rel[2] = -1;
+    }
+    cameraData.set([rel[0], rel[1], rel[2]], 4); // normalized look direction
     cameraData.set(camera.up, 8);
+    cameraData[12] = Number.isFinite(distance) ? distance : 1.0; // distance to target
     this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
   }
 

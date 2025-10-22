@@ -39,9 +39,6 @@ export class UI {
                 this.renderer.authority.setTimeScale(value);
             });
 
-        const oneYearInSeconds = 365 * 24 * 60 * 60;
-        this.gui.add(this.state, 'timeOffset', 0, oneYearInSeconds).name('Time Scrubber (sec)');
-
         this._createSceneControls();
 
         this.gui.add(this.settings, 'Add Asteroid');

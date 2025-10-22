@@ -52,6 +52,7 @@ export class Renderer {
   private currentThemeName: string = 'white';
   private currentResponseName: string = 'Visible (Y)';
   private lastDeltaTime: number = 1 / 60;
+  private lastFrameTime: number = 0;
   private frameCount = 0;
   
   private lastSystemState?: import('../shared/types').SystemState;
@@ -135,10 +136,14 @@ export class Renderer {
     this.galaxyPass.onResize(this.textureSize, this.core);
   }
 
-  private updateLoop = async () => {
-    const deltaTime = 1 / 60.0;
+  private updateLoop = async (time: number) => {
+    if (this.lastFrameTime === 0) this.lastFrameTime = time;
+    const deltaTime = (time - this.lastFrameTime) / 1000.0;
+    this.lastFrameTime = time;
+
+    const clampedDeltaTime = Math.min(deltaTime, 1 / 20.0);
     this.lastDeltaTime = deltaTime;
-    await this.authority.tick(deltaTime, { deltaX: this.input.deltaX, deltaY: this.input.deltaY, keys: this.input.keys });
+    await this.authority.tick(clampedDeltaTime, { deltaX: this.input.deltaX, deltaY: this.input.deltaY, keys: this.input.keys });
     
     const systemState = await this.authority.query();
     this.lastSystemState = systemState;
@@ -152,11 +157,11 @@ export class Renderer {
     let renderScale: number;
 
     if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
+      let bodiesForMap = systemState.bodies;
       // --- Reference Frame Transformation ---
-      let transformedBodies = systemState.bodies;
       const focusBodyForFrame = systemState.bodies.find(b => b.id === this.getCamera().focusBodyId);
       if (this.state.referenceFrame === ReferenceFrame.FOCUSED_BODY && focusBodyForFrame) {
-        transformedBodies = systemState.bodies.map(body => ({
+        bodiesForMap = systemState.bodies.map(body => ({
           ...body,
           position: [
             body.position[0] - focusBodyForFrame.position[0],
@@ -166,38 +171,25 @@ export class Renderer {
         }));
       }
 
-      // Clamp zero offset to epsilon to avoid numeric edge cases
-      const effectiveOffset = this.state.timeOffset === 0 ? 1e-6 : this.state.timeOffset;
-
-      // Build predicted positions based on timeOffset
-      this.orbitsPass.update(transformedBodies, this.scene, this.core, 1.0, effectiveOffset);
-      const barycenter = this.orbitsPass._calculateBarycenter(transformedBodies);
-      const predictedBodies: Body[] = transformedBodies.map((body, i) => {
-        const p = this.orbitsPass.predictedPositions[i];
-        if (p) {
-          return { ...body, position: [ p[0] + barycenter.position[0], p[1] + barycenter.position[1], p[2] + barycenter.position[2] ] as Vec3 };
-        }
-        return body;
-      });
-
-      renderScale = Scene.calculateRenderScale(predictedBodies, this.getCamera().focusBodyId);
-      this.cameraManager.update(this.state.cameraMode, { bodies: predictedBodies, scale: renderScale, viewport: this.textureSize, vfov: 25.0, referenceFrame: this.state.referenceFrame });
-      bodiesToRender = predictedBodies;
+      renderScale = Scene.calculateRenderScale(bodiesForMap, this.getCamera().focusBodyId);
+      this.cameraManager.update(this.state.cameraMode, { bodies: bodiesForMap, scale: renderScale, viewport: this.textureSize, vfov: 25.0, referenceFrame: this.state.referenceFrame });
+      bodiesToRender = bodiesForMap;
       if (this.state.showOrbits) {
         // Recompute orbit geometry at correct scale
-        this.orbitsPass.update(transformedBodies, this.scene, this.core, renderScale, effectiveOffset);
+        this.orbitsPass.update(bodiesForMap, this.scene, this.core, renderScale);
         this.glyphsPass.update(
           this.orbitsPass.periapsisPoints,
           this.orbitsPass.apoapsisPoints,
           this.orbitsPass.ascendingNodePoints,
           this.orbitsPass.descendingNodePoints
         );
-        this.soiPass.update(predictedBodies, this.scene, renderScale);
+        this.soiPass.update(bodiesForMap, this.scene, renderScale);
       }
     } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
       renderScale = 1.0;
       const playerShip = systemState.bodies.find(b => b.id === this.state.playerShipId) as Ship | undefined;
-      this.cameraManager.update(this.state.cameraMode, { playerShip });
+      const earth = systemState.bodies.find(b => b.id.toLowerCase() === 'earth');
+      this.cameraManager.update(this.state.cameraMode, { playerShip, targetBody: earth });
       bodiesToRender = systemState.bodies.filter(b => b.id !== this.state.playerShipId);
     } else {
       renderScale = 1.0;
@@ -277,14 +269,8 @@ export class Renderer {
                 ] as [number, number, number],
               }))
             : systemState.bodies;
-          const scaledPredictedBodies = bodiesForHud.map((b, i) => {
-            const p = this.orbitsPass.predictedPositions[i];
-            if (p) {
-              return { ...b, position: [ p[0] * renderScale, p[1] * renderScale, p[2] * renderScale ] as Vec3 };
-            }
-            return { ...b, position: [ b.position[0] * renderScale, b.position[1] * renderScale, b.position[2] * renderScale ] as Vec3 };
-          });
-          hudBodies = scaledPredictedBodies;
+          const scaledBodies = bodiesForHud.map(b => ({ ...b, position: [ b.position[0] * renderScale, b.position[1] * renderScale, b.position[2] * renderScale ] as Vec3 }));
+          hudBodies = scaledBodies;
         }
         this.hud.draw(hudBodies, this.getCamera(), this.textureSize, this.state.cameraMode, this.state.playerShipId);
     }

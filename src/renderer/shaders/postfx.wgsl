@@ -60,7 +60,9 @@ fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f
 
     // Phosphor persistence: sample previous frame and decay its luminance
     let prevFrameColor = textureSample(prevFrameTexture, sceneSampler, warpedUV).rgb;    
-    let prevLuminance = length(prevFrameColor) / 1.732;
+    // Guard against NaN/Inf in feedback
+    let prevLen = length(prevFrameColor);
+    let prevLuminance = clamp(prevLen / 1.732, 0.0, 1e6);
     let persistenceFactor = exp(-theme.params.x / 0.25);
     let persistedLuminance = max(luminance, prevLuminance * persistenceFactor);
 
@@ -100,7 +102,10 @@ fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f
         finalColorWithVignette *= scanlineFactor;
     }
 
-    return vec4<f32>(finalColorWithVignette, 1.0);
+    // Final safety: scrub NaN (x != x) and clamp huge values to avoid feedback loop
+    let noNan = select(vec3<f32>(0.0), finalColorWithVignette, finalColorWithVignette == finalColorWithVignette);
+    let safeColor = clamp(noNan, vec3<f32>(-1e6), vec3<f32>(1e6));
+    return vec4<f32>(safeColor, 1.0);
 }
 
 // Simple present shader: sample the provided texture and output directly
