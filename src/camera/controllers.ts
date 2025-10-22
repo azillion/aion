@@ -2,20 +2,24 @@ import type { Ship } from '../shared/types';
 import type { Camera } from '../camera';
 import { vec3, quat, mat4 } from 'gl-matrix';
 import type { Body } from '../shared/types';
+import { ReferenceFrame } from '../state';
 
 export interface ICameraController {
 	update(camera: Camera, context: any): void;
 }
 
 export class SystemMapController implements ICameraController {
-    public update(camera: Camera, context: { bodies: Body[], scale: number, viewport: { width: number, height: number } }): void {
+    public update(camera: Camera, context: { bodies: Body[], scale: number, viewport: { width: number, height: number }, referenceFrame: ReferenceFrame }): void {
         camera.isOrthographic = true;
 
-        const focusBody = context.bodies.find(b => b.id === camera.focusBodyId) || context.bodies[0];
-        if (!focusBody) return;
-
-        const center_x = focusBody.position[0] * context.scale;
-        const center_y = focusBody.position[1] * context.scale;
+        let center_x = 0;
+        let center_y = 0;
+        if (context.referenceFrame === ReferenceFrame.BARYCENTRIC) {
+            const focusBody = context.bodies.find(b => b.id === camera.focusBodyId) || context.bodies[0];
+            if (!focusBody) return;
+            center_x = focusBody.position[0] * context.scale;
+            center_y = focusBody.position[1] * context.scale;
+        }
 
         const viewDistance = 30.0;
         const aspect = context.viewport.width / Math.max(1, context.viewport.height);
@@ -26,6 +30,7 @@ export class SystemMapController implements ICameraController {
         camera.look_at = [center_x, center_y, 0];
         camera.up = [0, 1, 0];
         mat4.lookAt(camera.viewMatrix, camera.eye as unknown as number[], camera.look_at as unknown as number[], camera.up as unknown as number[]);
+        mat4.rotateX(camera.viewMatrix, camera.viewMatrix, -0.3);
     }
 }
 

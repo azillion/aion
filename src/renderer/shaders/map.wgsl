@@ -1,9 +1,8 @@
 struct Camera {
     viewProjection: mat4x4<f32>,
-    // We add dummy vec4s to ensure the struct size is a multiple of 256 bytes, a common requirement.
-    _dummy1: vec4<f32>,
-    _dummy2: vec4<f32>,
-    _dummy3: vec4<f32>,
+    right: vec4<f32>,
+    up: vec4<f32>,
+    _pad: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 
@@ -43,19 +42,14 @@ fn vertexMain(
         vec2<f32>( 1.0,  1.0)
     );
     let corner = corners[vertexIndex % 4u];
-    
-    // We'll scale the quad by a fixed amount for now to make planets visible on the map.
-    let billboard_radius = 0.75;
 
-    // We need the camera's right and up vectors to orient the quad.
-    // For an orthographic top-down view, these are simple world axes.
-    let right = vec3<f32>(1.0, 0.0, 0.0);
-    let up = vec3<f32>(0.0, 1.0, 0.0);
+    // Project center to clip space, then offset in NDC for screen-aligned quad (constant on-screen size)
+    let p_clip = camera.viewProjection * vec4<f32>(body.center, 1.0);
+    let size_ndc = 0.006; // tweak visual size as needed
+    let offset = corner * size_ndc * p_clip.w;
 
-    let worldPos = body.center + (right * corner.x * billboard_radius) + (up * corner.y * billboard_radius);
-    
     var output: VertexOutput;
-    output.position = camera.viewProjection * vec4<f32>(worldPos, 1.0);
+    output.position = vec4<f32>(p_clip.x + offset.x, p_clip.y + offset.y, p_clip.z, p_clip.w);
     // Use the emissive color for suns, albedo for planets.
     output.color = select(body.albedo, body.emissive, dot(body.emissive, body.emissive) > 0.1);
     output.uv = corner; // Pass quad coordinates to fragment shader.

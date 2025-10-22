@@ -1,6 +1,6 @@
 import type { Authority } from '../authority/authority';
 import type { InputManager } from '../input';
-import { AppState, CameraMode } from '../state';
+import { AppState, CameraMode, ReferenceFrame } from '../state';
 import { CameraManager } from '../camera/manager';
 import type { Camera } from '../camera';
 import { HUDManager } from '../hud';
@@ -8,11 +8,15 @@ import { Galaxy } from '../galaxy';
 import { WebGPUCore } from './core';
 import { Scene } from './scene';
 import type { RenderContext } from './types';
+import { mat4, vec4 } from 'gl-matrix';
+import type { UI } from '../ui';
 import { ComputePass } from './passes/computePass';
 import { GalaxyPass } from './passes/galaxyPass';
 import { OrbitsPass } from './passes/orbitsPass';
 import { PostFXPass } from './passes/postfxPass';
 import { MapPass } from './passes/mapPass';
+import { GlyphsPass } from './passes/glyphsPass';
+import { SOIPass } from './passes/soiPass';
 import { themes } from '../theme';
 import { spectralResponses } from '../spectral';
 import type { Body, Ship, Theme } from '../shared/types';
@@ -22,6 +26,7 @@ export class Renderer {
   private readonly canvas: HTMLCanvasElement;
   private readonly state: AppState;
   private readonly input: InputManager;
+  public ui: UI | null = null;
   
   private core!: WebGPUCore;
   private scene!: Scene;
@@ -34,6 +39,8 @@ export class Renderer {
   private orbitsPass!: OrbitsPass;
   private postfxPass!: PostFXPass;
   private mapPass!: MapPass;
+  private glyphsPass!: GlyphsPass;
+  private soiPass!: SOIPass;
 
   private textureSize!: { width: number, height: number };
   private mainSceneTexture!: GPUTexture;
@@ -83,12 +90,16 @@ export class Renderer {
     this.orbitsPass = new OrbitsPass();
     this.postfxPass = new PostFXPass();
     this.mapPass = new MapPass();
+    this.glyphsPass = new GlyphsPass();
+    this.soiPass = new SOIPass();
     
     this.computePass.initialize(this.core, this.scene);
     this.galaxyPass.initialize(this.core, this.scene);
     this.orbitsPass.initialize(this.core, this.scene);
     this.postfxPass.initialize(this.core, this.scene);
     this.mapPass.initialize(this.core, this.scene);
+    this.glyphsPass.initialize(this.core, this.scene);
+    this.soiPass.initialize(this.core, this.scene);
 
     this.handleResize();
     
@@ -128,7 +139,6 @@ export class Renderer {
     const deltaTime = 1 / 60.0;
     this.lastDeltaTime = deltaTime;
     await this.authority.tick(deltaTime, { deltaX: this.input.deltaX, deltaY: this.input.deltaY, keys: this.input.keys });
-    this.input.tick();
     
     const systemState = await this.authority.query();
     this.lastSystemState = systemState;
@@ -142,11 +152,32 @@ export class Renderer {
     let renderScale: number;
 
     if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
-      renderScale = Scene.calculateRenderScale(systemState.bodies, this.getCamera().focusBodyId);
-      this.cameraManager.update(this.state.cameraMode, { bodies: systemState.bodies, scale: renderScale, viewport: this.textureSize, vfov: 25.0 });
-      this.scene.update(systemState, this.getCamera(), systemState.bodies, renderScale, true);
+      // --- Reference Frame Transformation ---
+      let transformedBodies = systemState.bodies;
+      const focusBodyForFrame = systemState.bodies.find(b => b.id === this.getCamera().focusBodyId);
+      if (this.state.referenceFrame === ReferenceFrame.FOCUSED_BODY && focusBodyForFrame) {
+        transformedBodies = systemState.bodies.map(body => ({
+          ...body,
+          position: [
+            body.position[0] - focusBodyForFrame.position[0],
+            body.position[1] - focusBodyForFrame.position[1],
+            body.position[2] - focusBodyForFrame.position[2],
+          ] as [number, number, number],
+        }));
+      }
+
+      renderScale = Scene.calculateRenderScale(transformedBodies, this.getCamera().focusBodyId);
+      this.cameraManager.update(this.state.cameraMode, { bodies: transformedBodies, scale: renderScale, viewport: this.textureSize, vfov: 25.0, referenceFrame: this.state.referenceFrame });
+      bodiesToRender = transformedBodies;
       if (this.state.showOrbits) {
-        this.orbitsPass.update(systemState.bodies, this.scene, this.core, renderScale, this.getCamera().focusBodyId);
+        this.orbitsPass.update(transformedBodies, this.scene, this.core, renderScale);
+        this.glyphsPass.update(
+          this.orbitsPass.periapsisPoints,
+          this.orbitsPass.apoapsisPoints,
+          this.orbitsPass.ascendingNodePoints,
+          this.orbitsPass.descendingNodePoints
+        );
+        this.soiPass.update(transformedBodies, this.scene, renderScale);
       }
     } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
       renderScale = 1.0;
@@ -158,20 +189,88 @@ export class Renderer {
       this.cameraManager.update(this.state.cameraMode, {});
     }
 
-    this.scene.update(systemState, this.getCamera(), bodiesToRender, renderScale);
-    if (this.state.showOrbits && this.state.cameraMode !== CameraMode.SYSTEM_MAP) {
-      this.orbitsPass.update(systemState.bodies, this.scene, this.core, renderScale, this.getCamera().focusBodyId);
+    this.scene.update(
+      systemState,
+      this.getCamera(),
+      bodiesToRender,
+      renderScale,
+      this.state.cameraMode === CameraMode.SYSTEM_MAP
+    );
+    // Do not update orbits in ship view; rings are hidden there
+
+    // Handle click selection in System Map
+    if (this.state.cameraMode === CameraMode.SYSTEM_MAP && this.input.clicked && this.textureSize) {
+      const viewport = this.textureSize;
+      const viewProj = mat4.multiply(mat4.create(), this.getCamera().projectionMatrix as unknown as number[], this.getCamera().viewMatrix as unknown as number[]);
+      let closestBodyId: string | null = null;
+      let closestDist2 = Number.POSITIVE_INFINITY;
+      // Recompute the transformed bodies for hit testing, same as render path
+      const fb = systemState.bodies.find(b => b.id === this.getCamera().focusBodyId);
+      const transformedForHit = (this.state.referenceFrame === ReferenceFrame.FOCUSED_BODY && fb)
+        ? systemState.bodies.map(body => ({
+            id: body.id,
+            name: body.name,
+            position: [
+              body.position[0] - fb.position[0],
+              body.position[1] - fb.position[1],
+              body.position[2] - fb.position[2],
+            ] as [number, number, number],
+          }))
+        : systemState.bodies;
+      for (const b of transformedForHit) {
+        const worldPos = vec4.fromValues(b.position[0] * renderScale, b.position[1] * renderScale, b.position[2] * renderScale, 1.0);
+        const clip = vec4.transformMat4(vec4.create(), worldPos, viewProj as unknown as number[]);
+        const w = clip[3];
+        if (!Number.isFinite(w) || w === 0) continue;
+        const ndcX = clip[0] / w;
+        const ndcY = clip[1] / w;
+        const px = (ndcX * 0.5 + 0.5) * viewport.width;
+        const py = (-ndcY * 0.5 + 0.5) * viewport.height;
+        const dx = px - this.input.mouseX;
+        const dy = py - this.input.mouseY;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < closestDist2) {
+          closestDist2 = d2;
+          closestBodyId = b.id;
+        }
+      }
+      if (closestBodyId) {
+        this.getCamera().focusBodyId = closestBodyId;
+        this.getCamera().pendingFrame = true;
+        if (this.ui) {
+          const bodyName = systemState.bodies.find(b => b.id === closestBodyId)?.name;
+          if (bodyName) {
+            this.ui.setFocus(bodyName);
+          }
+        }
+      }
     }
 
     this.render(renderScale);
     
     if (this.hud && this.textureSize) {
-        const scaledBodies = systemState.bodies.map(b => ({
-            ...b, position: [ b.position[0] * renderScale, b.position[1] * renderScale, b.position[2] * renderScale ] as [number,number,number]
-        }));
-        this.hud.draw(this.state.cameraMode === CameraMode.SYSTEM_MAP ? scaledBodies : systemState.bodies, this.getCamera(), this.textureSize, this.state.cameraMode, this.state.playerShipId);
+        let hudBodies = systemState.bodies;
+        if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
+          const fb2 = systemState.bodies.find(b => b.id === this.getCamera().focusBodyId);
+          const bodiesForHud = (this.state.referenceFrame === ReferenceFrame.FOCUSED_BODY && fb2)
+            ? systemState.bodies.map(b => ({
+                ...b,
+                position: [
+                  b.position[0] - fb2.position[0],
+                  b.position[1] - fb2.position[1],
+                  b.position[2] - fb2.position[2],
+                ] as [number, number, number],
+              }))
+            : systemState.bodies;
+          hudBodies = bodiesForHud.map(b => ({
+            ...b,
+            position: [ b.position[0] * renderScale, b.position[1] * renderScale, b.position[2] * renderScale ] as [number, number, number],
+          }));
+        }
+        this.hud.draw(hudBodies, this.getCamera(), this.textureSize, this.state.cameraMode, this.state.playerShipId);
     }
 
+    this.input.tick();
     requestAnimationFrame(this.updateLoop);
   }
 
@@ -199,11 +298,14 @@ export class Renderer {
             this.orbitsPass.run(encoder, context, theme);
         }
         this.mapPass.run(encoder, context, theme, this.state.showOrbits);
+        if (this.state.showOrbits) {
+          this.soiPass.run(encoder, context);
+          this.glyphsPass.run(encoder, context);
+        }
     } else { // This is now the Ops View (SHIP_RELATIVE)
         this.computePass.run(encoder, context);
-        if (this.state.showOrbits) {
-          this.orbitsPass.run(encoder, context, theme);
-        }
+        // Clear any stale orbits overlay when in ship view
+        PostFXPass.clearTexture(this.core.device, this.orbitsTexture);
         this.postfxPass.run(encoder, context, theme, this.lastSystemState?.bodies ?? []);
     }
 

@@ -12,7 +12,8 @@ async function main() {
     state.playerShipId = 'player-ship';
     const input = new InputManager(canvas);
     const renderer = new Renderer(canvas, authority, state, input);
-    new UI(renderer, state);
+    const ui = new UI(renderer, state);
+    renderer.ui = ui;
     await renderer.start();
 }
 

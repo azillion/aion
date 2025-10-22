@@ -2,7 +2,7 @@ import { GUI } from 'dat.gui';
 import type { Renderer } from './renderer/index';
 import { spectralResponses } from './spectral';
 import { themes } from './theme';
-import { AppState, CameraMode } from './state';
+import { AppState, CameraMode, ReferenceFrame } from './state';
 import { G } from './shared/constants';
 
 export class UI {
@@ -60,6 +60,15 @@ export class UI {
         this.gui.add(this.state, 'crtIntensity', 0.0, 1.0).name('CRT Effect');
 
         this.gui.add(this.settings, 'Toggle View');
+
+        this.gui.add(this.state, 'referenceFrame', Object.values(ReferenceFrame)).name('Reference Frame');
+    }
+
+    public setFocus(bodyName: string) {
+        this.settings['Focus'] = bodyName;
+        if (this.focusController) {
+            this.focusController.updateDisplay();
+        }
     }
 
     private updateTheme = () => {

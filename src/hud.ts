@@ -56,14 +56,13 @@ export class HUDManager {
         continue;
       }
 
-      // SHIP_RELATIVE: show on-screen and off-screen indicators
+      // SHIP_RELATIVE: show on-screen and off-screen indicators (no labels)
       if (p.inView) {
         const x = p.x;
         const y = p.y;
         this.context.beginPath();
         this.context.arc(x, y, isFocus ? 4 : 3, 0, Math.PI * 2);
         this.context.fill();
-        this.context.fillText(body.name, x + 6, y - 6);
       } else {
         const x = p.x;
         const y = p.y;
