@@ -1,6 +1,7 @@
 import type { Body, SystemState, Vec3, Star } from '../shared/types';
 import type { WebGPUCore } from './core';
 import type { Camera } from '../camera';
+import { G } from '../shared/constants';
 
 const FLOATS_PER_SPHERE = 16;
 const FLOATS_PER_STAR = 8;
@@ -45,6 +46,7 @@ export class Scene {
   public mapCameraUniformBuffer!: GPUBuffer;
 
   public lastKnownBodyCount: number = 0;
+  public lastSystemTimestamp: number = 0;
   
   public get hierarchy(): Map<string, string | null> { return this._hierarchy; }
   private _hierarchy: Map<string, string | null> = new Map();
@@ -81,16 +83,18 @@ export class Scene {
     if (this.spheresBuffer) {
       this.spheresBuffer.destroy();
     }
-    const size = Math.max(1, numBodies * FLOATS_PER_SPHERE * 4);
+    const rawSize = Math.max(1, numBodies * FLOATS_PER_SPHERE * 4);
+    const paddedSize = Math.max(256, Math.ceil(rawSize / 256) * 256);
     this.spheresBuffer = this.device.createBuffer({
       label: `Spheres Buffer (${numBodies} bodies)`,
-      size,
+      size: paddedSize,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     this.lastKnownBodyCount = numBodies;
   }
 
   public update(systemState: SystemState, camera: Camera, bodiesToRender: Body[], renderScale: number, useWorldSpace: boolean = false) {
+    this.lastSystemTimestamp = systemState.timestamp;
     if (systemState.bodies.length !== this.lastKnownBodyCount) {
       this.recreateSpheresBuffer(systemState.bodies.length);
     }
@@ -153,27 +157,51 @@ export class Scene {
     const hierarchy = buildSystemHierarchy(bodies);
     let systemRadius = 0;
 
-    if (focusBody && focusBody.name !== 'Sun') {
-      const children = bodies.filter(b => hierarchy.get(b.id) === focusBody.id);
-      if (children.length > 0) {
-        systemRadius = children.reduce((maxDist, b) => {
-          const dist = Math.hypot(
-            b.position[0] - focusBody.position[0],
-            b.position[1] - focusBody.position[1],
-            b.position[2] - focusBody.position[2]
-          );
+    if (focusBody) {
+      const parentId = hierarchy.get(focusBody.id);
+      const parent = parentId ? bodies.find(b => b.id === parentId) : null;
+
+      if (!parent) {
+        // Root body (e.g., Sun) or no parent: frame the entire system
+        systemRadius = bodies.reduce((maxDist, b) => {
+          const dist = Math.hypot(b.position[0], b.position[1], b.position[2]);
           return Math.max(maxDist, dist);
         }, 0);
       } else {
-        systemRadius = focusBody.radius * 500;
+        // Frame the body's orbit around its parent using semi-major axis estimate
+        const r_vec: Vec3 = [
+          focusBody.position[0] - parent.position[0],
+          focusBody.position[1] - parent.position[1],
+          focusBody.position[2] - parent.position[2],
+        ];
+        const v_vec: Vec3 = [
+          focusBody.velocity[0] - parent.velocity[0],
+          focusBody.velocity[1] - parent.velocity[1],
+          focusBody.velocity[2] - parent.velocity[2],
+        ];
+        const r = Math.hypot(r_vec[0], r_vec[1], r_vec[2]);
+        const v = Math.hypot(v_vec[0], v_vec[1], v_vec[2]);
+        const mu = G * (parent.mass + focusBody.mass);
+        const invA = 2 / r - (v * v) / mu; // vis-viva
+
+        if (invA > 0) {
+          const a = 1 / invA; // semi-major axis
+          systemRadius = a * 1.5; // padding around orbit
+        } else {
+          // Parabolic/hyperbolic: use current distance with padding
+          systemRadius = r * 2.0;
+        }
       }
     } else {
+      // No focus: frame entire system
       systemRadius = bodies.reduce((maxDist, b) => {
         const dist = Math.hypot(b.position[0], b.position[1], b.position[2]);
         return Math.max(maxDist, dist);
       }, 0);
     }
-    
+
+    if (systemRadius < 1) systemRadius = focusBody ? focusBody.radius * 500 : 1000;
+
     return systemRadius > 0 ? VISUAL_SETTINGS.systemViewSize / systemRadius : 1.0;
   }
 

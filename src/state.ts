@@ -15,6 +15,7 @@ export class AppState {
   public playerShipId: string | null = null;
   public crtIntensity: number = 1.0;
   public referenceFrame: ReferenceFrame = ReferenceFrame.BARYCENTRIC;
+  public timeOffset: number = 0; // in seconds
 }
 
 
