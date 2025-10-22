@@ -1,5 +1,4 @@
 import type { Body, SystemState, Star } from '../shared/types';
-import { vec3 } from 'gl-matrix';
 import type { WebGPUCore } from './core';
 import type { Camera } from '../camera';
 
@@ -40,10 +39,8 @@ export class Scene {
   public spheresBuffer!: GPUBuffer;
   public starBuffer!: GPUBuffer;
 
-  // Camera-related buffers
-  public cameraUniformBuffer!: GPUBuffer;
-  public galaxyCameraUniformBuffer!: GPUBuffer;
-  public mapCameraUniformBuffer!: GPUBuffer;
+  // A SINGLE, shared buffer for all camera data.
+  public sharedCameraUniformBuffer!: GPUBuffer;
 
   public lastKnownBodyCount: number = 0;
   
@@ -52,15 +49,8 @@ export class Scene {
 
   constructor(core: WebGPUCore) {
     this.device = core.device;
-    this.cameraUniformBuffer = this.device.createBuffer({
-      size: 256,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.galaxyCameraUniformBuffer = this.device.createBuffer({
-      size: 128,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.mapCameraUniformBuffer = this.device.createBuffer({
+    this.sharedCameraUniformBuffer = this.device.createBuffer({
+      label: 'Shared Camera Uniform Buffer',
       size: 256,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
@@ -100,22 +90,6 @@ export class Scene {
 
     const sphereData = this.serializeSystemState(bodiesToRender, camera, renderScale, useWorldSpace);
     this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData);
-
-    // Update camera uniform buffer (for compute pass) with normalized direction + distance
-    const cameraData = new Float32Array(16);
-    cameraData.set([0, 0, 0], 0); // Eye is at origin in camera-relative space
-    const rel = vec3.subtract(vec3.create(), camera.look_at as unknown as number[], camera.eye as unknown as number[]);
-    const distance = vec3.length(rel);
-    if (distance > 0 && Number.isFinite(distance)) {
-      vec3.scale(rel, rel, 1.0 / distance); // normalize in f64 before storing
-    } else {
-      // Fallback forward if degenerate
-      rel[0] = 0; rel[1] = 0; rel[2] = -1;
-    }
-    cameraData.set([rel[0], rel[1], rel[2]], 4); // normalized look direction
-    cameraData.set(camera.up, 8);
-    cameraData[12] = Number.isFinite(distance) ? distance : 1.0; // distance to target
-    this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
   }
 
   private serializeSystemState(bodies: Body[], camera: Camera, renderScale: number, useWorldSpace: boolean) {

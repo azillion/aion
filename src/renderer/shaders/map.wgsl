@@ -1,10 +1,5 @@
-struct Camera {
-    viewProjection: mat4x4<f32>,
-    right: vec4<f32>,
-    up: vec4<f32>,
-    _pad: vec4<f32>,
-};
-@group(0) @binding(0) var<uniform> camera: Camera;
+// CameraUniforms is provided by a shared include (camera.wgsl)
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 // This struct must match the layout of the spheresBuffer in the compute pass.
 struct Sphere {

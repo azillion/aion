@@ -1,12 +1,5 @@
-// Uniforms for camera view-projection
-struct Camera {
-    viewProjection: mat4x4<f32>,
-    right: vec3<f32>,
-    // implicit padding for right vec3 to 16 bytes
-    up: vec3<f32>,
-    // implicit padding for up vec3 to 16 bytes
-};
-@group(0) @binding(0) var<uniform> camera: Camera;
+// CameraUniforms is provided by a shared include (camera.wgsl)
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 // Per-instance data for each star
 // Packed to 32-byte stride (8 floats):

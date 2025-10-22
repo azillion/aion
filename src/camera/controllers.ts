@@ -19,12 +19,13 @@ export class SystemMapController implements ICameraController {
         const aspect = context.viewport.width / Math.max(1, context.viewport.height);
 
         mat4.ortho(camera.projectionMatrix, -viewDistance * aspect, viewDistance * aspect, -viewDistance, viewDistance, -100.0, 100.0);
-        
+
         camera.eye = [center_x, center_y, 50];
         camera.look_at = [center_x, center_y, 0];
         camera.up = [0, 1, 0];
-        mat4.lookAt(camera.viewMatrix, camera.eye as unknown as number[], camera.look_at as unknown as number[], camera.up as unknown as number[]);
+        camera.recomputeViewFromLook();
         mat4.rotateX(camera.viewMatrix, camera.viewMatrix, -0.3);
+        camera.refreshDerived();
     }
 }
 
@@ -77,6 +78,8 @@ export class ShipRelativeController implements ICameraController {
         vec3.cross(finalUp, right, forward);
 
         camera.up = [finalUp[0], finalUp[1], finalUp[2]];
+        camera.recomputeViewFromLook();
+        camera.refreshDerived();
     }
 }
 

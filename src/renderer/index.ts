@@ -8,7 +8,7 @@ import { Galaxy } from '../galaxy';
 import { WebGPUCore } from './core';
 import { Scene } from './scene';
 import type { RenderContext } from './types';
-import { mat4, vec4 } from 'gl-matrix';
+import { vec4, vec3 } from 'gl-matrix';
 import type { UI } from '../ui';
 import { ComputePass } from './passes/computePass';
 import { GalaxyPass } from './passes/galaxyPass';
@@ -155,11 +155,12 @@ export class Renderer {
 
     let bodiesToRender: Body[] = systemState.bodies;
     let renderScale: number;
+    const camera = this.getCamera();
 
     if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
       let bodiesForMap = systemState.bodies;
       // --- Reference Frame Transformation ---
-      const focusBodyForFrame = systemState.bodies.find(b => b.id === this.getCamera().focusBodyId);
+      const focusBodyForFrame = systemState.bodies.find(b => b.id === camera.focusBodyId);
       if (this.state.referenceFrame === ReferenceFrame.FOCUSED_BODY && focusBodyForFrame) {
         bodiesForMap = systemState.bodies.map(body => ({
           ...body,
@@ -171,7 +172,7 @@ export class Renderer {
         }));
       }
 
-      renderScale = Scene.calculateRenderScale(bodiesForMap, this.getCamera().focusBodyId);
+      renderScale = Scene.calculateRenderScale(bodiesForMap, camera.focusBodyId);
       this.cameraManager.update(this.state.cameraMode, { bodies: bodiesForMap, scale: renderScale, viewport: this.textureSize, vfov: 25.0, referenceFrame: this.state.referenceFrame });
       bodiesToRender = bodiesForMap;
       if (this.state.showOrbits) {
@@ -196,9 +197,13 @@ export class Renderer {
       this.cameraManager.update(this.state.cameraMode, {});
     }
 
+    // Finalize camera and write shared camera buffer
+    camera.updateViewMatrix();
+    this.writeCameraBuffer(camera);
+
     this.scene.update(
       systemState,
-      this.getCamera(),
+      camera,
       bodiesToRender,
       renderScale,
       this.state.cameraMode === CameraMode.SYSTEM_MAP
@@ -208,7 +213,7 @@ export class Renderer {
     // Handle click selection in System Map
     if (this.state.cameraMode === CameraMode.SYSTEM_MAP && this.input.clicked && this.textureSize) {
       const viewport = this.textureSize;
-      const viewProj = mat4.multiply(mat4.create(), this.getCamera().projectionMatrix as unknown as number[], this.getCamera().viewMatrix as unknown as number[]);
+      const viewProj = camera.viewProjectionMatrix as unknown as number[];
       let closestBodyId: string | null = null;
       let closestDist2 = Number.POSITIVE_INFINITY;
       // Recompute the transformed bodies for hit testing, same as render path
@@ -258,7 +263,7 @@ export class Renderer {
     if (this.hud && this.textureSize) {
         let hudBodies = systemState.bodies;
         if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
-          const fb2 = systemState.bodies.find(b => b.id === this.getCamera().focusBodyId);
+        const fb2 = systemState.bodies.find(b => b.id === camera.focusBodyId);
           const bodiesForHud = (this.state.referenceFrame === ReferenceFrame.FOCUSED_BODY && fb2)
             ? systemState.bodies.map(b => ({
                 ...b,
@@ -272,11 +277,24 @@ export class Renderer {
           const scaledBodies = bodiesForHud.map(b => ({ ...b, position: [ b.position[0] * renderScale, b.position[1] * renderScale, b.position[2] * renderScale ] as Vec3 }));
           hudBodies = scaledBodies;
         }
-        this.hud.draw(hudBodies, this.getCamera(), this.textureSize, this.state.cameraMode, this.state.playerShipId);
+        this.hud.draw(hudBodies, camera, this.textureSize, this.state.cameraMode, this.state.playerShipId);
     }
 
     this.input.tick();
     requestAnimationFrame(this.updateLoop);
+  }
+
+  private writeCameraBuffer(camera: Camera) {
+    const buffer = new Float32Array(64);
+    buffer.set(camera.viewMatrix as unknown as number[], 0);
+    buffer.set(camera.projectionMatrix as unknown as number[], 16);
+    buffer.set(camera.viewProjectionMatrix as unknown as number[], 32);
+    buffer[48] = camera.eye[0]; buffer[49] = camera.eye[1]; buffer[50] = camera.eye[2]; buffer[51] = 0.0;
+    const dist = vec3.distance(camera.eye as unknown as number[], camera.look_at as unknown as number[]);
+    buffer[52] = camera.forward[0]; buffer[53] = camera.forward[1]; buffer[54] = camera.forward[2]; buffer[55] = dist;
+    buffer[56] = camera.right[0]; buffer[57] = camera.right[1]; buffer[58] = camera.right[2]; buffer[59] = 0.0;
+    buffer[60] = camera.up[0]; buffer[61] = camera.up[1]; buffer[62] = camera.up[2]; buffer[63] = 0.0;
+    this.core.device.queue.writeBuffer(this.scene.sharedCameraUniformBuffer, 0, buffer);
   }
 
   private render(systemScale: number) {

@@ -50,17 +50,17 @@ export class LocalAuthority implements Authority {
 		const playerShip: Ship = {
 			id: 'player-ship',
 			name: 'AION-1',
-			// Place ship in a 10,000km altitude orbit around Earth
+			// Place ship in a ~35,786 km (GEO) altitude circular orbit around Earth
 			// Position is Earth's position plus an offset for the orbit
 			position: [
-				earth.position[0] + (earth.radius + 10000),
+				earth.position[0] + (earth.radius + 35786),
 				earth.position[1],
 				earth.position[2]
 			],
 			// Velocity is Earth's velocity plus the tangential orbital velocity
 			velocity: [
 				earth.velocity[0],
-				earth.velocity[1] + Math.sqrt(G * earth.mass / (earth.radius + 10000)),
+				earth.velocity[1] + Math.sqrt(G * earth.mass / (earth.radius + 35786)),
 				earth.velocity[2]
 			],
 			radius: 0.1,

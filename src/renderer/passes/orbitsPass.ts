@@ -1,10 +1,11 @@
-import { mat4, vec3 } from 'gl-matrix';
+import { vec3 } from 'gl-matrix';
 import { G } from '../../shared/constants';
 import type { Body, Theme, Vec3 } from '../../shared/types';
 import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
 import orbitsShaderWGSL from '../shaders/orbits.wgsl?raw';
+import cameraWGSL from '../shaders/camera.wgsl?raw';
 
 const ORBIT_SAMPLES = 256;
 const ORBIT_MAX_POINTS = ORBIT_SAMPLES + 1;
@@ -25,7 +26,7 @@ export class OrbitsPass implements IRenderPass {
   
 
   public initialize(core: WebGPUCore, scene: Scene): void {
-    const module = core.device.createShaderModule({ code: orbitsShaderWGSL });
+    const module = core.device.createShaderModule({ code: cameraWGSL + orbitsShaderWGSL });
     this.pipeline = core.device.createRenderPipeline({
       label: 'Orbits Pipeline',
       layout: 'auto',
@@ -49,7 +50,7 @@ export class OrbitsPass implements IRenderPass {
     });
 
     this.uniformBuffer = core.device.createBuffer({
-      size: 112, // WGSL struct min binding size (mat4 + vec3 + f32 + a + e + currentTrueAnomaly + padding)
+      size: 48, // color vec3 + pointCount + a + e + currentTrueAnomaly + 2 pads => 12 floats
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -229,23 +230,23 @@ export class OrbitsPass implements IRenderPass {
       const elements = this.orbitalElements[i];
       if (!elements) continue;
 
-      const uniformData = new Float32Array(28);
-      const viewProj = mat4.multiply(mat4.create(), context.camera.projectionMatrix, context.camera.viewMatrix);
-      uniformData.set(viewProj, 0);
-      uniformData.set(theme.accent, 16);
-      // store pointCount at index 19 (float after color vec3)
-      uniformData[19] = this.orbitCounts[i];
-      uniformData[20] = elements.a * context.systemScale;
-      uniformData[21] = elements.e;
-      uniformData[22] = elements.currentTrueAnomaly;
+      const uniformData = new Float32Array(12);
+      uniformData.set(theme.accent, 0);
+      uniformData[3] = this.orbitCounts[i];
+      uniformData[4] = elements.a * context.systemScale;
+      uniformData[5] = elements.e;
+      uniformData[6] = elements.currentTrueAnomaly;
+      uniformData[7] = 0;
+      uniformData[8] = 0;
       context.core.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
 
       const bindGroup = context.core.device.createBindGroup({
         label: 'Orbits Bind Group',
         layout: this.pipeline.getBindGroupLayout(0),
         entries: [
-            { binding: 0, resource: { buffer: this.uniformBuffer } },
-            { binding: 1, resource: { buffer: this.orbitVertexBuffers[i] } }
+            { binding: 0, resource: { buffer: context.scene.sharedCameraUniformBuffer } },
+            { binding: 1, resource: { buffer: this.uniformBuffer } },
+            { binding: 2, resource: { buffer: this.orbitVertexBuffers[i] } }
         ],
       });
 
