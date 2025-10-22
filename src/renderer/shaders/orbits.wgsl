@@ -5,7 +5,7 @@ struct OrbitsUniforms {
     semiMajorAxis: f32,
     eccentricity: f32,
     currentTrueAnomaly: f32,
-    // padding
+    // Add padding to ensure struct size is a multiple of 16 bytes
     _pad1: f32,
     _pad2: f32,
 };

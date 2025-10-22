@@ -1,6 +1,6 @@
 import { mat4, vec3 } from 'gl-matrix';
 import { G } from '../../shared/constants';
-import type { Body, Orbit, Theme, Vec3 } from '../../shared/types';
+import type { Body, Theme, Vec3 } from '../../shared/types';
 import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
@@ -14,11 +14,15 @@ export class OrbitsPass implements IRenderPass {
   private uniformBuffer!: GPUBuffer;
 
   private orbitVertexBuffers: GPUBuffer[] = [];
+  private orbitCPUData: Float32Array[] = [];
+  private orbitCounts: number[] = [];
+  private orbitalElements: ({ a: number, e: number, currentTrueAnomaly: number } | null)[] = [];
 
   public periapsisPoints: (Vec3 | null)[] = [];
   public apoapsisPoints: (Vec3 | null)[] = [];
   public ascendingNodePoints: (Vec3 | null)[] = [];
   public descendingNodePoints: (Vec3 | null)[] = [];
+  public predictedPositions: (Vec3 | null)[] = [];
 
   public initialize(core: WebGPUCore, scene: Scene): void {
     const module = core.device.createShaderModule({ code: orbitsShaderWGSL });
@@ -28,6 +32,7 @@ export class OrbitsPass implements IRenderPass {
       vertex: {
         module,
         entryPoint: 'vertexMain',
+        // No vertex buffers; positions are sourced from a storage buffer in the shader
       },
       fragment: {
         module,
@@ -35,8 +40,8 @@ export class OrbitsPass implements IRenderPass {
         targets: [{
           format: core.presentationFormat,
           blend: {
-            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+            alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
           },
         }],
       },
@@ -44,143 +49,196 @@ export class OrbitsPass implements IRenderPass {
     });
 
     this.uniformBuffer = core.device.createBuffer({
-      size: 112,
+      size: 112, // WGSL struct min binding size (mat4 + vec3 + f32 + a + e + currentTrueAnomaly + padding)
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
     this.resizeOrbitBuffers(core.device, scene.lastKnownBodyCount);
   }
 
-  public resizeOrbitBuffers(device: GPUDevice, count: number) {
+  private resizeOrbitBuffers(device: GPUDevice, count: number) {
     this.orbitVertexBuffers.forEach(b => b.destroy());
     this.orbitVertexBuffers = Array.from({ length: count }, () => device.createBuffer({
+        // 16-byte per point (vec4<f32>) to match WGSL storage alignment
         size: ORBIT_MAX_POINTS * 4 * 4,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     }));
+    this.orbitCPUData = Array.from({ length: count }, () => new Float32Array(ORBIT_MAX_POINTS * 4));
+    this.orbitCounts = Array.from({ length: count }, () => 0);
+    this.orbitalElements = Array.from({ length: count }, () => null);
     this.periapsisPoints = Array.from({ length: count }, () => null);
     this.apoapsisPoints = Array.from({ length: count }, () => null);
     this.ascendingNodePoints = Array.from({ length: count }, () => null);
     this.descendingNodePoints = Array.from({ length: count }, () => null);
+    this.predictedPositions = Array.from({ length: count }, () => null);
   }
 
-  /**
-   * Calculates stable orbital parameters for a body around its parent.
-   */
-  public static calculateOrbit(body: Body, parent: Body, timestampSeconds: number): Orbit | null {
-    const r_vec: Vec3 = [
-      body.position[0] - parent.position[0],
-      body.position[1] - parent.position[1],
-      body.position[2] - parent.position[2],
-    ];
-    const v_vec: Vec3 = [
-      body.velocity[0] - parent.velocity[0],
-      body.velocity[1] - parent.velocity[1],
-      body.velocity[2] - parent.velocity[2],
-    ];
-    const r = Math.hypot(...r_vec);
-    const v = Math.hypot(...v_vec);
-    if (r === 0) return null;
+  public _calculateBarycenter(bodies: Body[]): { position: Vec3, velocity: Vec3, totalMass: number } {
+    let totalMass = 0;
+    const weightedPos: Vec3 = [0, 0, 0];
+    const weightedVel: Vec3 = [0, 0, 0];
 
-    const mu = G * (parent.mass + body.mass);
-    const h_vec = vec3.cross(vec3.create(), r_vec as unknown as vec3, v_vec as unknown as vec3);
+    for (const body of bodies) {
+        totalMass += body.mass;
+        weightedPos[0] += body.position[0] * body.mass;
+        weightedPos[1] += body.position[1] * body.mass;
+        weightedPos[2] += body.position[2] * body.mass;
+        weightedVel[0] += body.velocity[0] * body.mass;
+        weightedVel[1] += body.velocity[1] * body.mass;
+        weightedVel[2] += body.velocity[2] * body.mass;
+    }
 
-    const e_vec_part1 = vec3.cross(vec3.create(), v_vec as unknown as vec3, h_vec);
-    const e_vec = vec3.subtract(
-      vec3.create(),
-      vec3.scale(e_vec_part1, e_vec_part1, 1 / mu),
-      vec3.scale(vec3.create(), r_vec as unknown as vec3, 1 / r)
-    );
-    const eccentricity = vec3.length(e_vec);
-
-    const invA = 2 / r - (v * v) / mu;
-    if (!isFinite(invA) || invA <= 0) return null;
-    const semiMajorAxis = 1 / invA;
-
-    const W = vec3.normalize(vec3.create(), h_vec);
-    let P = eccentricity > 1e-6 ? vec3.normalize(vec3.create(), e_vec) : vec3.normalize(vec3.create(), r_vec as unknown as vec3);
-    const dotPW = vec3.dot(P, W);
-    P = vec3.normalize(P, vec3.subtract(P, P, vec3.scale(vec3.create(), W, dotPW)));
-    const Q = vec3.cross(vec3.create(), W, P);
-
-    const dotR_Q = vec3.dot(r_vec as unknown as vec3, Q);
-    const dotR_P = vec3.dot(r_vec as unknown as vec3, P);
-    const trueAnomalyAtEpoch = Math.atan2(dotR_Q, dotR_P);
+    if (totalMass === 0) return { position: [0,0,0], velocity: [0,0,0], totalMass: 0 };
 
     return {
-      semiMajorAxis,
-      eccentricity,
-      p: [P[0], P[1], P[2]],
-      q: [Q[0], Q[1], Q[2]],
-      mu,
-      trueAnomalyAtEpoch,
-      epoch: timestampSeconds,
+        position: [weightedPos[0] / totalMass, weightedPos[1] / totalMass, weightedPos[2] / totalMass],
+        velocity: [weightedVel[0] / totalMass, weightedVel[1] / totalMass, weightedVel[2] / totalMass],
+        totalMass,
     };
   }
 
-  /**
-   * Returns the position in the parent's frame at the requested absolute time (seconds).
-   */
-  public static getPositionOnOrbit(orbit: Orbit, timeSeconds: number): Vec3 {
-    const dt = timeSeconds - orbit.epoch;
-    const n = Math.sqrt(orbit.mu / Math.pow(orbit.semiMajorAxis, 3));
-    const M0 = orbit.trueAnomalyAtEpoch - orbit.eccentricity * Math.sin(orbit.trueAnomalyAtEpoch);
-    const M = M0 + n * dt;
-    let E = M;
-    for (let i = 0; i < 5; i++) {
-      E = E - (E - orbit.eccentricity * Math.sin(E) - M) / (1 - orbit.eccentricity * Math.cos(E));
+  public update(bodies: Body[], _scene: Scene, core: WebGPUCore, systemScale: number, timeOffset: number) {
+    if (bodies.length !== this.orbitVertexBuffers.length) {
+        this.resizeOrbitBuffers(core.device, bodies.length);
     }
-    const nu = 2 * Math.atan2(
-      Math.sqrt(1 + orbit.eccentricity) * Math.sin(E / 2),
-      Math.sqrt(Math.max(0, 1 - orbit.eccentricity)) * Math.cos(E / 2)
-    );
-    const r_dist = orbit.semiMajorAxis * (1 - orbit.eccentricity * Math.cos(E));
+    
+    const barycenter = this._calculateBarycenter(bodies);
+    if (barycenter.totalMass === 0) return;
 
-    const x = r_dist * Math.cos(nu);
-    const y = r_dist * Math.sin(nu);
-    const { p, q } = orbit;
-    return [
-      p[0] * x + q[0] * y,
-      p[1] * x + q[1] * y,
-      p[2] * x + q[2] * y,
-    ];
+    for (let i = 0; i < bodies.length; i++) {
+      const body = bodies[i];
+      
+      const r_vec: Vec3 = [
+        body.position[0] - barycenter.position[0],
+        body.position[1] - barycenter.position[1],
+        body.position[2] - barycenter.position[2]
+      ];
+      const v_vec: Vec3 = [
+        body.velocity[0] - barycenter.velocity[0],
+        body.velocity[1] - barycenter.velocity[1],
+        body.velocity[2] - barycenter.velocity[2]
+      ];
+
+      this._calculateAnalyticOrbit(r_vec, v_vec, barycenter.totalMass, i, systemScale, timeOffset);
+    }
+    
+    for (let i = 0; i < bodies.length; i++) {
+        const bytes = this.orbitCounts[i] * 4 * 4;
+        if (bytes > 0) {
+            core.device.queue.writeBuffer(this.orbitVertexBuffers[i], 0, this.orbitCPUData[i].buffer, 0, bytes);
+        }
+    }
   }
 
-  /**
-   * Generates or refreshes the orbit ribbon geometry for a body index.
-   */
-  public updateOrbitGeometry(core: WebGPUCore, bodyIndex: number, orbit: Orbit) {
-    const a = orbit.semiMajorAxis;
-    const e = orbit.eccentricity;
+  // Kepler solver: returns true anomaly at given time offset for an ellipse (a>0)
+  private _getTrueAnomalyAtTime(timeOffset: number, a: number, e: number, mu: number): number {
+    if (a <= 0) return 0;
+    const n = Math.sqrt(mu / Math.pow(a, 3));
+    const M = n * timeOffset;
+    let E = M;
+    for (let i = 0; i < 5; i++) {
+      const denom = 1 - e * Math.cos(E);
+      const dE = denom !== 0 ? (E - e * Math.sin(E) - M) / denom : 0;
+      E -= dE;
+    }
+    const sqrt1pe = Math.sqrt(1 + e);
+    const sqrt1me = Math.sqrt(Math.max(0, 1 - e));
+    const nu = 2 * Math.atan2(sqrt1pe * Math.sin(E / 2), sqrt1me * Math.cos(E / 2));
+    return nu;
+  }
+
+  private _calculateAnalyticOrbit(r_vec: Vec3, v_vec: Vec3, totalSystemMass: number, i: number, systemScale: number, timeOffset: number) {
+    const r = Math.hypot(...r_vec);
+    const v = Math.hypot(...v_vec);
+    const mu = G * totalSystemMass;
+    const h_vec = [r_vec[1] * v_vec[2] - r_vec[2] * v_vec[1], r_vec[2] * v_vec[0] - r_vec[0] * v_vec[2], r_vec[0] * v_vec[1] - r_vec[1] * v_vec[0]];
+    const h = Math.hypot(...h_vec) || 1e-9;
+    const c_vec = [v_vec[1] * h_vec[2] - v_vec[2] * h_vec[1], v_vec[2] * h_vec[0] - v_vec[0] * h_vec[2], v_vec[0] * h_vec[1] - v_vec[1] * h_vec[0]];
+    const e_vec = [c_vec[0] / mu - r_vec[0] / r, c_vec[1] / mu - r_vec[1] / r, c_vec[2] / mu - r_vec[2] / r];
+    const e = Math.hypot(...e_vec);
+    const invA = 2 / r - (v * v) / mu;
+    if (!isFinite(invA) || invA <= 0) { this.orbitCounts[i] = 0; this.orbitalElements[i] = null; this.predictedPositions[i] = null; return; }
+    const a = 1 / invA;
     const bSemi = a * Math.sqrt(Math.max(0, 1 - e * e));
-    const arr = new Float32Array(ORBIT_MAX_POINTS * 4);
-    const { p, q } = orbit;
+
+    const W = [h_vec[0]/h, h_vec[1]/h, h_vec[2]/h];
+    let P = e > 1e-6 ? [e_vec[0]/e, e_vec[1]/e, e_vec[2]/e] : [r_vec[0]/r, r_vec[1]/r, r_vec[2]/r];
+    const dotPW = P[0]*W[0] + P[1]*W[1] + P[2]*W[2];
+    P = [P[0] - dotPW*W[0], P[1] - dotPW*W[1], P[2] - dotPW*W[2]];
+    const pLen = Math.hypot(...P) || 1;
+    P = [P[0]/pLen, P[1]/pLen, P[2]/pLen];
+    const Q = [W[1]*P[2] - W[2]*P[1], W[2]*P[0] - W[0]*P[2], W[0]*P[1] - W[1]*P[0]];
+
+    // Generate orbit ribbon points
+    const arr = this.orbitCPUData[i];
     for (let k = 0; k < ORBIT_MAX_POINTS; k++) {
       const theta = (k / (ORBIT_MAX_POINTS - 1)) * Math.PI * 2;
       const xPeri = a * (Math.cos(theta) - e);
       const yPeri = bSemi * Math.sin(theta);
       const base = k * 4;
-      arr[base + 0] = (p[0] * xPeri + q[0] * yPeri);
-      arr[base + 1] = (p[1] * xPeri + q[1] * yPeri);
-      arr[base + 2] = (p[2] * xPeri + q[2] * yPeri);
-      arr[base + 3] = 1.0;
+      arr[base+0] = (P[0]*xPeri + Q[0]*yPeri) * systemScale;
+      arr[base+1] = (P[1]*xPeri + Q[1]*yPeri) * systemScale;
+      arr[base+2] = (P[2]*xPeri + Q[2]*yPeri) * systemScale;
+      arr[base+3] = 1.0; // padding for 16-byte alignment
     }
-    core.device.queue.writeBuffer(this.orbitVertexBuffers[bodyIndex], 0, arr);
+    this.orbitCounts[i] = ORBIT_MAX_POINTS;
 
-    // Update apsis points for glyphs (nodes optional)
+    // Store minimal orbital elements required by shader and glyph pass
+    const dotR_Q = r_vec[0]*Q[0] + r_vec[1]*Q[1] + r_vec[2]*Q[2];
+    const dotR_P = r_vec[0]*P[0] + r_vec[1]*P[1] + r_vec[2]*P[2];
+    const currentNu = Math.atan2(dotR_Q, dotR_P);
+    const futureNu = this._getTrueAnomalyAtTime(timeOffset, a, e, mu) + currentNu;
+    this.orbitalElements[i] = { a, e, currentTrueAnomaly: futureNu };
+
+    // Calculate and store the predicted position at the time offset (barycentric frame)
+    const r_dist_future = a * (1 - e * e) / (1 + e * Math.cos(futureNu));
+    const futurePosX = r_dist_future * Math.cos(futureNu);
+    const futurePosY = r_dist_future * Math.sin(futureNu);
+    const posInBarycentric: Vec3 = [
+      P[0]*futurePosX + Q[0]*futurePosY,
+      P[1]*futurePosX + Q[1]*futurePosY,
+      P[2]*futurePosX + Q[2]*futurePosY,
+    ];
+    this.predictedPositions[i] = [posInBarycentric[0], posInBarycentric[1], posInBarycentric[2]];
+
+    // Calculate and store apsis points
     if (e > 1e-6) {
-      const peri = vec3.scale(vec3.create(), vec3.fromValues(orbit.p[0], orbit.p[1], orbit.p[2]), a * (1.0 - e));
-      const apo = vec3.scale(vec3.create(), vec3.fromValues(orbit.p[0], orbit.p[1], orbit.p[2]), -a * (1.0 + e));
-      this.periapsisPoints[bodyIndex] = [peri[0], peri[1], peri[2]];
-      this.apoapsisPoints[bodyIndex] = [apo[0], apo[1], apo[2]];
+      const Pvec = vec3.fromValues(P[0], P[1], P[2]);
+      const periapsisVec = vec3.scale(vec3.create(), Pvec, a * (1.0 - e));
+      const apoapsisVec = vec3.scale(vec3.create(), Pvec, -a * (1.0 + e));
+      this.periapsisPoints[i] = [
+          periapsisVec[0] * systemScale,
+          periapsisVec[1] * systemScale,
+          periapsisVec[2] * systemScale,
+      ];
+      this.apoapsisPoints[i] = [
+          apoapsisVec[0] * systemScale,
+          apoapsisVec[1] * systemScale,
+          apoapsisVec[2] * systemScale,
+      ];
     } else {
-      this.periapsisPoints[bodyIndex] = null;
-      this.apoapsisPoints[bodyIndex] = null;
+      this.periapsisPoints[i] = null;
+      this.apoapsisPoints[i] = null;
     }
-    this.ascendingNodePoints[bodyIndex] = null;
-    this.descendingNodePoints[bodyIndex] = null;
+
+    // Calculate and store node points (intersection with ecliptic XY-plane)
+    const nodeLine: Vec3 = [-h_vec[1], h_vec[0], 0];
+    const nodeLineMag = vec3.length(vec3.fromValues(nodeLine[0], nodeLine[1], nodeLine[2]));
+    if (nodeLineMag > 1e-9) {
+      const n = vec3.normalize(vec3.create(), vec3.fromValues(nodeLine[0], nodeLine[1], nodeLine[2]));
+      const nu = Math.atan2(vec3.dot(n, vec3.fromValues(Q[0], Q[1], Q[2])), vec3.dot(n, vec3.fromValues(P[0], P[1], P[2])));
+      const r_dist = a * (1 - e * e) / (1 + e * Math.cos(nu));
+      const ascPos = vec3.scale(vec3.create(), n, r_dist * systemScale);
+      this.ascendingNodePoints[i] = [ascPos[0], ascPos[1], ascPos[2]];
+      const descPos = vec3.scale(vec3.create(), n, -r_dist * systemScale);
+      this.descendingNodePoints[i] = [descPos[0], descPos[1], descPos[2]];
+    } else {
+      this.ascendingNodePoints[i] = null;
+      this.descendingNodePoints[i] = null;
+    }
   }
 
-  public run(encoder: GPUCommandEncoder, context: RenderContext, theme: Theme, orbitsToDraw: (Orbit | null)[], targetTimeSeconds: number): void {
+  public run(encoder: GPUCommandEncoder, context: RenderContext, theme: Theme): void {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: context.orbitsTexture.createView(),
@@ -190,95 +248,42 @@ export class OrbitsPass implements IRenderPass {
       }]
     });
     pass.setPipeline(this.pipeline);
-    // Build a dedicated top-down viewProjection to frame all orbits
-    const systemRadius = orbitsToDraw.reduce((max, orbit) => {
-      if (!orbit) return max;
-      const apo = orbit.semiMajorAxis * (1 + orbit.eccentricity);
-      return Math.max(max, apo);
-    }, 0);
-    if (systemRadius <= 0) { pass.end(); return; }
-    const aspect = context.textureSize.width / context.textureSize.height;
-    const margin = 1.1;
-    const left = -systemRadius * margin * aspect;
-    const right = systemRadius * margin * aspect;
-    const bottom = -systemRadius * margin;
-    const top = systemRadius * margin;
-    const near = -systemRadius * 10.0;
-    const far = systemRadius * 10.0;
-    const proj = mat4.ortho(mat4.create(), left, right, bottom, top, near, far);
-    const view = mat4.lookAt(mat4.create(), [0, 0, systemRadius], [0, 0, 0], [0, 1, 0]);
-    const viewProj = mat4.multiply(mat4.create(), proj, view);
-
     for (let i = 0; i < this.orbitVertexBuffers.length; i++) {
-      const orbit = orbitsToDraw[i];
-      if (!orbit) continue;
+      if (this.orbitCounts[i] < 2) continue;
 
-      const posOnOrbit = OrbitsPass.getPositionOnOrbit(orbit, targetTimeSeconds);
-      const pVec = vec3.fromValues(orbit.p[0], orbit.p[1], orbit.p[2]);
-      const qVec = vec3.fromValues(orbit.q[0], orbit.q[1], orbit.q[2]);
-      const nu = Math.atan2(vec3.dot(vec3.fromValues(posOnOrbit[0], posOnOrbit[1], posOnOrbit[2]), qVec), vec3.dot(vec3.fromValues(posOnOrbit[0], posOnOrbit[1], posOnOrbit[2]), pVec));
+      const elements = this.orbitalElements[i];
+      if (!elements) continue;
 
       const uniformData = new Float32Array(28);
+      const viewProj = mat4.multiply(mat4.create(), context.camera.projectionMatrix, context.camera.viewMatrix);
       uniformData.set(viewProj, 0);
       uniformData.set(theme.accent, 16);
-      uniformData[19] = ORBIT_MAX_POINTS;
-      uniformData[20] = orbit.semiMajorAxis;
-      uniformData[21] = orbit.eccentricity;
-      uniformData[22] = nu;
+      // store pointCount at index 19 (float after color vec3)
+      uniformData[19] = this.orbitCounts[i];
+      uniformData[20] = elements.a * context.systemScale;
+      uniformData[21] = elements.e;
+      uniformData[22] = elements.currentTrueAnomaly;
       context.core.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
 
       const bindGroup = context.core.device.createBindGroup({
         label: 'Orbits Bind Group',
         layout: this.pipeline.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: { buffer: this.uniformBuffer } },
-          { binding: 1, resource: { buffer: this.orbitVertexBuffers[i] } },
+            { binding: 0, resource: { buffer: this.uniformBuffer } },
+            { binding: 1, resource: { buffer: this.orbitVertexBuffers[i] } }
         ],
       });
+
       pass.setBindGroup(0, bindGroup);
-      pass.draw(ORBIT_MAX_POINTS * 2);
+      // Draw two vertices per orbit point; last point will pair with previous via central diff
+      pass.draw(this.orbitCounts[i] * 2);
     }
     pass.end();
   }
   
   public clearAll() {
-    // No-op with cached approach; geometry will be refreshed as needed
+    this.orbitCounts.fill(0);
   }
+
   
-  /**
-   * Calculates apsides and nodes from a stable Orbit (scaled to systemScale).
-   */
-  public static getSpecialPoints(orbit: Orbit, systemScale: number): {
-    periapsis: Vec3 | null,
-    apoapsis: Vec3 | null,
-    ascending: Vec3 | null,
-    descending: Vec3 | null,
-  } {
-    if (!isFinite(orbit.semiMajorAxis) || orbit.eccentricity >= 1.0) {
-      return { periapsis: null, apoapsis: null, ascending: null, descending: null };
-    }
-    const pVec = vec3.fromValues(orbit.p[0], orbit.p[1], orbit.p[2]);
-    const qVec = vec3.fromValues(orbit.q[0], orbit.q[1], orbit.q[2]);
-
-    const periVec = vec3.scale(vec3.create(), pVec, orbit.semiMajorAxis * (1 - orbit.eccentricity) * systemScale);
-    const apoVec = vec3.scale(vec3.create(), pVec, -orbit.semiMajorAxis * (1 + orbit.eccentricity) * systemScale);
-    const periapsis: Vec3 = [periVec[0], periVec[1], periVec[2]];
-    const apoapsis: Vec3 = [apoVec[0], apoVec[1], apoVec[2]];
-
-    // Node line = intersection of orbital plane (p,q) with ecliptic (Z plane)
-    const W = vec3.normalize(vec3.create(), vec3.cross(vec3.create(), pVec, qVec));
-    const nodeLine = vec3.fromValues(-W[1], W[0], 0);
-    const nodeLen = vec3.length(nodeLine);
-    if (nodeLen < 1e-6) {
-      return { periapsis, apoapsis, ascending: null, descending: null };
-    }
-    vec3.scale(nodeLine, nodeLine, 1 / nodeLen);
-    const nu = Math.atan2(vec3.dot(nodeLine, qVec), vec3.dot(nodeLine, pVec));
-    const r_dist = orbit.semiMajorAxis * (1 - orbit.eccentricity * orbit.eccentricity) / (1 + orbit.eccentricity * Math.cos(nu));
-    const asc = vec3.scale(vec3.create(), nodeLine, r_dist * systemScale);
-    const dsc = vec3.scale(vec3.create(), nodeLine, -r_dist * systemScale);
-    const ascending: Vec3 = [asc[0], asc[1], asc[2]];
-    const descending: Vec3 = [dsc[0], dsc[1], dsc[2]];
-    return { periapsis, apoapsis, ascending, descending };
-  }
 }

@@ -56,7 +56,7 @@ export class UI {
             .onChange((value: boolean) => {
                 this.state.showOrbits = value;
                 if (!value) {
-                    this.renderer.clearOrbitCache();
+                    this.renderer.clearOrbitHistory();
                 }
             });
 
