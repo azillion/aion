@@ -14,13 +14,21 @@ export class UI {
     private gui: GUI;
     private focusController: dat.GUIController | null = null;
     private cameraManager: CameraManager;
+    private timeFolder: GUI;
     private settings = {
-        'Time Scale': 1.0,
         'Focus': 'Sun',
         'Theme': 'white',
         'Sensor': 'Visible (Y)',
         'Show Orbits': false,
         'Add Asteroid': () => this.addAsteroid(),
+        'Warp x1': () => this.setWarp(1),
+        'Warp x100': () => this.setWarp(100),
+        'Warp x1k': () => this.setWarp(1000),
+        'Warp x10k': () => this.setWarp(10000),
+        'Warp x100k': () => this.setWarp(100000),
+        'Warp x1M': () => this.setWarp(1000000),
+        'Time Scale': 1.0, // We keep the slider for variable control
+        'Current Warp': 'x1',
         'Toggle View': () => {
             if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
                 this.state.cameraMode = CameraMode.SHIP_RELATIVE;
@@ -39,11 +47,19 @@ export class UI {
         this.cameraManager = cameraManager;
         this.gui = new GUI();
 
-        this.gui
+        this.timeFolder = this.gui.addFolder('Time Control');
+        this.timeFolder.add(this.settings, 'Warp x1');
+        this.timeFolder.add(this.settings, 'Warp x100');
+        this.timeFolder.add(this.settings, 'Warp x1k');
+        this.timeFolder.add(this.settings, 'Warp x10k');
+        this.timeFolder.add(this.settings, 'Warp x100k');
+        this.timeFolder.add(this.settings, 'Warp x1M');
+        this.timeFolder.add(this.settings, 'Current Warp').listen();
+        this.timeFolder
             .add(this.settings, 'Time Scale', 0, 10000)
-            .onChange((value: number) => {
-                this.authority.setTimeScale(value);
-            });
+            .onChange((value: number) => this.setWarp(value))
+            .listen();
+        this.timeFolder.open();
 
         this._createSceneControls();
 
@@ -75,6 +91,13 @@ export class UI {
         if (this.focusController) {
             this.focusController.updateDisplay();
         }
+    }
+
+    private setWarp(scale: number) {
+        this.authority.setTimeScale(scale);
+        this.settings['Time Scale'] = scale;
+        const scaleNames: {[key: number]: string} = {1: 'x1', 100: 'x100', 1000: 'x1k', 10000: 'x10k', 100000: 'x100k', 1000000: 'x1M'};
+        this.settings['Current Warp'] = scaleNames[scale] || `${scale.toPrecision(2)}x`;
     }
 
     private updateTheme = () => {

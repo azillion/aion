@@ -68,6 +68,7 @@ export class LocalAuthority implements Authority {
 			albedo: [0.8, 0.8, 0.9],
 			emissive: [0.1, 0.3, 1.0],
 			orientation: [0, 0, 0, 1],
+			angularVelocity: [0, 0, 0],
 			thrust: [0, 0, 0],
 		};
 
@@ -87,56 +88,93 @@ export class LocalAuthority implements Authority {
 	async tick(deltaTime: number, input: InputState): Promise<void> {
 		const dt = deltaTime * this.timeScalar;
 
-		// Update player ship orientation from input deltas (stable FPS-style: world-yaw, local-pitch)
-		if ((input.deltaX !== 0 || input.deltaY !== 0)) {
-			const ship = this.state.bodies.find(b => b.id === 'player-ship') as Ship | undefined;
-			if (ship) {
-				const sensitivity = 0.0015; // radians per pixel
-				const yawAngle = -input.deltaX * sensitivity;
-				const pitchAngle = -input.deltaY * sensitivity;
-				const q = quat.fromValues(ship.orientation[0], ship.orientation[1], ship.orientation[2], ship.orientation[3]);
-				// 1) World yaw: rotate around world Y (pre-multiply)
-				if (yawAngle !== 0) {
-					const yawQ = quat.create();
-					quat.setAxisAngle(yawQ, vec3.fromValues(0, 1, 0), yawAngle);
-					quat.multiply(q, yawQ, q);
-				}
-				// 2) Local pitch: rotate around camera right (post-multiply)
-				if (pitchAngle !== 0) {
-					const right = vec3.create();
-					vec3.transformQuat(right, vec3.fromValues(1, 0, 0), q);
-					const pitchQ = quat.create();
-					quat.setAxisAngle(pitchQ, right, pitchAngle);
-					quat.multiply(q, q, pitchQ);
-				}
-				quat.normalize(q, q);
-				ship.orientation = [q[0], q[1], q[2], q[3]];
-			}
-		}
+		// Direct mouse-look deprecated: orientation now controlled by RCS torques
+
+		// Reset frame flags
+		this.state.flags = { precision: false, killRotation: false };
 
 		// Thrust & maneuvering
 		{
 			const ship = this.state.bodies.find(b => b.id === 'player-ship') as Ship | undefined;
 			if (ship) {
-				// Instant face Sun (KeyF): rotate -Z forward to direction toward sun
-				if (input.keys.has('KeyF')) {
+				// Prograde Lock (KeyP): face velocity vector relative to Sun (temporary frame)
+				if (input.keys.has('KeyP')) {
+					const shipVel = vec3.fromValues(ship.velocity[0], ship.velocity[1], ship.velocity[2]);
 					const sun = this.state.bodies.find(b => b.id === 'sol');
 					if (sun) {
-						const toSun = vec3.fromValues(
-							sun.position[0] - ship.position[0],
-							sun.position[1] - ship.position[1],
-							sun.position[2] - ship.position[2]
-						);
-						vec3.normalize(toSun, toSun);
-						const baseForward = vec3.fromValues(0, 0, -1);
-						const qrot = quat.create();
-						quat.rotationTo(qrot, baseForward, toSun);
-						ship.orientation = [qrot[0], qrot[1], qrot[2], qrot[3]];
+						const sunVel = vec3.fromValues(sun.velocity[0], sun.velocity[1], sun.velocity[2]);
+						const relativeVel = vec3.subtract(vec3.create(), shipVel, sunVel);
+						if (vec3.length(relativeVel) > 1) {
+							vec3.normalize(relativeVel, relativeVel);
+							const baseForward = vec3.fromValues(0, 0, -1);
+							const qrot = quat.create();
+							quat.rotationTo(qrot, baseForward, relativeVel);
+							ship.orientation = [qrot[0], qrot[1], qrot[2], qrot[3]];
+						}
 					}
 				}
 
-				const THRUST_FORCE = 5e5; // N (0.5 m/s^2 for 1e6 kg)
-				const MANEUVER_FORCE = THRUST_FORCE / 4;
+				// Barycenter Lock (KeyB): face toward system barycenter (excluding the ship)
+				if (input.keys.has('KeyB')) {
+					let totalMass = 0;
+					let cx = 0, cy = 0, cz = 0;
+					for (const body of this.state.bodies) {
+						if (body.id === 'player-ship') continue;
+						totalMass += body.mass;
+						cx += body.mass * body.position[0];
+						cy += body.mass * body.position[1];
+						cz += body.mass * body.position[2];
+					}
+					if (totalMass > 0) {
+						const bx = cx / totalMass;
+						const by = cy / totalMass;
+						const bz = cz / totalMass;
+						const toBary = vec3.fromValues(bx - ship.position[0], by - ship.position[1], bz - ship.position[2]);
+						if (vec3.length(toBary) > 1) {
+							vec3.normalize(toBary, toBary);
+							const baseForward = vec3.fromValues(0, 0, -1);
+							const qrot = quat.create();
+							quat.rotationTo(qrot, baseForward, toBary);
+							ship.orientation = [qrot[0], qrot[1], qrot[2], qrot[3]];
+						}
+					}
+				}
+
+				// Nearest Body Lock (KeyN): face toward the nearest body (excluding the ship)
+				if (input.keys.has('KeyN')) {
+					let nearest: Body | null = null;
+					let nearestDistSq = Infinity;
+					for (const body of this.state.bodies) {
+						if (body.id === 'player-ship') continue;
+						const dx = body.position[0] - ship.position[0];
+						const dy = body.position[1] - ship.position[1];
+						const dz = body.position[2] - ship.position[2];
+						const d2 = dx * dx + dy * dy + dz * dz;
+						if (d2 < nearestDistSq) { nearestDistSq = d2; nearest = body; }
+					}
+					if (nearest) {
+						const toNearest = vec3.fromValues(
+							nearest.position[0] - ship.position[0],
+							nearest.position[1] - ship.position[1],
+							nearest.position[2] - ship.position[2]
+						);
+						if (vec3.length(toNearest) > 1) {
+							vec3.normalize(toNearest, toNearest);
+							const baseForward = vec3.fromValues(0, 0, -1);
+							const qrot = quat.create();
+							quat.rotationTo(qrot, baseForward, toNearest);
+							ship.orientation = [qrot[0], qrot[1], qrot[2], qrot[3]];
+						}
+					}
+				}
+
+				// Precision Mode (Tab): scale forces/torques for fine control
+				const isPrecisionMode = input.keys.has('Backquote');
+				if (isPrecisionMode) this.state.flags!.precision = true;
+				const precisionMultiplier = isPrecisionMode ? 0.1 : 1.0;
+
+				const THRUST_FORCE = 5e5 * precisionMultiplier; // Newtons
+				const MANEUVER_FORCE = THRUST_FORCE / 4; // Maneuver thrusters scaled too
 				const BASE_FORWARD = vec3.fromValues(0, 0, -1);
 				const BASE_RIGHT = vec3.fromValues(1, 0, 0);
 				const BASE_UP = vec3.fromValues(0, 1, 0);
@@ -150,13 +188,49 @@ export class LocalAuthority implements Authority {
 
 				const totalForceVec = vec3.create();
 				if (input.keys.has('KeyW')) { vec3.scaleAndAdd(totalForceVec, totalForceVec, shipForward, THRUST_FORCE); }
-				if (input.keys.has('KeyS')) { vec3.scaleAndAdd(totalForceVec, totalForceVec, shipForward, -THRUST_FORCE); }
+				if (input.keys.has('KeyS')) { vec3.scaleAndAdd(totalForceVec, totalForceVec, shipForward, -THRUST_FORCE / 2); }
 				if (input.keys.has('KeyD')) { vec3.scaleAndAdd(totalForceVec, totalForceVec, shipRight, MANEUVER_FORCE); }
 				if (input.keys.has('KeyA')) { vec3.scaleAndAdd(totalForceVec, totalForceVec, shipRight, -MANEUVER_FORCE); }
 				if (input.keys.has('Space')) { vec3.scaleAndAdd(totalForceVec, totalForceVec, shipUp, MANEUVER_FORCE); }
 				if (input.keys.has('ControlLeft')) { vec3.scaleAndAdd(totalForceVec, totalForceVec, shipUp, -MANEUVER_FORCE); }
 
-				// Braking (KeyX)
+				// RCS rotation: map keys to angular acceleration; Backspace kills rotation
+				const ANGULAR_ACCELERATION = 0.5 * precisionMultiplier; // rad/s^2
+				const angVel = vec3.fromValues(ship.angularVelocity[0], ship.angularVelocity[1], ship.angularVelocity[2]);
+				if (input.keys.has('Backspace')) { // Rotational dampening not affected by precision mode
+					this.state.flags!.killRotation = true;
+					const DAMPENING_FACTOR = 0.95;
+					vec3.scale(angVel, angVel, DAMPENING_FACTOR);
+					if (vec3.length(angVel) < 0.001) {
+						angVel[0] = 0; angVel[1] = 0; angVel[2] = 0;
+					}
+				} else {
+					const angularTorque = vec3.create();
+					// Pitch (R/F)
+					if (input.keys.has('KeyR')) { angularTorque[0] -= ANGULAR_ACCELERATION; }
+					if (input.keys.has('KeyF')) { angularTorque[0] += ANGULAR_ACCELERATION; }
+					// Yaw (Z/C)
+					if (input.keys.has('KeyZ')) { angularTorque[1] += ANGULAR_ACCELERATION; }
+					if (input.keys.has('KeyC')) { angularTorque[1] -= ANGULAR_ACCELERATION; }
+					// Roll (Q/E)
+					if (input.keys.has('KeyQ')) { angularTorque[2] += ANGULAR_ACCELERATION; }
+					if (input.keys.has('KeyE')) { angularTorque[2] -= ANGULAR_ACCELERATION; }
+					// Integrate angular velocity
+					vec3.scaleAndAdd(angVel, angVel, angularTorque, dt);
+				}
+				ship.angularVelocity = [angVel[0], angVel[1], angVel[2]];
+
+				// Apply angular velocity to orientation (convert to degrees for fromEuler)
+				const deltaQuat = quat.create();
+				const degX = angVel[0] * dt * (180 / Math.PI);
+				const degY = angVel[1] * dt * (180 / Math.PI);
+				const degZ = angVel[2] * dt * (180 / Math.PI);
+				quat.fromEuler(deltaQuat, degX, degY, degZ);
+				quat.multiply(q, q, deltaQuat);
+				quat.normalize(q, q);
+				ship.orientation = [q[0], q[1], q[2], q[3]];
+
+				// Braking (KeyX): counter forward/backward component
 				if (input.keys.has('KeyX')) {
 					const vel = vec3.fromValues(ship.velocity[0], ship.velocity[1], ship.velocity[2]);
 					const vForward = vec3.dot(vel, shipForward);
@@ -229,7 +303,7 @@ export class LocalAuthority implements Authority {
 	}
 
 	public setTimeScale(scale: number): void {
-		this.timeScalar = scale;
+		this.timeScalar = Math.max(0, scale); // Ensure time doesn't go backwards
 	}
 
 	public addBody(body: Omit<Body, 'id'>): void {

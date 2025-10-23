@@ -251,15 +251,19 @@ fn rayColor(initial_ray: Ray, seed: vec2<u32>) -> vec3<f32> {
     let diffuse_intensity = max(dot(rec.normal, light_dir), 0.0);
 
     // Shadow ray
-    const SHADOW_BIAS: f32 = 0.001;
+    // Increase bias to prevent self-shadowing at astronomical scales
+    const SHADOW_BIAS: f32 = 1.0;
     let shadow_ray = Ray(rec.p + rec.normal * SHADOW_BIAS, light_dir);
     let dist_to_light = length(light_pos - rec.p);
     let shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, dist_to_light));
     if (shadow_rec.hit) {
-        return rec.albedo * 0.05; // ambient term in shadow
+        // Do not consider in shadow if we hit an emissive (e.g., the sun)
+        if (dot(shadow_rec.emissive, shadow_rec.emissive) < 0.1) {
+            return rec.albedo * 0.05; // ambient term in shadow
+        }
     }
 
-    let light_brightness = 1.5;
+    let light_brightness = 30.0;
     return rec.albedo * diffuse_intensity * light_brightness;
 }
 

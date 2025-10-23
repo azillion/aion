@@ -16,12 +16,14 @@ export interface Body {
 
 export interface Ship extends Body {
 	orientation: [number, number, number, number];
+	angularVelocity: Vec3;
 	thrust: Vec3;
 }
 
 export interface SystemState {
 	timestamp: number;
 	bodies: Body[];
+	flags?: { precision?: boolean; killRotation?: boolean };
 }
 
 export interface Theme {

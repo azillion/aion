@@ -1,4 +1,4 @@
-import type { Body, FrameData, Vec3 } from './shared/types';
+import type { FrameData, Vec3 } from './shared/types';
 import { CameraMode } from './state';
 import { projectWorldToScreen } from './renderer/projection';
 
@@ -18,7 +18,7 @@ export class HUDManager {
   }
 
   public draw(frameData: FrameData): void {
-    const { bodiesToRender, camera, viewport, cameraMode, playerShipId } = frameData;
+    const { bodiesToRender, camera, viewport, cameraMode } = frameData;
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
     // Style
@@ -28,52 +28,162 @@ export class HUDManager {
     this.context.fillStyle = 'rgba(255,255,255,0.9)';
     this.context.strokeStyle = 'rgba(255,255,255,0.9)';
 
-    // Do not draw any HUD elements in galactic map or ship view
-    if (cameraMode === CameraMode.GALACTIC_MAP || cameraMode === CameraMode.SHIP_RELATIVE) {
+    // Do not draw any HUD elements in galactic map
+    if (cameraMode === CameraMode.GALACTIC_MAP) {
       return;
     }
 
-    const centerX = viewport.width * 0.5;
-    const centerY = viewport.height * 0.5;
+    // const centerX = viewport.width * 0.5;
+    // const centerY = viewport.height * 0.5;
 
-    const iterable: Body[] = bodiesToRender;
+    // --- New Ship Relative HUD Logic ---
+    if (cameraMode === CameraMode.SHIP_RELATIVE) {
+      this.drawShipHUD(frameData);
+      // We return here because drawShipHUD handles its own body indicators
+      return;
+    }
+    // --- End New Logic ---
 
-    for (const body of iterable) {
+    for (const body of bodiesToRender) {
       const p = projectWorldToScreen(body.position as Vec3, camera, viewport);
       if (!p) continue;
 
       const isFocus = camera.focusBodyId === body.id;
-      if (cameraMode === CameraMode.SYSTEM_MAP) {
-        if (!p.inView) continue;
-        const x = p.x;
-        const y = p.y;
+      // This block is now only for SYSTEM_MAP
+      if (cameraMode === CameraMode.SYSTEM_MAP && p.inView) {
         this.context.beginPath();
-        this.context.arc(x, y, isFocus ? 4 : 2.5, 0, Math.PI * 2);
+        this.context.arc(p.x, p.y, isFocus ? 4 : 2.5, 0, Math.PI * 2);
         this.context.fill();
-        this.context.fillText(body.name, x + 6, y - 6);
-        continue;
-      }
-
-      // SHIP_RELATIVE: show on-screen and off-screen indicators (no labels)
-      if (p.inView) {
-        const x = p.x;
-        const y = p.y;
-        this.context.beginPath();
-        this.context.arc(x, y, isFocus ? 4 : 3, 0, Math.PI * 2);
-        this.context.fill();
-      } else {
-        const x = p.x;
-        const y = p.y;
-        // Draw a chevron pointing towards the off-screen target
-        const angle = Math.atan2(y - centerY, x - centerX);
-        const size = isFocus ? 10 : 8;
-        this._drawChevron(x, y, angle, size);
+        this.context.fillText(body.name, p.x + 6, p.y - 6);
       }
     }
   }
 
   
 
+  // --- Ship Relative HUD ---
+  private drawShipHUD(frameData: FrameData): void {
+    const { rawState, camera, viewport, playerShipId } = frameData;
+    const playerShip = rawState.bodies.find(b => b.id === playerShipId);
+    if (!playerShip || !('velocity' in playerShip)) {
+      return;
+    }
+    const ship = playerShip as import('./shared/types').Ship;
+
+    const centerX = viewport.width / 2;
+    const centerY = viewport.height / 2;
+
+    this.context.strokeStyle = 'rgba(148, 255, 179, 0.7)';
+    this.context.fillStyle = 'rgba(148, 255, 179, 0.7)';
+    this.context.lineWidth = 1.5;
+
+    // 1. Draw Boresight (where the nose is pointing)
+    this.drawBoresight(centerX, centerY);
+
+    // 2. Draw Velocity Vector (Prograde Marker)
+    // For simplicity, we'll calculate prograde relative to the sun (solar system barycenter)
+    const sun = rawState.bodies.find(b => b.id === 'sol');
+    const sunVel = sun ? sun.velocity : [0,0,0];
+    const relativeVel: Vec3 = [
+      ship.velocity[0] - sunVel[0],
+      ship.velocity[1] - sunVel[1],
+      ship.velocity[2] - sunVel[2]
+    ];
+    const speed = Math.hypot(...relativeVel);
+
+    // Only draw the prograde marker if we are moving
+    const showPrograde = false;
+    if (showPrograde && speed > 1) { // 1 km/s threshold
+      const progradeWorldPos: Vec3 = [
+        ship.position[0] + relativeVel[0],
+        ship.position[1] + relativeVel[1],
+        ship.position[2] + relativeVel[2]
+      ];
+      const screenPos = projectWorldToScreen(progradeWorldPos, camera, viewport);
+      if (screenPos && screenPos.inView) {
+        this.drawProgradeMarker(screenPos.x, screenPos.y, false);
+      }
+    }
+
+    // 3. Draw Speed Readout
+    this.context.font = '16px "Share Tech Mono", monospace';
+    this.context.textAlign = 'center';
+    this.context.fillText(`${(speed).toFixed(1)} km/s`, centerX, centerY + 40);
+
+    // 4. Indicators: Precision / Kill Rotation
+    this.context.textAlign = 'left';
+    const flags = rawState.flags || {};
+    let hudY = centerY + 60;
+    if (flags.precision) {
+      this.context.fillText('PRECISION', centerX + 16, hudY);
+      hudY += 18;
+    }
+    if (flags.killRotation) {
+      this.context.fillText('KILL ROT', centerX + 16, hudY);
+      hudY += 18;
+    }
+
+    // 5. (Optional but nice) Draw indicators for off-screen bodies
+    this.drawBodyIndicators(frameData);
+  }
+
+  private drawBoresight(x: number, y: number): void {
+    const size = 10;
+    this.context.beginPath();
+    this.context.moveTo(x + size, y);
+    this.context.lineTo(x + size / 2, y);
+    this.context.moveTo(x - size, y);
+    this.context.lineTo(x - size / 2, y);
+    this.context.moveTo(x, y + size);
+    this.context.lineTo(x, y + size / 2);
+    this.context.moveTo(x, y - size);
+    this.context.lineTo(x, y - size / 2);
+    this.context.stroke();
+  }
+
+  private drawProgradeMarker(x: number, y: number, isRetrograde: boolean): void {
+    const radius = 12;
+    this.context.beginPath();
+    this.context.arc(x, y, radius, 0, Math.PI * 2);
+    this.context.moveTo(x - radius, y);
+    this.context.lineTo(x - radius - 5, y);
+    this.context.moveTo(x + radius, y);
+    this.context.lineTo(x + radius + 5, y);
+    this.context.moveTo(x, y - radius);
+    this.context.lineTo(x, y - radius - 5);
+    
+    if (!isRetrograde) {
+      this.context.moveTo(x, y + radius);
+      this.context.lineTo(x, y + radius + 5);
+    }
+    this.context.stroke();
+  }
+
+  private drawBodyIndicators(frameData: FrameData) {
+    // This is the logic from the original 'draw' method, now separated
+    const { bodiesToRender, camera, viewport, playerShipId } = frameData;
+    const centerX = viewport.width * 0.5;
+    const centerY = viewport.height * 0.5;
+    
+    const iterable = bodiesToRender.filter(b => b.id !== playerShipId);
+
+    for (const body of iterable) {
+      const p = projectWorldToScreen(body.position as Vec3, camera, viewport);
+      if (!p) continue;
+      
+      const isFocus = camera.focusBodyId === body.id;
+      if (p.inView) {
+        this.context.beginPath();
+        this.context.arc(p.x, p.y, isFocus ? 4 : 3, 0, Math.PI * 2);
+        this.context.fill();
+      } else {
+        const angle = Math.atan2(p.y - centerY, p.x - centerX);
+        const size = isFocus ? 10 : 8;
+        this._drawChevron(p.x, p.y, angle, size);
+      }
+    }
+  }
+  // --- End Ship Relative HUD ---
   private _drawChevron(x: number, y: number, angle: number, size: number): void {
     this.context.save();
     this.context.translate(x, y);
