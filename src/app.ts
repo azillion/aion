@@ -8,7 +8,8 @@ import { Scene } from './renderer/scene';
 import { CameraManager } from './camera/manager';
 import type { Body, FrameData, Ship } from './shared/types';
 import { CameraMode, ReferenceFrame } from './state';
-import { vec4 } from 'gl-matrix';
+import { projectWorldToScreen } from './renderer/projection';
+import { type OrbitGlyphData } from './renderer/passes/orbitsPass';
 
 export class App {
   private readonly authority: Authority;
@@ -88,12 +89,12 @@ export class App {
       }));
       if (this.state.showOrbits) {
         // Recompute orbit geometry at correct scale
-        this.renderer.getOrbitsPass().update(bodiesForMap, this.scene, this.renderer.getCore(), renderScale);
+        const glyphData: OrbitGlyphData = this.renderer.getOrbitsPass().update(bodiesForMap, this.scene, this.renderer.getCore(), renderScale);
         this.renderer.getGlyphsPass().update(
-          this.renderer.getOrbitsPass().periapsisPoints,
-          this.renderer.getOrbitsPass().apoapsisPoints,
-          this.renderer.getOrbitsPass().ascendingNodePoints,
-          this.renderer.getOrbitsPass().descendingNodePoints
+          glyphData.periapsisPoints,
+          glyphData.apoapsisPoints,
+          glyphData.ascendingNodePoints,
+          glyphData.descendingNodePoints
         );
         this.renderer.getSoiPass().update(bodiesForMap, this.scene, renderScale);
       }
@@ -138,20 +139,14 @@ export class App {
     // Handle click selection in System Map using frameData
     if (frameData && this.state.cameraMode === CameraMode.SYSTEM_MAP && this.input.clicked) {
       const viewport = frameData.viewport;
-      const viewProj = camera.viewProjectionMatrix as unknown as number[];
       let closestBodyId: string | null = null;
       let closestDist2 = Number.POSITIVE_INFINITY;
       for (const b of frameData.bodiesToRender) {
-        const worldPos = vec4.fromValues(b.position[0], b.position[1], b.position[2], 1.0);
-        const clip = vec4.transformMat4(vec4.create(), worldPos, viewProj as unknown as number[]);
-        const w = clip[3];
-        if (!Number.isFinite(w) || w === 0) continue;
-        const ndcX = clip[0] / w;
-        const ndcY = clip[1] / w;
-        const px = (ndcX * 0.5 + 0.5) * viewport.width;
-        const py = (-ndcY * 0.5 + 0.5) * viewport.height;
-        const dx = px - this.input.mouseX;
-        const dy = py - this.input.mouseY;
+        const screenPos = projectWorldToScreen(b.position as [number,number,number], camera, viewport);
+        if (!screenPos) continue;
+
+        const dx = screenPos.x - this.input.mouseX;
+        const dy = screenPos.y - this.input.mouseY;
         const d2 = dx * dx + dy * dy;
         if (d2 < closestDist2) {
           closestDist2 = d2;

@@ -2,7 +2,8 @@ import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
 import postfxShaderWGSL from '../shaders/postfx.wgsl?raw';
-import type { Body, Theme } from '../../shared/types';
+import type { Body, Theme, Vec3 } from '../../shared/types';
+import { projectWorldToScreen } from '../projection';
 
 export class PostFXPass implements IRenderPass {
   private postfxPipeline!: GPURenderPipeline;
@@ -96,42 +97,29 @@ export class PostFXPass implements IRenderPass {
     const buf = new ArrayBuffer(272);
     const u32 = new Uint32Array(buf);
     const f32 = new Float32Array(buf);
-    
+
     u32[0] = bodies.length;
     f32[1] = 20.0; // targetRadiusPx
     f32[2] = textureSize.width;
     f32[3] = textureSize.height;
 
-    for (let i=0; i < bodies.length; i++) {
+    for (let i = 0; i < bodies.length; i++) {
         const b = bodies[i];
-        const worldPos = [ b.position[0] * systemScale, b.position[1] * systemScale, b.position[2] * systemScale ];
-        const camRelative = [worldPos[0] - camera.eye[0], worldPos[1] - camera.eye[1], worldPos[2] - camera.eye[2]];
-        const lookDir = [camera.look_at[0] - camera.eye[0], camera.look_at[1] - camera.eye[1], camera.look_at[2] - camera.eye[2]];
-        const lookLen = Math.hypot(...lookDir) || 1;
-        const forward = [lookDir[0]/lookLen, lookDir[1]/lookLen, lookDir[2]/lookLen];
-        const up = camera.up;
-        const r_x = up[1]*forward[2] - up[2]*forward[1], r_y = up[2]*forward[0] - up[0]*forward[2], r_z = up[0]*forward[1] - up[1]*forward[0];
-        const rightLen = Math.hypot(r_x, r_y, r_z) || 1;
-        const right = [r_x/rightLen, r_y/rightLen, r_z/rightLen];
-        const camUp = [forward[1]*right[2] - forward[2]*right[1], forward[2]*right[0] - forward[0]*right[2], forward[0]*right[1] - forward[1]*right[0]];
-        const viewX = camRelative[0]*right[0] + camRelative[1]*right[1] + camRelative[2]*right[2];
-        const viewY = camRelative[0]*camUp[0] + camRelative[1]*camUp[1] + camRelative[2]*camUp[2];
-        const viewZ = camRelative[0]*forward[0] + camRelative[1]*forward[1] + camRelative[2]*forward[2];
+        const worldPos: Vec3 = [
+            b.position[0] * systemScale,
+            b.position[1] * systemScale,
+            b.position[2] * systemScale
+        ];
 
-        if (viewZ <= 0) continue;
+        const screenPos = projectWorldToScreen(worldPos, camera, textureSize);
 
-        const vfovRad = 25 * Math.PI / 180;
-        const projScale = 1 / Math.tan(vfovRad / 2.0);
-        const ndcX = (viewX / viewZ) * projScale;
-        const ndcY = (viewY / viewZ) * projScale;
-        const px = (ndcX * 0.5 + 0.5) * textureSize.width;
-        const py = (1.0 - (ndcY * 0.5 + 0.5)) * textureSize.height;
-
-        const base = 4 + i * 4;
-        f32[base + 0] = px;
-        f32[base + 1] = py;
+        if (screenPos) {
+            const base = 4 + i * 4;
+            f32[base + 0] = screenPos.x;
+            f32[base + 1] = screenPos.y;
+        }
     }
-    
+
     core.device.queue.writeBuffer(this.targetInfoUniform, 0, buf);
   }
 

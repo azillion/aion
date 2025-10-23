@@ -1,15 +1,26 @@
-import type { Ship } from '../shared/types';
+import type { Ship, Body } from '../shared/types';
 import type { Camera } from '../camera';
 import { vec3, quat, mat4 } from 'gl-matrix';
-import type { Body } from '../shared/types';
 import { ReferenceFrame } from '../state';
 
 export interface ICameraController {
 	update(camera: Camera, context: any): void;
 }
 
+export interface SystemMapControllerContext {
+  bodies: Body[];
+  scale: number;
+  viewport: { width: number; height: number };
+  referenceFrame: ReferenceFrame;
+}
+
+export interface ShipRelativeControllerContext {
+  playerShip: Ship | undefined | null;
+  targetBody?: Body;
+}
+
 export class SystemMapController implements ICameraController {
-    public update(camera: Camera, context: { bodies: Body[], scale: number, viewport: { width: number, height: number }, referenceFrame: ReferenceFrame }): void {
+    public update(camera: Camera, context: SystemMapControllerContext): void {
         camera.isOrthographic = true;
 
         let center_x = 0;
@@ -30,7 +41,7 @@ export class SystemMapController implements ICameraController {
 }
 
 export class ShipRelativeController implements ICameraController {
-    public update(camera: Camera, context: { playerShip: Ship | undefined | null, targetBody?: Body }): void {
+    public update(camera: Camera, context: ShipRelativeControllerContext): void {
         const ship = context.playerShip;
         if (!ship) return;
         camera.eye = ship.position;

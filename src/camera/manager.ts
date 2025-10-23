@@ -1,6 +1,6 @@
 import { CameraMode } from '../state';
 import { Camera } from './camera';
-import { SystemMapController, ShipRelativeController } from './controllers';
+import { SystemMapController, ShipRelativeController, type SystemMapControllerContext, type ShipRelativeControllerContext } from './controllers';
 
 export class CameraManager {
 	private camera: Camera;
@@ -13,23 +13,27 @@ export class CameraManager {
 		this.shipRelativeController = new ShipRelativeController();
 	}
 
-	public update(mode: CameraMode, context: any): void {
-		switch (mode) {
-			case CameraMode.SYSTEM_MAP: {
-				this.systemMapController.update(this.camera, context as any);
-				break;
-			}
-			case CameraMode.SHIP_RELATIVE: {
-				this.shipRelativeController.update(this.camera, context as any);
-				break;
-			}
-			case CameraMode.GALACTIC_MAP: {
-				// No-op for now; galactic map uses renderer-built matrices
-				break;
-			}
-			default: break;
-		}
-	}
+    public update(mode: CameraMode, context: any): void {
+        switch (mode) {
+            case CameraMode.SYSTEM_MAP: {
+                if ('bodies' in context && 'scale' in context) {
+                    this.systemMapController.update(this.camera, context as SystemMapControllerContext);
+                }
+                break;
+            }
+            case CameraMode.SHIP_RELATIVE: {
+                if ('playerShip' in context) {
+                    this.shipRelativeController.update(this.camera, context as ShipRelativeControllerContext);
+                }
+                break;
+            }
+            case CameraMode.GALACTIC_MAP: {
+                // No-op for now; galactic map uses renderer-built matrices
+                break;
+            }
+            default: break;
+        }
+    }
 
 	public getCamera(): Camera {
 		return this.camera;

@@ -8,7 +8,13 @@ import cameraWGSL from '../shaders/camera.wgsl?raw';
 import { createShaderModule } from '../shaderUtils';
 import { calculateAnalyticOrbit, type OrbitalElements, ORBIT_MAX_POINTS } from '../../physics/orbitalMechanics';
 
-// ORBIT_MAX_POINTS imported from physics/orbitalMechanics
+
+export interface OrbitGlyphData {
+  periapsisPoints: (Vec3 | null)[];
+  apoapsisPoints: (Vec3 | null)[];
+  ascendingNodePoints: (Vec3 | null)[];
+  descendingNodePoints: (Vec3 | null)[];
+}
 
 export class OrbitsPass implements IRenderPass {
   private pipeline!: GPURenderPipeline;
@@ -16,11 +22,6 @@ export class OrbitsPass implements IRenderPass {
 
   private orbitVertexBuffers: GPUBuffer[] = [];
   private orbitalElements: (OrbitalElements | null)[] = [];
-
-  public periapsisPoints: (Vec3 | null)[] = [];
-  public apoapsisPoints: (Vec3 | null)[] = [];
-  public ascendingNodePoints: (Vec3 | null)[] = [];
-  public descendingNodePoints: (Vec3 | null)[] = [];
   
   public async initialize(core: WebGPUCore, scene: Scene): Promise<void> {
     const module = await createShaderModule(
@@ -61,10 +62,6 @@ export class OrbitsPass implements IRenderPass {
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     }));
     this.orbitalElements = Array.from({ length: count }, () => null);
-    this.periapsisPoints = Array.from({ length: count }, () => null);
-    this.apoapsisPoints = Array.from({ length: count }, () => null);
-    this.ascendingNodePoints = Array.from({ length: count }, () => null);
-    this.descendingNodePoints = Array.from({ length: count }, () => null);
   }
 
   public _calculateBarycenter(bodies: Body[]): { position: Vec3, velocity: Vec3, totalMass: number } {
@@ -91,13 +88,20 @@ export class OrbitsPass implements IRenderPass {
     };
   }
 
-  public update(bodies: Body[], _scene: Scene, core: WebGPUCore, systemScale: number) {
+  public update(bodies: Body[], _scene: Scene, core: WebGPUCore, systemScale: number): OrbitGlyphData {
     if (bodies.length !== this.orbitVertexBuffers.length) {
         this.resizeOrbitBuffers(core.device, bodies.length);
     }
     
     const barycenter = this._calculateBarycenter(bodies);
-    if (barycenter.totalMass === 0) return;
+    if (barycenter.totalMass === 0) {
+      return { periapsisPoints: [], apoapsisPoints: [], ascendingNodePoints: [], descendingNodePoints: [] };
+    }
+
+    const periapsisPoints: (Vec3 | null)[] = Array(bodies.length).fill(null);
+    const apoapsisPoints: (Vec3 | null)[] = Array(bodies.length).fill(null);
+    const ascendingNodePoints: (Vec3 | null)[] = Array(bodies.length).fill(null);
+    const descendingNodePoints: (Vec3 | null)[] = Array(bodies.length).fill(null);
 
     for (let i = 0; i < bodies.length; i++) {
       const body = bodies[i];
@@ -108,12 +112,13 @@ export class OrbitsPass implements IRenderPass {
 
       if (elements) {
         core.device.queue.writeBuffer(this.orbitVertexBuffers[i], 0, elements.points.buffer, 0, elements.points.byteLength);
-        this.periapsisPoints[i] = elements.periapsis;
-        this.apoapsisPoints[i] = elements.apoapsis;
-        this.ascendingNodePoints[i] = elements.ascendingNode;
-        this.descendingNodePoints[i] = elements.descendingNode;
+        periapsisPoints[i] = elements.periapsis;
+        apoapsisPoints[i] = elements.apoapsis;
+        ascendingNodePoints[i] = elements.ascendingNode;
+        descendingNodePoints[i] = elements.descendingNode;
       }
     }
+    return { periapsisPoints, apoapsisPoints, ascendingNodePoints, descendingNodePoints };
   }
 
   public run(encoder: GPUCommandEncoder, context: RenderContext, theme: Theme): void {
