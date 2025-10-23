@@ -4,12 +4,16 @@ import { spectralResponses } from './spectral';
 import { themes } from './theme';
 import { AppState, CameraMode, ReferenceFrame } from './state';
 import { G } from './shared/constants';
+import type { Authority } from './authority/authority';
+import { CameraManager } from './camera/manager';
 
 export class UI {
     private renderer: Renderer;
     private state: AppState;
+    private authority: Authority;
     private gui: GUI;
     private focusController: dat.GUIController | null = null;
+    private cameraManager: CameraManager;
     private settings = {
         'Time Scale': 1.0,
         'Focus': 'Sun',
@@ -28,15 +32,17 @@ export class UI {
         }
     };
 
-    constructor(renderer: Renderer, state: AppState) {
+    constructor(renderer: Renderer, state: AppState, authority: Authority, cameraManager: CameraManager) {
         this.renderer = renderer;
         this.state = state;
+        this.authority = authority;
+        this.cameraManager = cameraManager;
         this.gui = new GUI();
 
         this.gui
             .add(this.settings, 'Time Scale', 0, 10000)
             .onChange((value: number) => {
-                this.renderer.authority.setTimeScale(value);
+                this.authority.setTimeScale(value);
             });
 
         this._createSceneControls();
@@ -79,12 +85,12 @@ export class UI {
         if (this.focusController) {
             this.gui.remove(this.focusController);
         }
-        const initialState = await this.renderer.authority.query();
+        const initialState = await this.authority.query();
         const bodyNames = initialState.bodies.map(b => b.name);
         const bodyIds = initialState.bodies.map(b => b.id);
 
         const playerIndex = bodyIds.indexOf('player-ship');
-        const cam = this.renderer.getCamera();
+        const cam = this.cameraManager.getCamera();
         if (playerIndex !== -1) {
             this.settings['Focus'] = 'AION-1';
             cam.focusBodyId = 'player-ship';
@@ -99,17 +105,17 @@ export class UI {
             .onChange((selectedName: string) => {
                 const selectedIndex = bodyNames.indexOf(selectedName);
                 const selectedId = bodyIds[selectedIndex];
-                const cam2 = this.renderer.getCamera();
+                const cam2 = this.cameraManager.getCamera();
                 cam2.focusBodyId = selectedId;
                 cam2.pendingFrame = true;
             });
     }
 
     private async addAsteroid() {
-        const systemState = await this.renderer.authority.query();
+        const systemState = await this.authority.query();
         const bodies = systemState.bodies;
         if (bodies.length === 0) return;
-        const focusId = this.renderer.getCamera().focusBodyId;
+        const focusId = this.cameraManager.getCamera().focusBodyId;
         const parent = (focusId ? bodies.find(b => b.id === focusId) : null) || bodies[0];
 
         const orbitDistance = Math.max(1, parent.radius * 50);
@@ -130,7 +136,7 @@ export class UI {
         const mass = 1e15;
         const albedo: [number, number, number] = [0.6, 0.6, 0.6];
 
-        this.renderer.authority.addBody({ name, position, velocity, radius, mass, albedo });
+        this.authority.addBody({ name, position, velocity, radius, mass, albedo });
 
         setTimeout(() => this._createSceneControls(), 100);
     }
