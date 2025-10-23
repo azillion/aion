@@ -1,7 +1,5 @@
-struct Camera {
-    viewProjection: mat4x4<f32>,
-};
-@group(0) @binding(0) var<uniform> camera: Camera;
+// CameraUniforms is provided by a shared include (camera.wgsl)
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 struct GlyphInstance {
     position: vec3<f32>,

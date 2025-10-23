@@ -1,9 +1,9 @@
-import { mat4 } from 'gl-matrix';
-import type { Vec3 } from '../../shared/types';
+// imports kept for type parity; not used post-shared camera buffer
 import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
 import galaxyShaderWGSL from '../shaders/galaxy.wgsl?raw';
+import cameraWGSL from '../shaders/camera.wgsl?raw';
 
 export class GalaxyPass implements IRenderPass {
   private pipeline!: GPURenderPipeline;
@@ -11,7 +11,7 @@ export class GalaxyPass implements IRenderPass {
   private depthTexture!: GPUTexture;
 
   public initialize(core: WebGPUCore, scene: Scene): void {
-    const module = core.device.createShaderModule({ code: galaxyShaderWGSL });
+    const module = core.device.createShaderModule({ code: cameraWGSL + galaxyShaderWGSL });
     this.pipeline = core.device.createRenderPipeline({
       label: 'Galaxy Pipeline',
       layout: 'auto',
@@ -29,7 +29,7 @@ export class GalaxyPass implements IRenderPass {
         label: 'Galaxy Bind Group',
         layout: this.pipeline.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: { buffer: scene.galaxyCameraUniformBuffer } },
+          { binding: 0, resource: { buffer: scene.sharedCameraUniformBuffer } },
           { binding: 1, resource: { buffer: scene.starBuffer } },
         ],
       });
@@ -45,20 +45,7 @@ export class GalaxyPass implements IRenderPass {
   }
 
   public run(encoder: GPUCommandEncoder, context: RenderContext, starCount: number): void {
-    // Update camera uniforms for this pass
-    const proj = mat4.create();
-    const aspect = context.textureSize.height > 0 ? (context.textureSize.width / context.textureSize.height) : 16/9;
-    mat4.perspective(proj, Math.PI / 4, aspect, 0.1, 2000.0);
-    const view = mat4.create();
-    mat4.lookAt(view, context.camera.eye as any, context.camera.look_at as any, context.camera.up as any);
-    const viewProj = mat4.multiply(mat4.create(), proj, view);
-    const camRight: Vec3 = [view[0], view[4], view[8]];
-    const camUp: Vec3 = [view[1], view[5], view[9]];
-    const camData = new Float32Array(32);
-    camData.set(viewProj, 0);
-    camData.set(camRight, 16);
-    camData.set(camUp, 20);
-    context.core.device.queue.writeBuffer(context.scene.galaxyCameraUniformBuffer, 0, camData);
+    // Shared camera buffer is already populated by Scene.update
 
     const pass = encoder.beginRenderPass({
       colorAttachments: [{

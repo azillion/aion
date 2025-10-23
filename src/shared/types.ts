@@ -32,3 +32,17 @@ export interface Star {
   color: Vec3;
   size: number;
 }
+
+export interface Orbit {
+	semiMajorAxis: number;
+	eccentricity: number;
+	// Basis vectors for the orbital plane
+	p: Vec3;
+	q: Vec3;
+	// Standard gravitational parameter
+	mu: number;
+	// True anomaly at the time the orbit was calculated (epoch)
+	trueAnomalyAtEpoch: number;
+	// Simulation timestamp of the epoch (seconds)
+	epoch: number;
+}

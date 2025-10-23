@@ -2,6 +2,7 @@ import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
 import soiShaderWGSL from '../shaders/soi.wgsl?raw';
+import cameraWGSL from '../shaders/camera.wgsl?raw';
 import type { Body, Vec3 } from '../../shared/types';
 import { G } from '../../shared/constants';
 
@@ -17,7 +18,7 @@ export class SOIPass implements IRenderPass {
   private instanceCapacity = 0;
 
   public initialize(core: WebGPUCore, _scene: Scene): void {
-    const module = core.device.createShaderModule({ code: soiShaderWGSL });
+    const module = core.device.createShaderModule({ code: cameraWGSL + soiShaderWGSL });
     this.pipeline = core.device.createRenderPipeline({
       label: 'SOI Pipeline',
       layout: 'auto',
@@ -92,7 +93,7 @@ export class SOIPass implements IRenderPass {
     const bindGroup = core.device.createBindGroup({
       layout: this.pipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: scene.mapCameraUniformBuffer } },
+        { binding: 0, resource: { buffer: scene.sharedCameraUniformBuffer } },
         { binding: 1, resource: { buffer: this.instanceBuffer } },
       ]
     });

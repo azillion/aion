@@ -1,23 +1,25 @@
+// CameraUniforms is provided by a shared include (camera.wgsl)
 struct OrbitsUniforms {
-    viewProjection: mat4x4<f32>,
     color: vec3<f32>,
     pointCount: f32,
     semiMajorAxis: f32,
     eccentricity: f32,
-    // Add padding to ensure struct size is a multiple of 16 bytes
+    currentTrueAnomaly: f32,
     _pad1: f32,
     _pad2: f32,
 };
 
-@group(0) @binding(0) var<uniform> uniforms: OrbitsUniforms;
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(0) @binding(1) var<uniform> uniforms: OrbitsUniforms;
 struct OrbitPointsBuffer {
     // 16-byte alignment for storage buffers
     points: array<vec4<f32>>,
 };
-@group(0) @binding(1) var<storage, read> orbit_points: OrbitPointsBuffer;
+@group(0) @binding(2) var<storage, read> orbit_points: OrbitPointsBuffer;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
+    @location(0) point_index: f32,
 };
 
 @vertex
@@ -34,12 +36,12 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
     let p_next = orbit_points.points[i2].xyz;
 
     // Project to clip space
-    let prev_clip = uniforms.viewProjection * vec4<f32>(p_prev, 1.0);
-    let curr_clip = uniforms.viewProjection * vec4<f32>(p_curr, 1.0);
-    let next_clip = uniforms.viewProjection * vec4<f32>(p_next, 1.0);
+    let prev_clip = camera.viewProjection * vec4<f32>(p_prev, 1.0);
+    let curr_clip = camera.viewProjection * vec4<f32>(p_curr, 1.0);
+    let next_clip = camera.viewProjection * vec4<f32>(p_next, 1.0);
 
     if (curr_clip.w <= 0.0) {
-        return VertexOutput(vec4<f32>(2.0, 2.0, 2.0, 1.0));
+        return VertexOutput(vec4<f32>(2.0, 2.0, 2.0, 1.0), 0.0);
     }
 
     let prev_ndc = prev_clip.xy / prev_clip.w;
@@ -72,10 +74,28 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
     let offset = normal * ribbon_width_ndc * side_offset * final_pos_clip.w;
     final_pos_clip = vec4<f32>(final_pos_clip.x + offset.x, final_pos_clip.y + offset.y, final_pos_clip.z, final_pos_clip.w);
 
-    return VertexOutput(final_pos_clip);
+    return VertexOutput(final_pos_clip, f32(point_index));
 }
 
 @fragment
-fn fragmentMain() -> @location(0) vec4<f32> {
+fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
+    let total_points = uniforms.pointCount;
+    let current_point_angle = (in.point_index / total_points) * 2.0 * 3.14159;
+
+    // Normalize angles to be in 0..2PI range for comparison
+    var current_nu_normalized = uniforms.currentTrueAnomaly % (2.0 * 3.14159);
+    if (current_nu_normalized < 0.0) {
+        current_nu_normalized += 2.0 * 3.14159;
+    }
+
+    let is_past = current_point_angle < current_nu_normalized;
+
+    if (is_past) {
+        // Discard fragments to create a dotted line effect for the past
+        if (i32(in.point_index) % 8 < 4) {
+            discard;
+        }
+    }
+
     return vec4<f32>(uniforms.color, 1.0);
 }

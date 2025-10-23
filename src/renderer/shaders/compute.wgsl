@@ -3,16 +3,7 @@ const INFINITY: f32 = 1e38;
 const SEED: vec2<f32> = vec2<f32>(69.68, 4.20);
 const MAX_DEPTH: u32 = 100;
 
-// Camera uniforms provided by the host
-struct CameraUniforms {
-    eye: vec3<f32>,
-    // implicit padding to 16 bytes
-    look_at: vec3<f32>,
-    // implicit padding to 16 bytes
-    up: vec3<f32>,
-    // implicit padding to 16 bytes
-    distance_to_target: f32,
-}
+// CameraUniforms is provided by a shared include (camera.wgsl)
 
 fn lerp(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
     return a * (1.0 - t) + b * t;
@@ -88,20 +79,18 @@ fn clampInterval(i: Interval, minI: f32, maxI: f32) -> f32 {
 const INTERVAL_EMPTY: Interval = Interval(INFINITY, -INFINITY);
 const INTERVAL_UNIVERSE: Interval = Interval(-INFINITY, INFINITY);
 
-struct Material {
+// Flattened Sphere layout to match CPU-packed 16-float buffer
+struct Sphere {
+    center: vec3<f32>,
+    radius: f32,
     albedo: vec3<f32>,
+    _pad1: f32,
     emissive: vec3<f32>,
     fuzziness: f32,
     refraction_index: f32,
     mat_type: u32,
-}
-
-//
-
-struct Sphere {
-    center: vec3<f32>,
-    radius: f32,
-    material: Material,
+    _pad2: u32,
+    _pad3: u32,
 }
 
 struct HitRecord {
@@ -110,7 +99,9 @@ struct HitRecord {
     t: f32,
     hit: bool,
     front_face: bool,
-    material: Material,
+    // Flattened material properties
+    albedo: vec3<f32>,
+    emissive: vec3<f32>,
 }
 
 fn hit_sphere(sphere: Sphere, r: Ray, ray_t: Interval) -> HitRecord {
@@ -142,7 +133,9 @@ fn hit_sphere(sphere: Sphere, r: Ray, ray_t: Interval) -> HitRecord {
     let outward_normal = (rec.p - sphere.center) / sphere.radius;
     rec.front_face = dot(r.direction, outward_normal) < 0.0;
     rec.normal = select(-outward_normal, outward_normal, rec.front_face);
-    rec.material = sphere.material;
+    // Copy material properties directly
+    rec.albedo = sphere.albedo;
+    rec.emissive = sphere.emissive;
     rec.hit = true;
 
     return rec;
@@ -186,24 +179,25 @@ struct Camera {
 fn createCamera(aspect_ratio: f32) -> Camera {
     let samples_per_pixel: u32 = 1u; // reduce noise and debug visibility
     let vfov = 25.0;
-    let lookfrom = camera.eye;
-    let lookat = camera.look_at;
+    let lookfrom = camera.eye; // (0,0,0)
     let vup = camera.up;
     let defocus_angle = 0.0; // disable DOF to avoid over-blur
-    let focus_distance = 1.0; // treat as lens property, not subject distance
+    let focus_distance = max(0.001, camera.distance_to_target);
 
     let theta = degreesToRadians(vfov);
     let h = tan(theta / 2.0);
     let viewport_height = 2.0 * h * focus_distance;
     let viewport_width = aspect_ratio * viewport_height;
 
-    let w = normalize(lookfrom - lookat);
+    // Use provided forward vector for basis
+    let w = -camera.forward;
     let u = normalize(cross(vup, w));
     let v = cross(w, u);
 
     let origin = lookfrom;
-    let horizontal = viewport_width * u;
-    let vertical = viewport_height * v;
+    // Scale by focus distance so the image plane sits at the correct depth
+    let horizontal = focus_distance * viewport_width * u;
+    let vertical = focus_distance * viewport_height * v;
     let lower_left_corner = origin - horizontal / 2.0 - vertical / 2.0 - focus_distance * w;
 
     let defocus_radius = focus_distance * tan(degreesToRadians(defocus_angle / 2.0));
@@ -211,7 +205,7 @@ fn createCamera(aspect_ratio: f32) -> Camera {
     let defocus_disk_v = v * defocus_radius;
 
     return Camera(origin, lower_left_corner, horizontal, vertical, 
-                  samples_per_pixel, vfov, lookfrom, lookat, vup, 
+                  samples_per_pixel, vfov, lookfrom, (lookfrom + camera.forward), vup, 
                   defocus_angle, focus_distance, u, v, w, defocus_disk_u, defocus_disk_v);
 }
 
@@ -242,8 +236,8 @@ fn rayColor(initial_ray: Ray, world: array<Sphere, NUM_SPHERES>, seed: vec2<u32>
     if (!rec.hit) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
-    if (dot(rec.material.emissive, rec.material.emissive) > 0.0) {
-        return rec.material.emissive;
+    if (dot(rec.emissive, rec.emissive) > 0.0) {
+        return rec.emissive;
     }
     let light_pos = spheres[0].center;
     let light_dir = normalize(light_pos - rec.p);
@@ -252,11 +246,11 @@ fn rayColor(initial_ray: Ray, world: array<Sphere, NUM_SPHERES>, seed: vec2<u32>
     let shadow_ray = Ray(rec.p + rec.normal * SHADOW_BIAS, light_dir);
     let shadow_rec = hit_spheres(shadow_ray, world, createInterval(0.001, length(light_pos - rec.p)));
     // Path is clear if we hit nothing OR we hit an emissive (the light itself)
-    if (!shadow_rec.hit || dot(shadow_rec.material.emissive, shadow_rec.material.emissive) > 0.0) {
+    if (!shadow_rec.hit || dot(shadow_rec.emissive, shadow_rec.emissive) > 0.0) {
         let light_brightness = 5.0;
-        return rec.material.albedo * diffuse_intensity * light_brightness;
+        return rec.albedo * diffuse_intensity * light_brightness;
     } else {
-        return rec.material.albedo * 0.05;
+        return rec.albedo * 0.05;
     }
 }
 
@@ -280,19 +274,19 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let aspect_ratio = f32(dims.x) / f32(dims.y);
-    let camera = createCamera(aspect_ratio);
+    let cam = createCamera(aspect_ratio);
     // Scene data is pre-populated via storage buffer
 
     var pixel_color = vec3<f32>(0.0, 0.0, 0.0);
-    for (var s = 0u; s < camera.samples_per_pixel; s++) {
+    let s_limit = cam.samples_per_pixel;
+    for (var s = 0u; s < s_limit; s++) {
         let seed = vec2<u32>(coords.x + dims.x * coords.y, s);
         let u = (f32(coords.x) + rand(seed)) / f32(dims.x);
         let v = 1.0 - (f32(coords.y) + rand(seed + vec2<u32>(1u, 1u))) / f32(dims.y);
-        let ray = getRay(camera, u, v, seed);
+        let ray = getRay(cam, u, v, seed);
         pixel_color += rayColor(ray, spheres, seed);
     }
-    
-    pixel_color = pixel_color / f32(camera.samples_per_pixel);
+    pixel_color = pixel_color / f32(s_limit);
 
     textureStore(output, vec2<i32>(coords), vec4<f32>(pixel_color, 1.0));
 }

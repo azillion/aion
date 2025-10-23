@@ -1,10 +1,11 @@
-import { mat4, vec3 } from 'gl-matrix';
+import { vec3 } from 'gl-matrix';
 import { G } from '../../shared/constants';
 import type { Body, Theme, Vec3 } from '../../shared/types';
 import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
 import orbitsShaderWGSL from '../shaders/orbits.wgsl?raw';
+import cameraWGSL from '../shaders/camera.wgsl?raw';
 
 const ORBIT_SAMPLES = 256;
 const ORBIT_MAX_POINTS = ORBIT_SAMPLES + 1;
@@ -16,15 +17,16 @@ export class OrbitsPass implements IRenderPass {
   private orbitVertexBuffers: GPUBuffer[] = [];
   private orbitCPUData: Float32Array[] = [];
   private orbitCounts: number[] = [];
-  private orbitalElements: ({ a: number, e: number } | null)[] = [];
+  private orbitalElements: ({ a: number, e: number, currentTrueAnomaly: number } | null)[] = [];
 
   public periapsisPoints: (Vec3 | null)[] = [];
   public apoapsisPoints: (Vec3 | null)[] = [];
   public ascendingNodePoints: (Vec3 | null)[] = [];
   public descendingNodePoints: (Vec3 | null)[] = [];
+  
 
   public initialize(core: WebGPUCore, scene: Scene): void {
-    const module = core.device.createShaderModule({ code: orbitsShaderWGSL });
+    const module = core.device.createShaderModule({ code: cameraWGSL + orbitsShaderWGSL });
     this.pipeline = core.device.createRenderPipeline({
       label: 'Orbits Pipeline',
       layout: 'auto',
@@ -48,7 +50,7 @@ export class OrbitsPass implements IRenderPass {
     });
 
     this.uniformBuffer = core.device.createBuffer({
-      size: 96, // mat4x4 + vec3 + pointCount + a + e + padding
+      size: 48, // color vec3 + pointCount + a + e + currentTrueAnomaly + 2 pads => 12 floats
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -65,9 +67,13 @@ export class OrbitsPass implements IRenderPass {
     this.orbitCPUData = Array.from({ length: count }, () => new Float32Array(ORBIT_MAX_POINTS * 4));
     this.orbitCounts = Array.from({ length: count }, () => 0);
     this.orbitalElements = Array.from({ length: count }, () => null);
+    this.periapsisPoints = Array.from({ length: count }, () => null);
+    this.apoapsisPoints = Array.from({ length: count }, () => null);
+    this.ascendingNodePoints = Array.from({ length: count }, () => null);
+    this.descendingNodePoints = Array.from({ length: count }, () => null);
   }
 
-  private _calculateBarycenter(bodies: Body[]): { position: Vec3, velocity: Vec3, totalMass: number } {
+  public _calculateBarycenter(bodies: Body[]): { position: Vec3, velocity: Vec3, totalMass: number } {
     let totalMass = 0;
     const weightedPos: Vec3 = [0, 0, 0];
     const weightedVel: Vec3 = [0, 0, 0];
@@ -124,8 +130,6 @@ export class OrbitsPass implements IRenderPass {
     }
   }
 
-  
-
   private _calculateAnalyticOrbit(r_vec: Vec3, v_vec: Vec3, totalSystemMass: number, i: number, systemScale: number) {
     const r = Math.hypot(...r_vec);
     const v = Math.hypot(...v_vec);
@@ -136,10 +140,15 @@ export class OrbitsPass implements IRenderPass {
     const e_vec = [c_vec[0] / mu - r_vec[0] / r, c_vec[1] / mu - r_vec[1] / r, c_vec[2] / mu - r_vec[2] / r];
     const e = Math.hypot(...e_vec);
     const invA = 2 / r - (v * v) / mu;
-    if (!isFinite(invA) || invA <= 0) { this.orbitCounts[i] = 0; this.orbitalElements[i] = null; return; }
+    // Robustness: skip non-elliptical or numerically unstable cases (e >= 1)
+    if (!isFinite(invA) || invA <= 0 || e >= 1) {
+      this.orbitCounts[i] = 0;
+      this.orbitalElements[i] = null;
+      return;
+    }
     const a = 1 / invA;
     const bSemi = a * Math.sqrt(Math.max(0, 1 - e * e));
-    this.orbitalElements[i] = { a, e };
+
     const W = [h_vec[0]/h, h_vec[1]/h, h_vec[2]/h];
     let P = e > 1e-6 ? [e_vec[0]/e, e_vec[1]/e, e_vec[2]/e] : [r_vec[0]/r, r_vec[1]/r, r_vec[2]/r];
     const dotPW = P[0]*W[0] + P[1]*W[1] + P[2]*W[2];
@@ -147,7 +156,8 @@ export class OrbitsPass implements IRenderPass {
     const pLen = Math.hypot(...P) || 1;
     P = [P[0]/pLen, P[1]/pLen, P[2]/pLen];
     const Q = [W[1]*P[2] - W[2]*P[1], W[2]*P[0] - W[0]*P[2], W[0]*P[1] - W[1]*P[0]];
-    
+
+    // Generate orbit ribbon points
     const arr = this.orbitCPUData[i];
     for (let k = 0; k < ORBIT_MAX_POINTS; k++) {
       const theta = (k / (ORBIT_MAX_POINTS - 1)) * Math.PI * 2;
@@ -160,6 +170,12 @@ export class OrbitsPass implements IRenderPass {
       arr[base+3] = 1.0; // padding for 16-byte alignment
     }
     this.orbitCounts[i] = ORBIT_MAX_POINTS;
+
+    // Store minimal orbital elements required by shader and glyph pass
+    const dotR_Q = r_vec[0]*Q[0] + r_vec[1]*Q[1] + r_vec[2]*Q[2];
+    const dotR_P = r_vec[0]*P[0] + r_vec[1]*P[1] + r_vec[2]*P[2];
+    const currentNu = Math.atan2(dotR_Q, dotR_P);
+    this.orbitalElements[i] = { a, e, currentTrueAnomaly: currentNu };
 
     // Calculate and store apsis points
     if (e > 1e-6) {
@@ -214,22 +230,23 @@ export class OrbitsPass implements IRenderPass {
       const elements = this.orbitalElements[i];
       if (!elements) continue;
 
-      const uniformData = new Float32Array(24);
-      const viewProj = mat4.multiply(mat4.create(), context.camera.projectionMatrix, context.camera.viewMatrix);
-      uniformData.set(viewProj, 0);
-      uniformData.set(theme.accent, 16);
-      // store pointCount at index 19 (float after color vec3)
-      uniformData[19] = this.orbitCounts[i];
-      uniformData[20] = elements.a * context.systemScale;
-      uniformData[21] = elements.e;
+      const uniformData = new Float32Array(12);
+      uniformData.set(theme.accent, 0);
+      uniformData[3] = this.orbitCounts[i];
+      uniformData[4] = elements.a * context.systemScale;
+      uniformData[5] = elements.e;
+      uniformData[6] = elements.currentTrueAnomaly;
+      uniformData[7] = 0;
+      uniformData[8] = 0;
       context.core.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
 
       const bindGroup = context.core.device.createBindGroup({
         label: 'Orbits Bind Group',
         layout: this.pipeline.getBindGroupLayout(0),
         entries: [
-            { binding: 0, resource: { buffer: this.uniformBuffer } },
-            { binding: 1, resource: { buffer: this.orbitVertexBuffers[i] } }
+            { binding: 0, resource: { buffer: context.scene.sharedCameraUniformBuffer } },
+            { binding: 1, resource: { buffer: this.uniformBuffer } },
+            { binding: 2, resource: { buffer: this.orbitVertexBuffers[i] } }
         ],
       });
 

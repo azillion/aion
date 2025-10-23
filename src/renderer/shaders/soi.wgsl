@@ -1,7 +1,5 @@
-struct Camera {
-    viewProjection: mat4x4<f32>,
-};
-@group(0) @binding(0) var<uniform> camera: Camera;
+// CameraUniforms is provided by a shared include (camera.wgsl)
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 struct SoiInstance {
     position: vec3<f32>,
@@ -26,9 +24,8 @@ fn vertexMain(
     let corner = corners[vertexIndex % 4u];
 
     // Billboard in world space using camera right/up, scaled by world radius
-    let view = camera.viewProjection;
-    let right = vec3<f32>(view[0][0], view[1][0], view[2][0]);
-    let up = vec3<f32>(view[0][1], view[1][1], view[2][1]);
+    let right = camera.right;
+    let up = camera.up;
     let worldPos = instance.position + (right * corner.x * instance.radius) + (up * corner.y * instance.radius);
 
     var out: VertexOutput;

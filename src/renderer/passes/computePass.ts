@@ -2,6 +2,7 @@ import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
 import computeShaderWGSL from '../shaders/compute.wgsl?raw';
+import cameraWGSL from '../shaders/camera.wgsl?raw';
 
 const WORKGROUP_SIZE = 8;
 
@@ -17,7 +18,7 @@ export class ComputePass implements IRenderPass {
   public recreatePipeline(bodyCount: number): void {
     const module = this.core.device.createShaderModule({
       label: `Compute Shader Module (${bodyCount} bodies)`,
-      code: `const NUM_SPHERES: u32 = ${bodyCount}u;\n` + computeShaderWGSL
+      code: `const NUM_SPHERES: u32 = ${bodyCount}u;\n` + cameraWGSL + computeShaderWGSL
     });
 
     this.pipeline = this.core.device.createComputePipeline({
@@ -37,7 +38,7 @@ export class ComputePass implements IRenderPass {
       entries: [
         { binding: 0, resource: { buffer: context.scene.spheresBuffer } },
         { binding: 1, resource: context.mainSceneTexture.createView() },
-        { binding: 2, resource: { buffer: context.scene.cameraUniformBuffer } }
+        { binding: 2, resource: { buffer: context.scene.sharedCameraUniformBuffer } }
       ]
     });
 

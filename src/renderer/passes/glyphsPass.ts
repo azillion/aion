@@ -3,6 +3,7 @@ import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
 import glyphsShaderWGSL from '../shaders/glyphs.wgsl?raw';
 import type { Vec3 } from '../../shared/types';
+import cameraWGSL from '../shaders/camera.wgsl?raw';
 
 interface GlyphInstance {
   position: Vec3;
@@ -16,7 +17,7 @@ export class GlyphsPass implements IRenderPass {
   private instanceCapacity = 0;
 
   public initialize(core: WebGPUCore, _scene: Scene): void {
-    const module = core.device.createShaderModule({ code: glyphsShaderWGSL });
+    const module = core.device.createShaderModule({ code: cameraWGSL + glyphsShaderWGSL });
     this.pipeline = core.device.createRenderPipeline({
       label: 'Glyphs Pipeline',
       layout: 'auto',
@@ -71,7 +72,7 @@ export class GlyphsPass implements IRenderPass {
     const bindGroup = core.device.createBindGroup({
         layout: this.pipeline.getBindGroupLayout(0),
         entries: [
-            { binding: 0, resource: { buffer: scene.mapCameraUniformBuffer } },
+            { binding: 0, resource: { buffer: scene.sharedCameraUniformBuffer } },
             { binding: 1, resource: { buffer: this.instanceBuffer } },
         ]
     });

@@ -1,4 +1,4 @@
-import type { Body, SystemState, Vec3, Star } from '../shared/types';
+import type { Body, SystemState, Star } from '../shared/types';
 import type { WebGPUCore } from './core';
 import type { Camera } from '../camera';
 
@@ -39,10 +39,8 @@ export class Scene {
   public spheresBuffer!: GPUBuffer;
   public starBuffer!: GPUBuffer;
 
-  // Camera-related buffers
-  public cameraUniformBuffer!: GPUBuffer;
-  public galaxyCameraUniformBuffer!: GPUBuffer;
-  public mapCameraUniformBuffer!: GPUBuffer;
+  // A SINGLE, shared buffer for all camera data.
+  public sharedCameraUniformBuffer!: GPUBuffer;
 
   public lastKnownBodyCount: number = 0;
   
@@ -51,15 +49,8 @@ export class Scene {
 
   constructor(core: WebGPUCore) {
     this.device = core.device;
-    this.cameraUniformBuffer = this.device.createBuffer({
-      size: 256,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.galaxyCameraUniformBuffer = this.device.createBuffer({
-      size: 128,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.mapCameraUniformBuffer = this.device.createBuffer({
+    this.sharedCameraUniformBuffer = this.device.createBuffer({
+      label: 'Shared Camera Uniform Buffer',
       size: 256,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
@@ -99,18 +90,6 @@ export class Scene {
 
     const sphereData = this.serializeSystemState(bodiesToRender, camera, renderScale, useWorldSpace);
     this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData);
-
-    // Update camera uniform buffer (for compute pass)
-    const cameraData = new Float32Array(16);
-    cameraData.set([0, 0, 0], 0); // Eye is at origin in camera-relative space
-    const lookAtRelative: Vec3 = [
-      camera.look_at[0] - camera.eye[0],
-      camera.look_at[1] - camera.eye[1],
-      camera.look_at[2] - camera.eye[2],
-    ];
-    cameraData.set(lookAtRelative, 4);
-    cameraData.set(camera.up, 8);
-    this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, cameraData);
   }
 
   private serializeSystemState(bodies: Body[], camera: Camera, renderScale: number, useWorldSpace: boolean) {

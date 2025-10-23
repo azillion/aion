@@ -1,7 +1,7 @@
 import type { Body, Vec3 } from './shared/types';
 import type { Camera } from './camera';
 import { CameraMode } from './state';
-import { mat4, vec4 } from 'gl-matrix';
+import { mat4, vec3, vec4 } from 'gl-matrix';
 
 export class HUDManager {
   private canvas: HTMLCanvasElement;
@@ -87,12 +87,12 @@ export class HUDManager {
       let py = (-ndcY * 0.5 + 0.5) * viewport.height;
       return { x: px, y: py, inView: true };
     }
+    // Perspective path: compute in camera-relative space to avoid precision loss
     const eye = camera.eye as unknown as number[];
     const look = camera.look_at as unknown as number[];
-    const dx = eye[0] - look[0];
-    const dy = eye[1] - look[1];
-    const dz = eye[2] - look[2];
-    const dist = Math.max(1e-9, Math.hypot(dx, dy, dz));
+    const relativePos = vec3.subtract(vec3.create(), pos as unknown as number[], eye);
+    const relativeLook = vec3.subtract(vec3.create(), look, eye);
+    const dist = Math.max(1e-9, vec3.length(relativeLook));
 
     const vfov = 25 * Math.PI / 180;
     const aspect = (viewport.height > 0) ? (viewport.width / viewport.height) : (16 / 9);
@@ -102,12 +102,12 @@ export class HUDManager {
     mat4.perspective(proj, vfov, aspect, near, far);
 
     const view = mat4.create();
-    mat4.lookAt(view, eye, look, camera.up as unknown as number[]);
+    mat4.lookAt(view, [0, 0, 0], relativeLook as unknown as number[], camera.up as unknown as number[]);
 
     const viewProj = mat4.multiply(mat4.create(), proj, view);
 
-    const worldPos = vec4.fromValues(pos[0], pos[1], pos[2], 1.0);
-    const clip = vec4.transformMat4(vec4.create(), worldPos, viewProj);
+    const relativePosVec4 = vec4.fromValues(relativePos[0], relativePos[1], relativePos[2], 1.0);
+    const clip = vec4.transformMat4(vec4.create(), relativePosVec4, viewProj);
     const w = clip[3];
     if (!Number.isFinite(w) || w <= 0) return null;
     const ndcX = clip[0] / w;
