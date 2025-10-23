@@ -103,17 +103,19 @@ export class Scene {
       const renderedRadius = body.radius * renderScale;
 
       // Sphere.center
+      let pos: [number, number, number];
       if (useWorldSpace) {
         // Positions are pre-scaled for the map; write directly.
-        sphereData[f_base + 0] = body.position[0];
-        sphereData[f_base + 1] = body.position[1];
-        sphereData[f_base + 2] = body.position[2];
+        pos = [body.position[0], body.position[1], body.position[2]];
       } else {
         // For the 3D view, use camera-relative coordinates without additional scaling.
-        sphereData[f_base + 0] = body.position[0] - camera.eye[0];
-        sphereData[f_base + 1] = body.position[1] - camera.eye[1];
-        sphereData[f_base + 2] = body.position[2] - camera.eye[2];
+        pos = [
+          body.position[0] - camera.eye[0],
+          body.position[1] - camera.eye[1],
+          body.position[2] - camera.eye[2],
+        ];
       }
+      sphereData.set(pos, f_base + 0);
       sphereData[f_base + 3] = renderedRadius; // Sphere.radius
 
       // Material

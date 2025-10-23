@@ -66,29 +66,10 @@ export class ShipRelativeController implements ICameraController {
             ];
         }
 
-        // Build a stable orthonormal basis
-        const forward = vec3.create();
-        vec3.subtract(forward, camera.look_at as unknown as vec3, camera.eye as unknown as vec3);
-        vec3.normalize(forward, forward);
-
-        let right = vec3.create();
-        vec3.cross(right, forward, shipUp);
-        // Stage 1 fallback: use world up if shipUp is collinear with forward
-        if (vec3.length(right) < 1e-3) {
-            const worldUp = vec3.fromValues(0, 1, 0);
-            vec3.cross(right, forward, worldUp);
-        }
-        // Stage 2 fallback: use world Z as guaranteed non-collinear axis
-        if (vec3.length(right) < 1e-3) {
-            const worldZ = vec3.fromValues(0, 0, 1);
-            vec3.cross(right, forward, worldZ);
-        }
-        vec3.normalize(right, right);
-
-        const finalUp = vec3.create();
-        vec3.cross(finalUp, right, forward);
-
-        camera.up = [finalUp[0], finalUp[1], finalUp[2]];
+		// The mat4.lookAt function is robust. We only need to provide the ship's
+		// local "up" vector as a hint. It will handle cases where the 'forward'
+		// and 'up' vectors are nearly collinear and build a stable basis.
+		camera.up = [shipUp[0], shipUp[1], shipUp[2]];
         camera.recomputeViewFromLook();
         camera.refreshDerived();
     }

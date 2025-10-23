@@ -81,18 +81,12 @@ fn clampInterval(i: Interval, minI: f32, maxI: f32) -> f32 {
 const INTERVAL_EMPTY: Interval = Interval(INFINITY, -INFINITY);
 const INTERVAL_UNIVERSE: Interval = Interval(-INFINITY, INFINITY);
 
-// Flattened Sphere layout to match CPU-packed 16-float buffer
+// Match the CPU-side 16-float (64 byte) layout with vec4 groupings for alignment
 struct Sphere {
-    center: vec3<f32>,
-    radius: f32,
-    albedo: vec3<f32>,
-    _pad1: f32,
-    emissive: vec3<f32>,
-    fuzziness: f32,
-    refraction_index: f32,
-    mat_type: u32,
-    _pad2: u32,
-    _pad3: u32,
+    pos_and_radius: vec4<f32>,     // .xyz = position, .w = radius
+    albedo_and_pad: vec4<f32>,     // .xyz = albedo, .w = pad
+    emissive_and_fuzz: vec4<f32>,  // .xyz = emissive, .w = fuzziness
+    misc_and_pad: vec4<f32>,       // refraction index, mat type, padding (unused here)
 }
 
 struct HitRecord {
@@ -110,10 +104,13 @@ fn hit_sphere(sphere: Sphere, r: Ray, ray_t: Interval) -> HitRecord {
     var rec: HitRecord;
     rec.hit = false;
 
-    let oc = sphere.center - r.origin;
+    let center = sphere.pos_and_radius.xyz;
+    let radius = sphere.pos_and_radius.w;
+
+    let oc = center - r.origin;
     let a = dot(r.direction, r.direction);
     let h = dot(r.direction, oc);
-    let c = dot(oc, oc) - sphere.radius * sphere.radius;
+    let c = dot(oc, oc) - radius * radius;
 
     let discriminant = h * h - a * c;
     if (discriminant < 0.0) {
@@ -132,12 +129,12 @@ fn hit_sphere(sphere: Sphere, r: Ray, ray_t: Interval) -> HitRecord {
 
 	rec.t = root;
     rec.p = rayAt(r, rec.t);
-    let outward_normal = (rec.p - sphere.center) / sphere.radius;
+    let outward_normal = (rec.p - center) / radius;
     rec.front_face = dot(r.direction, outward_normal) < 0.0;
     rec.normal = select(-outward_normal, outward_normal, rec.front_face);
     // Copy material properties directly
-    rec.albedo = sphere.albedo;
-    rec.emissive = sphere.emissive;
+    rec.albedo = sphere.albedo_and_pad.xyz;
+    rec.emissive = sphere.emissive_and_fuzz.xyz;
     rec.hit = true;
 
     return rec;
@@ -181,14 +178,15 @@ struct Camera {
 fn createCamera(aspect_ratio: f32) -> Camera {
     let samples_per_pixel: u32 = 1u; // reduce noise and debug visibility
     let vfov = 25.0;
-    let lookfrom = camera.eye; // (0,0,0)
+    let lookfrom = vec3<f32>(0.0, 0.0, 0.0);
     let vup = camera.up;
     let defocus_angle = 0.0; // disable DOF to avoid over-blur
     let focus_distance = max(0.001, camera.distance_to_target);
 
     let theta = degreesToRadians(vfov);
     let h = tan(theta / 2.0);
-    let viewport_height = 2.0 * h * focus_distance;
+    // Define a virtual viewport at unit distance to preserve numerical stability
+    let viewport_height = 2.0 * h;
     let viewport_width = aspect_ratio * viewport_height;
 
     // Use provided forward vector for basis
@@ -197,10 +195,10 @@ fn createCamera(aspect_ratio: f32) -> Camera {
     let v = cross(w, u);
 
     let origin = lookfrom;
-    // Scale by focus distance so the image plane sits at the correct depth
-    let horizontal = focus_distance * viewport_width * u;
-    let vertical = focus_distance * viewport_height * v;
-    let lower_left_corner = origin - horizontal / 2.0 - vertical / 2.0 - focus_distance * w;
+    // Viewport is at unit distance; keep vectors small and stable
+    let horizontal = viewport_width * u;
+    let vertical = viewport_height * v;
+    let lower_left_corner = origin - horizontal / 2.0 - vertical / 2.0 - w;
 
     let defocus_radius = focus_distance * tan(degreesToRadians(defocus_angle / 2.0));
     let defocus_disk_u = u * defocus_radius;
@@ -220,7 +218,7 @@ fn getRay(camera: Camera, s: f32, t: f32, seed: vec2<u32>) -> Ray {
     let offset = camera.u * rd.x + camera.v * rd.y;
     return Ray(
         camera.origin + offset,
-        camera.lower_left_corner + s*camera.horizontal + t*camera.vertical - camera.origin - offset
+        normalize(camera.lower_left_corner + s*camera.horizontal + t*camera.vertical - camera.origin - offset)
     );
 }
 
@@ -231,29 +229,38 @@ struct Ray {
 
 const R = cos(PI / 4.0);
 
-fn rayColor(initial_ray: Ray, seed: vec2<u32>) -> vec3<f32> {
-    // Fixed near clip for primary rays to avoid front-surface clipping at close range
-    let t_min = 0.0001;
-    let rec = hit_spheres(initial_ray, createInterval(t_min, INFINITY));
+fn rayColor(initial_ray: Ray, seed: vec2<u32>) -> vec3<f32> {    
+    let rec = hit_spheres(initial_ray, createInterval(0.001, INFINITY));
     if (!rec.hit) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
-    if (dot(rec.emissive, rec.emissive) > 0.0) {
+
+    // If the object is emissive (e.g., sun), return its emissive color
+    if (dot(rec.emissive, rec.emissive) > 0.1) {
         return rec.emissive;
     }
-    let light_pos = spheres[0].center;
+
+    // Emissive-first: treat the sun (or any emissive) as a light source
+    if (dot(rec.emissive, rec.emissive) > 0.01) {
+        return rec.emissive;
+    }
+
+    // Simple diffuse lighting from the sun at spheres[0]
+    let light_pos = spheres[0].pos_and_radius.xyz;
     let light_dir = normalize(light_pos - rec.p);
     let diffuse_intensity = max(dot(rec.normal, light_dir), 0.0);
-    const SHADOW_BIAS: f32 = 0.0001;
+
+    // Shadow ray
+    const SHADOW_BIAS: f32 = 0.001;
     let shadow_ray = Ray(rec.p + rec.normal * SHADOW_BIAS, light_dir);
-    let shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, length(light_pos - rec.p)));
-    // Path is clear if we hit nothing OR we hit an emissive (the light itself)
-    if (!shadow_rec.hit || dot(shadow_rec.emissive, shadow_rec.emissive) > 0.0) {
-        let light_brightness = 5.0;
-        return rec.albedo * diffuse_intensity * light_brightness;
-    } else {
-        return rec.albedo * 0.05;
+    let dist_to_light = length(light_pos - rec.p);
+    let shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, dist_to_light));
+    if (shadow_rec.hit) {
+        return rec.albedo * 0.05; // ambient term in shadow
     }
+
+    let light_brightness = 1.5;
+    return rec.albedo * diffuse_intensity * light_brightness;
 }
 
 fn rayAt(ray: Ray, t: f32) -> vec3<f32> {

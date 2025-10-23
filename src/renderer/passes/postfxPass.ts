@@ -10,20 +10,45 @@ export class PostFXPass implements IRenderPass {
   private presentPipeline!: GPURenderPipeline;
   private sampler!: GPUSampler;
   private targetInfoUniform!: GPUBuffer;
+  private bindGroupLayoutPost!: GPUBindGroupLayout;
+  private bindGroupLayoutPresent!: GPUBindGroupLayout;
 
   public initialize(core: WebGPUCore, _scene: Scene): void {
     const module = core.device.createShaderModule({ code: postfxShaderWGSL });
 
+    // Explicit layouts: one for full post-fx, one for simple present
+    this.bindGroupLayoutPost = core.device.createBindGroupLayout({
+      label: 'PostFX Bind Group Layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ]
+    });
+    const postPipelineLayout = core.device.createPipelineLayout({ bindGroupLayouts: [this.bindGroupLayoutPost] });
+
+    this.bindGroupLayoutPresent = core.device.createBindGroupLayout({
+      label: 'Present Bind Group Layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+      ]
+    });
+    const presentPipelineLayout = core.device.createPipelineLayout({ bindGroupLayouts: [this.bindGroupLayoutPresent] });
+
     this.postfxPipeline = core.device.createRenderPipeline({
       label: 'PostFX Pipeline',
-      layout: "auto",
+      layout: postPipelineLayout,
       vertex: { module, entryPoint: "vertexMain" },
       fragment: { module, entryPoint: "fragmentMain", targets: [{ format: core.presentationFormat }] },
     });
     
     this.presentPipeline = core.device.createRenderPipeline({
         label: 'Present Pipeline',
-        layout: "auto",
+        layout: presentPipelineLayout,
         vertex: { module, entryPoint: "vertexMain" },
         fragment: { module, entryPoint: "presentFragment", targets: [{ format: core.presentationFormat }] },
     });
@@ -37,6 +62,14 @@ export class PostFXPass implements IRenderPass {
     });
   }
 
+  public getPresentPipeline(): GPURenderPipeline {
+    return this.presentPipeline;
+  }
+
+  public getSampler(): GPUSampler {
+    return this.sampler;
+  }
+
   public run(encoder: GPUCommandEncoder, context: RenderContext, theme: Theme, bodies: Body[]): void {
     const { core, destinationTexture, sourceTexture } = context;
 
@@ -44,7 +77,7 @@ export class PostFXPass implements IRenderPass {
 
     const postFxBindGroup = core.device.createBindGroup({
       label: 'PostFX Bind Group',
-      layout: this.postfxPipeline.getBindGroupLayout(0),
+      layout: this.bindGroupLayoutPost,
       entries: [
         { binding: 0, resource: this.sampler },
         { binding: 1, resource: context.mainSceneTexture.createView() },
@@ -72,7 +105,7 @@ export class PostFXPass implements IRenderPass {
     // Pass 2: Present the destination texture to the canvas
     const presentBindGroup = core.device.createBindGroup({
       label: 'Present Bind Group',
-      layout: this.presentPipeline.getBindGroupLayout(0),
+      layout: this.bindGroupLayoutPresent,
       entries: [
         { binding: 0, resource: this.sampler },
         { binding: 1, resource: destinationTexture.createView() },

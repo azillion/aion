@@ -101,8 +101,8 @@ export class App {
     } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
       renderScale = 1.0;
       const playerShip = systemState.bodies.find(b => b.id === this.state.playerShipId) as Ship | undefined;
-      const earth = systemState.bodies.find(b => b.id.toLowerCase() === 'earth');
-      this.cameraManager.update(this.state.cameraMode, { playerShip, targetBody: earth });
+      // Free-look: follow ship orientation without a forced target
+      this.cameraManager.update(this.state.cameraMode, { playerShip });
       bodiesToRender = systemState.bodies.filter(b => b.id !== this.state.playerShipId);
     } else {
       renderScale = 1.0;

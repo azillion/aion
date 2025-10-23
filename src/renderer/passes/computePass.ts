@@ -11,6 +11,7 @@ export class ComputePass implements IRenderPass {
   private pipeline!: GPUComputePipeline;
   private paramsUniformBuffer!: GPUBuffer;
   private core!: WebGPUCore; // Store core for re-initialization
+  private bindGroupLayout!: GPUBindGroupLayout;
 
   public async initialize(core: WebGPUCore, _scene: Scene): Promise<void> {
     this.core = core;
@@ -20,9 +21,39 @@ export class ComputePass implements IRenderPass {
       computeShaderWGSL,
       { 'camera.wgsl': cameraWGSL }
     );
+    this.bindGroupLayout = core.device.createBindGroupLayout({
+      label: 'Compute Pass Bind Group Layout',
+      entries: [
+        { // @binding(0) params
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'uniform' }
+        },
+        { // @binding(1) spheres
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'read-only-storage' }
+        },
+        { // @binding(2) output texture
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          storageTexture: { access: 'write-only', format: 'rgba16float' }
+        },
+        { // @binding(3) camera
+          binding: 3,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'uniform' }
+        }
+      ]
+    });
+
+    const pipelineLayout = core.device.createPipelineLayout({
+      bindGroupLayouts: [this.bindGroupLayout]
+    });
+
     this.pipeline = this.core.device.createComputePipeline({
       label: 'Compute Pipeline',
-      layout: 'auto',
+      layout: pipelineLayout,
       compute: {
         module,
         entryPoint: 'main'
@@ -42,7 +73,7 @@ export class ComputePass implements IRenderPass {
 
     const bindGroup = context.core.device.createBindGroup({
       label: "Compute Bind Group",
-      layout: this.pipeline.getBindGroupLayout(0),
+      layout: this.bindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this.paramsUniformBuffer } },
         { binding: 1, resource: { buffer: context.scene.spheresBuffer } },

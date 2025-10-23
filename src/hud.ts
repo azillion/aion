@@ -28,17 +28,15 @@ export class HUDManager {
     this.context.fillStyle = 'rgba(255,255,255,0.9)';
     this.context.strokeStyle = 'rgba(255,255,255,0.9)';
 
-    if (cameraMode === CameraMode.GALACTIC_MAP) {
+    // Do not draw any HUD elements in galactic map or ship view
+    if (cameraMode === CameraMode.GALACTIC_MAP || cameraMode === CameraMode.SHIP_RELATIVE) {
       return;
     }
 
     const centerX = viewport.width * 0.5;
     const centerY = viewport.height * 0.5;
 
-    let iterable: Body[] = bodiesToRender;
-    if (cameraMode === CameraMode.SHIP_RELATIVE && playerShipId) {
-      iterable = bodiesToRender.filter(b => b.id !== playerShipId);
-    }
+    const iterable: Body[] = bodiesToRender;
 
     for (const body of iterable) {
       const p = projectWorldToScreen(body.position as Vec3, camera, viewport);

@@ -177,7 +177,7 @@ export class Renderer {
         }
     } else { // This is now the Ops View (SHIP_RELATIVE)
         this.computePass.run(encoder, context);
-        // Clear any stale orbits overlay when in ship view
+        // Present the compute result to the screen via PostFX (which also handles presentation)
         PostFXPass.clearTexture(this.core.device, this.orbitsTexture);
         this.postfxPass.run(encoder, context, theme, frameData.rawState.bodies ?? []);
     }
