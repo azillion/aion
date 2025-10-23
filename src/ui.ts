@@ -18,7 +18,7 @@ export class UI {
     private settings = {
         'Focus': 'Sun',
         'Theme': 'white',
-        'Sensor': 'Visible (Y)',
+        'Sensor': 'Full Color',
         'Show Orbits': false,
         'Add Asteroid': () => this.addAsteroid(),
         'Warp x1': () => this.setWarp(1),

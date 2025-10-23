@@ -95,27 +95,23 @@ export class Scene {
   private serializeSystemState(bodies: Body[], camera: Camera, renderScale: number, useWorldSpace: boolean) {
     const sphereData = new Float32Array(this.lastKnownBodyCount * FLOATS_PER_SPHERE);
     const sphereDataU32 = new Uint32Array(sphereData.buffer);
-
     bodies.forEach((body, i) => {
       const f_base = i * FLOATS_PER_SPHERE;
       const u_base = f_base;
-
       const renderedRadius = body.radius * renderScale;
 
       // Sphere.center
-      let pos: [number, number, number];
       if (useWorldSpace) {
-        // Positions are pre-scaled for the map; write directly.
-        pos = [body.position[0], body.position[1], body.position[2]];
+        // For Map and Ship modes, positions are already correctly transformed (scaled or camera-relative)
+        sphereData[f_base + 0] = body.position[0];
+        sphereData[f_base + 1] = body.position[1];
+        sphereData[f_base + 2] = body.position[2];
       } else {
-        // For the 3D view, use camera-relative coordinates without additional scaling.
-        pos = [
-          body.position[0] - camera.eye[0],
-          body.position[1] - camera.eye[1],
-          body.position[2] - camera.eye[2],
-        ];
+        // Fallback path for modes without preprocessing (kept for future use)
+        sphereData[f_base + 0] = body.position[0] - camera.eye[0];
+        sphereData[f_base + 1] = body.position[1] - camera.eye[1];
+        sphereData[f_base + 2] = body.position[2] - camera.eye[2];
       }
-      sphereData.set(pos, f_base + 0);
       sphereData[f_base + 3] = renderedRadius; // Sphere.radius
 
       // Material

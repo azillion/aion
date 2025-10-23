@@ -86,7 +86,7 @@ struct Sphere {
     pos_and_radius: vec4<f32>,     // .xyz = position, .w = radius
     albedo_and_pad: vec4<f32>,     // .xyz = albedo, .w = pad
     emissive_and_fuzz: vec4<f32>,  // .xyz = emissive, .w = fuzziness
-    misc_and_pad: vec4<f32>,       // refraction index, mat type, padding (unused here)
+    ref_idx_and_opacity: vec4<f32>,// .x = refraction index, .y = opacity, .zw unused
 }
 
 struct HitRecord {
@@ -229,7 +229,7 @@ struct Ray {
 
 const R = cos(PI / 4.0);
 
-fn rayColor(initial_ray: Ray, seed: vec2<u32>) -> vec3<f32> {    
+fn rayColor(initial_ray: Ray, seed: vec2<u32>) -> vec3<f32> {
     let rec = hit_spheres(initial_ray, createInterval(0.001, INFINITY));
     if (!rec.hit) {
         return vec3<f32>(0.0, 0.0, 0.0);
@@ -240,18 +240,12 @@ fn rayColor(initial_ray: Ray, seed: vec2<u32>) -> vec3<f32> {
         return rec.emissive;
     }
 
-    // Emissive-first: treat the sun (or any emissive) as a light source
-    if (dot(rec.emissive, rec.emissive) > 0.01) {
-        return rec.emissive;
-    }
-
     // Simple diffuse lighting from the sun at spheres[0]
     let light_pos = spheres[0].pos_and_radius.xyz;
     let light_dir = normalize(light_pos - rec.p);
     let diffuse_intensity = max(dot(rec.normal, light_dir), 0.0);
 
     // Shadow ray
-    // Increase bias to prevent self-shadowing at astronomical scales
     const SHADOW_BIAS: f32 = 1.0;
     let shadow_ray = Ray(rec.p + rec.normal * SHADOW_BIAS, light_dir);
     let dist_to_light = length(light_pos - rec.p);
@@ -259,7 +253,7 @@ fn rayColor(initial_ray: Ray, seed: vec2<u32>) -> vec3<f32> {
     if (shadow_rec.hit) {
         // Do not consider in shadow if we hit an emissive (e.g., the sun)
         if (dot(shadow_rec.emissive, shadow_rec.emissive) < 0.1) {
-            return rec.albedo * 0.05; // ambient term in shadow
+            return vec3<f32>(0.0, 0.0, 0.0); // In space, shadows are pure black.
         }
     }
 

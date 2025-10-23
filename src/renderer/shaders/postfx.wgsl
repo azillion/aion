@@ -52,27 +52,19 @@ fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f
     let distortion = 1.0 + barrelPower * r * r;
     warpedUV = center + radial / distortion;
 
-    // Sample HDR scene color from the compute pass
-    let hdrColor = textureSample(sceneTexture, sceneSampler, warpedUV).rgb;
+    // Sample HDR scene color from the compute pass (raw HDR)
+    let currentFrameHdr = textureSample(sceneTexture, sceneSampler, warpedUV).rgb;
 
-    // Apply tone mapping to compress HDR values before they enter the feedback loop.
-    // This prevents extreme brightness from "exploding" the persistence effect.
-    let tonemappedColor = hdrColor / (hdrColor + vec3<f32>(1.0));
+    // Apply RGB response gain in HDR space.
+    let rgb_energy = currentFrameHdr * theme.response.rgb;
 
-    // Calculate luminance from the *tonemapped* color for a stable persistence effect.
-    let luminance = dot(tonemappedColor, theme.response.rgb);
-
-    // Phosphor persistence: sample previous frame and decay its luminance
-    let prevFrameColor = textureSample(prevFrameTexture, sceneSampler, warpedUV).rgb;    
-    // Guard against NaN/Inf in feedback
-    let prevLen = length(prevFrameColor);
-    let prevLuminance = clamp(prevLen / 1.732, 0.0, 1e6);
+    // Persistence operates in HDR: combine with decayed previous HDR frame.
+    let prevFrameHdr = textureSample(prevFrameTexture, sceneSampler, warpedUV).rgb;
     let persistenceFactor = exp(-theme.params.x / 0.25);
-    let persistedLuminance = max(luminance, prevLuminance * persistenceFactor);
+    let persisted_hdr = rgb_energy + (prevFrameHdr * persistenceFactor);
 
-    // Start with the base CRT background glow, scaled by intensity, then add scene phosphor
-    let backgroundColor = theme.bg.rgb * theme.params.y;
-    var finalColorWithVignette = backgroundColor + theme.fg.rgb * persistedLuminance;
+    // Background glow (LDR contribution) will be added after tone mapping.
+    var finalColorWithVignette = persisted_hdr;
 
     // Vignette
     let vignetteStrength = 0.8 * theme.params.y;
@@ -106,9 +98,13 @@ fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f
         finalColorWithVignette *= scanlineFactor;
     }
 
-    // Final safety: scrub NaN (x != x) and clamp huge values to avoid feedback loop
-    let noNan = select(vec3<f32>(0.0), finalColorWithVignette, finalColorWithVignette == finalColorWithVignette);
-    let safeColor = clamp(noNan, vec3<f32>(-1e6), vec3<f32>(1e6));
+    // Tone map after persistence and vignette, then add subtle BG glow in LDR
+    let tonemapped = finalColorWithVignette / (finalColorWithVignette + vec3<f32>(1.0));
+    let ldrWithBg = tonemapped + (theme.bg.rgb * theme.params.y * 0.25);
+
+    // Final safety: scrub NaN and clamp
+    let noNan = select(vec3<f32>(0.0), ldrWithBg, ldrWithBg == ldrWithBg);
+    let safeColor = clamp(noNan, vec3<f32>(0.0), vec3<f32>(1.0));
     return vec4<f32>(safeColor, 1.0);
 }
 

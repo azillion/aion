@@ -48,6 +48,20 @@ export class Camera {
 		this.recomputeViewFromLook();
 		this.refreshDerived();
 	}
+
+	public clone(): Camera {
+		const newCam = new Camera();
+		newCam.eye = [this.eye[0], this.eye[1], this.eye[2]];
+		newCam.look_at = [this.look_at[0], this.look_at[1], this.look_at[2]];
+		newCam.up = [this.up[0], this.up[1], this.up[2]];
+		newCam.right = [this.right[0], this.right[1], this.right[2]];
+		newCam.forward = [this.forward[0], this.forward[1], this.forward[2]];
+		newCam.focusBodyId = this.focusBodyId;
+		newCam.isOrthographic = this.isOrthographic;
+		newCam.distanceToTarget = this.distanceToTarget;
+		mat4.copy(newCam.projectionMatrix, this.projectionMatrix);
+		return newCam;
+	}
 }
 
 

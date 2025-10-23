@@ -1,6 +1,6 @@
 import { CameraMode } from '../state';
 import { Camera } from './camera';
-import { SystemMapController, ShipRelativeController, type SystemMapControllerContext, type ShipRelativeControllerContext } from './controllers';
+import { SystemMapController, ShipRelativeController, type SystemMapControllerContext, type ShipRelativeControllerContext, type ShipRelativeLookAtContext } from './controllers';
 
 export class CameraManager {
 	private camera: Camera;
@@ -33,6 +33,10 @@ export class CameraManager {
             }
             default: break;
         }
+    }
+
+    public updateLookAt(camera: Camera, context: ShipRelativeLookAtContext): void {
+        this.shipRelativeController.updateLookAt(camera, context);
     }
 
 	public getCamera(): Camera {

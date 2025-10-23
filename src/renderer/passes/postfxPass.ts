@@ -43,7 +43,7 @@ export class PostFXPass implements IRenderPass {
       label: 'PostFX Pipeline',
       layout: postPipelineLayout,
       vertex: { module, entryPoint: "vertexMain" },
-      fragment: { module, entryPoint: "fragmentMain", targets: [{ format: core.presentationFormat }] },
+      fragment: { module, entryPoint: "fragmentMain", targets: [{ format: 'rgba16float' }] },
     });
     
     this.presentPipeline = core.device.createRenderPipeline({

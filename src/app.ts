@@ -60,7 +60,7 @@ export class App {
 
     let bodiesToRender: Body[] = systemState.bodies;
     let renderScale: number;
-    const camera = this.cameraManager.getCamera();
+    let camera = this.cameraManager.getCamera();
 
     if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
       let bodiesForMap = systemState.bodies;
@@ -101,9 +101,24 @@ export class App {
     } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
       renderScale = 1.0;
       const playerShip = systemState.bodies.find(b => b.id === this.state.playerShipId) as Ship | undefined;
-      // Free-look: follow ship orientation without a forced target
-      this.cameraManager.update(this.state.cameraMode, { playerShip });
-      bodiesToRender = systemState.bodies.filter(b => b.id !== this.state.playerShipId);
+      // 1) Update world-space camera from controller (no look_at here)
+      this.cameraManager.update(this.state.cameraMode, { playerShip, keys: this.input.keys });
+
+      // 2) Build camera-relative bodies using the (world) camera.eye
+      bodiesToRender = systemState.bodies.map(b => ({
+        ...b,
+        position: [
+          b.position[0] - camera.eye[0],
+          b.position[1] - camera.eye[1],
+          b.position[2] - camera.eye[2],
+        ] as [number, number, number],
+      }));
+
+      // 3) Move the main camera to origin for the rest of this frame
+      camera.eye = [0, 0, 0];
+
+      // 4) Compute look_at using stable, camera-relative data
+      this.cameraManager.updateLookAt(camera, { keys: this.input.keys, relativeBodies: bodiesToRender, playerShip });
     } else {
       renderScale = 1.0;
       this.cameraManager.update(this.state.cameraMode, {});
@@ -117,9 +132,9 @@ export class App {
     this.scene.update(
       systemState,
       camera,
-      bodiesToRender,
+      bodiesToRender.filter(b => b.id !== this.state.playerShipId),
       sceneScale,
-      this.state.cameraMode === CameraMode.SYSTEM_MAP
+      true
     );
     // Do not update orbits in ship view; rings are hidden there
 

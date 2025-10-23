@@ -1,4 +1,4 @@
-import type { Ship, Body } from '../shared/types';
+import type { Ship, Body, Vec3 } from '../shared/types';
 import type { Camera } from '../camera';
 import { vec3, quat, mat4 } from 'gl-matrix';
 import { ReferenceFrame } from '../state';
@@ -17,6 +17,13 @@ export interface SystemMapControllerContext {
 export interface ShipRelativeControllerContext {
   playerShip: Ship | undefined | null;
   targetBody?: Body;
+  keys: Set<string>;
+}
+
+export interface ShipRelativeLookAtContext {
+  keys: Set<string>;
+  relativeBodies: Body[];
+  playerShip?: Ship | null;
 }
 
 export class SystemMapController implements ICameraController {
@@ -46,32 +53,42 @@ export class ShipRelativeController implements ICameraController {
         if (!ship) return;
         camera.eye = ship.position;
 
-        const q = quat.fromValues(ship.orientation[0], ship.orientation[1], ship.orientation[2], ship.orientation[3]);
-        const shipUp = vec3.fromValues(0, 1, 0);
-        vec3.transformQuat(shipUp, shipUp, q);
+        const shipOrientation = quat.fromValues(
+            ship.orientation[0],
+            ship.orientation[1],
+            ship.orientation[2],
+            ship.orientation[3]
+        );
 
-        if (context.targetBody) {
-            camera.look_at = [
-                context.targetBody.position[0],
-                context.targetBody.position[1],
-                context.targetBody.position[2],
-            ];
-        } else {
-            const shipForward = vec3.fromValues(0, 0, -1);
-            vec3.transformQuat(shipForward, shipForward, q);
-            camera.look_at = [
-                ship.position[0] + shipForward[0],
-                ship.position[1] + shipForward[1],
-                ship.position[2] + shipForward[2],
-            ];
+        // Set UP from ship orientation; LOOK_AT handled separately using camera-relative data
+        const shipUp = vec3.fromValues(0, 1, 0);
+        vec3.transformQuat(shipUp, shipUp, shipOrientation);
+        camera.up = [shipUp[0], shipUp[1], shipUp[2]];
+    }
+
+    public updateLookAt(camera: Camera, context: ShipRelativeLookAtContext): void {
+        const isLookingAtTarget = context.keys.has('KeyT');
+        const focusBody = camera.focusBodyId ? context.relativeBodies.find(b => b.id === camera.focusBodyId) : undefined;
+
+        if (isLookingAtTarget && focusBody) {
+            // Focused body position is already camera-relative; safe and precise
+            camera.look_at = focusBody.position as Vec3;
+            return;
         }
 
-		// The mat4.lookAt function is robust. We only need to provide the ship's
-		// local "up" vector as a hint. It will handle cases where the 'forward'
-		// and 'up' vectors are nearly collinear and build a stable basis.
-		camera.up = [shipUp[0], shipUp[1], shipUp[2]];
-        camera.recomputeViewFromLook();
-        camera.refreshDerived();
+        // Default: look forward from the cockpit (camera eye will be at origin by app loop)
+        const ship = context.playerShip ?? null;
+        const shipForward = vec3.fromValues(0, 0, -1);
+        if (ship) {
+            const shipOrientation = quat.fromValues(
+                ship.orientation[0],
+                ship.orientation[1],
+                ship.orientation[2],
+                ship.orientation[3]
+            );
+            vec3.transformQuat(shipForward, shipForward, shipOrientation);
+        }
+        camera.look_at = [shipForward[0], shipForward[1], shipForward[2]];
     }
 }
 

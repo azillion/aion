@@ -110,20 +110,32 @@ export class HUDManager {
     this.context.textAlign = 'center';
     this.context.fillText(`${(speed).toFixed(1)} km/s`, centerX, centerY + 40);
 
-    // 4. Indicators: Precision / Kill Rotation
-    this.context.textAlign = 'left';
-    const flags = rawState.flags || {};
-    let hudY = centerY + 60;
-    if (flags.precision) {
-      this.context.fillText('PRECISION', centerX + 16, hudY);
-      hudY += 18;
-    }
-    if (flags.killRotation) {
-      this.context.fillText('KILL ROT', centerX + 16, hudY);
-      hudY += 18;
+    // 4. Target Info
+    const focusBody = rawState.bodies.find(b => b.id === camera.focusBodyId);
+    if (focusBody && focusBody.id !== playerShipId) {
+      const dist = Math.hypot(
+        focusBody.position[0] - ship.position[0],
+        focusBody.position[1] - ship.position[1],
+        focusBody.position[2] - ship.position[2]
+      );
+      this.context.textAlign = 'right';
+      this.context.fillText(`TARGET: ${focusBody.name.toUpperCase()}`, viewport.width - 12, viewport.height - 30);
+      this.context.fillText(`RANGE: ${(dist/1_000_000).toFixed(2)} Gm`, viewport.width - 12, viewport.height - 12);
     }
 
-    // 5. (Optional but nice) Draw indicators for off-screen bodies
+    // 5. Indicators: Precision / Kill Rotation
+    const flags = rawState.flags || {};
+    // Place indicators at edges: top-right for Precision, top-left for Kill Rot
+    if (flags.precision) {
+      this.context.textAlign = 'right';
+      this.context.fillText('PRECISION', viewport.width - 12, 12);
+    }
+    if (flags.killRotation) {
+      this.context.textAlign = 'left';
+      this.context.fillText('KILL ROT', 12, 12);
+    }
+
+    // 6. Body Indicators: Draw indicators for off-screen bodies
     this.drawBodyIndicators(frameData);
   }
 
