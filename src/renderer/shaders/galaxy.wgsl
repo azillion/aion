@@ -1,3 +1,4 @@
+#include "camera.wgsl"
 // CameraUniforms is provided by a shared include (camera.wgsl)
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 

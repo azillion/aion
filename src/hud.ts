@@ -1,4 +1,4 @@
-import type { Body, Vec3 } from './shared/types';
+import type { Body, FrameData, Vec3 } from './shared/types';
 import type { Camera } from './camera';
 import { CameraMode } from './state';
 import { mat4, vec3, vec4 } from 'gl-matrix';
@@ -18,7 +18,8 @@ export class HUDManager {
     return this.canvas;
   }
 
-  public draw(bodies: Body[], camera: Camera, viewport: { width: number, height: number }, cameraMode: CameraMode, playerShipId: string | null): void {
+  public draw(frameData: FrameData): void {
+    const { bodiesToRender, camera, viewport, cameraMode, playerShipId } = frameData;
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
     // Style
@@ -35,13 +36,13 @@ export class HUDManager {
     const centerX = viewport.width * 0.5;
     const centerY = viewport.height * 0.5;
 
-    let iterable: Body[] = bodies;
+    let iterable: Body[] = bodiesToRender;
     if (cameraMode === CameraMode.SHIP_RELATIVE && playerShipId) {
-      iterable = bodies.filter(b => b.id !== playerShipId);
+      iterable = bodiesToRender.filter(b => b.id !== playerShipId);
     }
 
     for (const body of iterable) {
-      const p = this._projectToScreen(body.position, camera, viewport);
+      const p = this._projectToScreen(body.position as Vec3, camera, viewport);
       if (!p) continue;
 
       const isFocus = camera.focusBodyId === body.id;

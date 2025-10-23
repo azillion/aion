@@ -1,3 +1,6 @@
+import type { CameraMode } from '../state';
+import type { Camera } from '../camera';
+
 export type Vec3 = [number, number, number];
 
 export interface Body {
@@ -45,4 +48,15 @@ export interface Orbit {
 	trueAnomalyAtEpoch: number;
 	// Simulation timestamp of the epoch (seconds)
 	epoch: number;
+}
+
+export interface FrameData {
+	rawState: SystemState;
+	bodiesToRender: Body[];
+	camera: Camera;
+	systemScale: number;
+	viewport: { width: number, height: number };
+	deltaTime: number;
+	cameraMode: CameraMode;
+	playerShipId: string | null;
 }

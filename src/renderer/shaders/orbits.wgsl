@@ -1,3 +1,4 @@
+#include "camera.wgsl"
 // CameraUniforms is provided by a shared include (camera.wgsl)
 struct OrbitsUniforms {
     color: vec3<f32>,

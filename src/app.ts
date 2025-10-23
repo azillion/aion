@@ -6,7 +6,7 @@ import type { UI } from './ui';
 import type { HUDManager } from './hud';
 import { Scene } from './renderer/scene';
 import { CameraManager } from './camera/manager';
-import type { Body, Ship, SystemState, Vec3 } from './shared/types';
+import type { Body, FrameData, Ship } from './shared/types';
 import { CameraMode, ReferenceFrame } from './state';
 import { vec4 } from 'gl-matrix';
 
@@ -20,7 +20,8 @@ export class App {
   private scene!: Scene;
   private cameraManager: CameraManager;
   private lastFrameTime: number = 0;
-  private lastSystemState?: SystemState;
+
+  
 
   constructor(
     renderer: Renderer,
@@ -55,12 +56,6 @@ export class App {
     await this.authority.tick(clampedDeltaTime, { deltaX: this.input.deltaX, deltaY: this.input.deltaY, keys: this.input.keys });
     
     const systemState = await this.authority.query();
-    this.lastSystemState = systemState;
-    
-    if (systemState.bodies.length !== this.scene.lastKnownBodyCount) {
-        this.scene.recreateSpheresBuffer(systemState.bodies.length);
-        this.renderer.getComputePass().recreatePipeline(systemState.bodies.length);
-    }
 
     let bodiesToRender: Body[] = systemState.bodies;
     let renderScale: number;
@@ -83,7 +78,14 @@ export class App {
 
       renderScale = Scene.calculateRenderScale(bodiesForMap, camera.focusBodyId);
       this.cameraManager.update(this.state.cameraMode, { bodies: bodiesForMap, scale: renderScale, viewport: this.renderer.getTextureSize(), vfov: 25.0, referenceFrame: this.state.referenceFrame });
-      bodiesToRender = bodiesForMap;
+      bodiesToRender = bodiesForMap.map(b => ({
+        ...b,
+        position: [
+          b.position[0] * renderScale,
+          b.position[1] * renderScale,
+          b.position[2] * renderScale,
+        ] as [number, number, number],
+      }));
       if (this.state.showOrbits) {
         // Recompute orbit geometry at correct scale
         this.renderer.getOrbitsPass().update(bodiesForMap, this.scene, this.renderer.getCore(), renderScale);
@@ -110,37 +112,37 @@ export class App {
     camera.updateViewMatrix();
     this.renderer.writeCameraBuffer(camera);
 
+    const sceneScale = this.state.cameraMode === CameraMode.SYSTEM_MAP ? 1.0 : renderScale;
     this.scene.update(
       systemState,
       camera,
       bodiesToRender,
-      renderScale,
+      sceneScale,
       this.state.cameraMode === CameraMode.SYSTEM_MAP
     );
     // Do not update orbits in ship view; rings are hidden there
 
     const textureSize = this.renderer.getTextureSize();
-    // Handle click selection in System Map
-    if (this.state.cameraMode === CameraMode.SYSTEM_MAP && this.input.clicked && textureSize) {
-      const viewport = textureSize;
+
+    const frameData: FrameData | null = textureSize ? {
+      rawState: systemState,
+      bodiesToRender,
+      camera,
+      systemScale: renderScale,
+      viewport: textureSize,
+      deltaTime,
+      cameraMode: this.state.cameraMode,
+      playerShipId: this.state.playerShipId,
+    } : null;
+
+    // Handle click selection in System Map using frameData
+    if (frameData && this.state.cameraMode === CameraMode.SYSTEM_MAP && this.input.clicked) {
+      const viewport = frameData.viewport;
       const viewProj = camera.viewProjectionMatrix as unknown as number[];
       let closestBodyId: string | null = null;
       let closestDist2 = Number.POSITIVE_INFINITY;
-      // Recompute the transformed bodies for hit testing, same as render path
-      const fb = systemState.bodies.find(b => b.id === camera.focusBodyId);
-      const transformedForHit = (this.state.referenceFrame === ReferenceFrame.FOCUSED_BODY && fb)
-        ? systemState.bodies.map(body => ({
-            id: body.id,
-            name: body.name,
-            position: [
-              body.position[0] - fb.position[0],
-              body.position[1] - fb.position[1],
-              body.position[2] - fb.position[2],
-            ] as [number, number, number],
-          }))
-        : systemState.bodies;
-      for (const b of transformedForHit) {
-        const worldPos = vec4.fromValues(b.position[0] * renderScale, b.position[1] * renderScale, b.position[2] * renderScale, 1.0);
+      for (const b of frameData.bodiesToRender) {
+        const worldPos = vec4.fromValues(b.position[0], b.position[1], b.position[2], 1.0);
         const clip = vec4.transformMat4(vec4.create(), worldPos, viewProj as unknown as number[]);
         const w = clip[3];
         if (!Number.isFinite(w) || w === 0) continue;
@@ -167,27 +169,11 @@ export class App {
         }
       }
     }
-    
-    this.renderer.render(camera, renderScale, deltaTime, this.lastSystemState);
-    
-    if (this.hud && textureSize) {
-        let hudBodies = systemState.bodies;
-        if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
-        const fb2 = systemState.bodies.find(b => b.id === camera.focusBodyId);
-          const bodiesForHud = (this.state.referenceFrame === ReferenceFrame.FOCUSED_BODY && fb2)
-            ? systemState.bodies.map(b => ({
-                ...b,
-                position: [
-                  b.position[0] - fb2.position[0],
-                  b.position[1] - fb2.position[1],
-                  b.position[2] - fb2.position[2],
-                ] as [number, number, number],
-              }))
-            : systemState.bodies;
-          const scaledBodies = bodiesForHud.map(b => ({ ...b, position: [ b.position[0] * renderScale, b.position[1] * renderScale, b.position[2] * renderScale ] as Vec3 }));
-          hudBodies = scaledBodies;
-        }
-        this.hud.draw(hudBodies, camera, textureSize, this.state.cameraMode, this.state.playerShipId);
+
+    this.renderer.render(frameData ?? { rawState: systemState, bodiesToRender, camera, systemScale: renderScale, viewport: { width: 0, height: 0 }, deltaTime, cameraMode: this.state.cameraMode, playerShipId: this.state.playerShipId });
+
+    if (frameData && this.hud) {
+      this.hud.draw(frameData);
     }
 
     this.input.tick();

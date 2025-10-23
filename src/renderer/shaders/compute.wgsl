@@ -1,3 +1,5 @@
+#include "camera.wgsl"
+
 const PI: f32 = 3.1415926535897932385;
 const INFINITY: f32 = 1e38;
 const SEED: vec2<f32> = vec2<f32>(69.68, 4.20);
@@ -141,13 +143,13 @@ fn hit_sphere(sphere: Sphere, r: Ray, ray_t: Interval) -> HitRecord {
     return rec;
 }
 
-fn hit_spheres(r: Ray, world: array<Sphere, NUM_SPHERES>, ray_t: Interval) -> HitRecord {
+fn hit_spheres(r: Ray, ray_t: Interval) -> HitRecord {
     var closest_so_far = ray_t.maxI;
     var rec: HitRecord;
     rec.hit = false;
 
-    for (var i = 0u; i < NUM_SPHERES; i++) { 
-        let sphere_rec = hit_sphere(world[i], r, createInterval(ray_t.minI, closest_so_far));
+    for (var i = 0u; i < params.bodyCount; i++) {
+        let sphere_rec = hit_sphere(spheres[i], r, createInterval(ray_t.minI, closest_so_far));
         if (sphere_rec.hit) {
             closest_so_far = sphere_rec.t;
             rec = sphere_rec;
@@ -229,10 +231,10 @@ struct Ray {
 
 const R = cos(PI / 4.0);
 
-fn rayColor(initial_ray: Ray, world: array<Sphere, NUM_SPHERES>, seed: vec2<u32>) -> vec3<f32> {
+fn rayColor(initial_ray: Ray, seed: vec2<u32>) -> vec3<f32> {
     // Fixed near clip for primary rays to avoid front-surface clipping at close range
     let t_min = 0.0001;
-    let rec = hit_spheres(initial_ray, world, createInterval(t_min, INFINITY));
+    let rec = hit_spheres(initial_ray, createInterval(t_min, INFINITY));
     if (!rec.hit) {
         return vec3<f32>(0.0, 0.0, 0.0);
     }
@@ -244,7 +246,7 @@ fn rayColor(initial_ray: Ray, world: array<Sphere, NUM_SPHERES>, seed: vec2<u32>
     let diffuse_intensity = max(dot(rec.normal, light_dir), 0.0);
     const SHADOW_BIAS: f32 = 0.0001;
     let shadow_ray = Ray(rec.p + rec.normal * SHADOW_BIAS, light_dir);
-    let shadow_rec = hit_spheres(shadow_ray, world, createInterval(0.001, length(light_pos - rec.p)));
+    let shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, length(light_pos - rec.p)));
     // Path is clear if we hit nothing OR we hit an emissive (the light itself)
     if (!shadow_rec.hit || dot(shadow_rec.emissive, shadow_rec.emissive) > 0.0) {
         let light_brightness = 5.0;
@@ -260,9 +262,13 @@ fn rayAt(ray: Ray, t: f32) -> vec3<f32> {
 
 // Scene is now generated on CPU and uploaded via storage buffer
 
-@group(0) @binding(0) var<storage, read> spheres: array<Sphere, NUM_SPHERES>;
-@group(0) @binding(1) var output: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(2) var<uniform> camera: CameraUniforms;
+struct ComputeParams {
+  bodyCount: u32,
+};
+@group(0) @binding(0) var<uniform> params: ComputeParams;
+@group(0) @binding(1) var<storage, read> spheres: array<Sphere>;
+@group(0) @binding(2) var output: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(3) var<uniform> camera: CameraUniforms;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -284,7 +290,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let u = (f32(coords.x) + rand(seed)) / f32(dims.x);
         let v = 1.0 - (f32(coords.y) + rand(seed + vec2<u32>(1u, 1u))) / f32(dims.y);
         let ray = getRay(cam, u, v, seed);
-        pixel_color += rayColor(ray, spheres, seed);
+        pixel_color += rayColor(ray, seed);
     }
     pixel_color = pixel_color / f32(s_limit);
 

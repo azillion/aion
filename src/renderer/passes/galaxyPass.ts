@@ -4,14 +4,20 @@ import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
 import galaxyShaderWGSL from '../shaders/galaxy.wgsl?raw';
 import cameraWGSL from '../shaders/camera.wgsl?raw';
+import { createShaderModule } from '../shaderUtils';
 
 export class GalaxyPass implements IRenderPass {
   private pipeline!: GPURenderPipeline;
   private bindGroup!: GPUBindGroup;
   private depthTexture!: GPUTexture;
 
-  public initialize(core: WebGPUCore, scene: Scene): void {
-    const module = core.device.createShaderModule({ code: cameraWGSL + galaxyShaderWGSL });
+  public async initialize(core: WebGPUCore, scene: Scene): Promise<void> {
+    const module = await createShaderModule(
+      core.device,
+      'Galaxy Shader Module',
+      galaxyShaderWGSL,
+      { 'camera.wgsl': cameraWGSL }
+    );
     this.pipeline = core.device.createRenderPipeline({
       label: 'Galaxy Pipeline',
       layout: 'auto',

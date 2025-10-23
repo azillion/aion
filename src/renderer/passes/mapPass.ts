@@ -5,13 +5,19 @@ import type { Theme } from '../../shared/types';
 import mapShaderWGSL from '../shaders/map.wgsl?raw';
 import cameraWGSL from '../shaders/camera.wgsl?raw';
 import backgroundShaderWGSL from '../shaders/background.wgsl?raw';
+import { createShaderModule } from '../shaderUtils';
 
 export class MapPass implements IRenderPass {
   private pipeline!: GPURenderPipeline;
   private backgroundPipeline!: GPURenderPipeline;
 
-  public initialize(core: WebGPUCore, _scene: Scene): void {
-    const module = core.device.createShaderModule({ code: cameraWGSL + mapShaderWGSL });
+  public async initialize(core: WebGPUCore, _scene: Scene): Promise<void> {
+    const module = await createShaderModule(
+      core.device,
+      'Map Shader Module',
+      mapShaderWGSL,
+      { 'camera.wgsl': cameraWGSL }
+    );
     this.pipeline = core.device.createRenderPipeline({
       label: 'Map Pipeline',
       layout: 'auto',

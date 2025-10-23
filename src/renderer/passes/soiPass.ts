@@ -5,6 +5,7 @@ import soiShaderWGSL from '../shaders/soi.wgsl?raw';
 import cameraWGSL from '../shaders/camera.wgsl?raw';
 import type { Body, Vec3 } from '../../shared/types';
 import { G } from '../../shared/constants';
+import { createShaderModule } from '../shaderUtils';
 
 interface SoiInstance {
   position: Vec3;
@@ -17,8 +18,13 @@ export class SOIPass implements IRenderPass {
   private instanceData: SoiInstance[] = [];
   private instanceCapacity = 0;
 
-  public initialize(core: WebGPUCore, _scene: Scene): void {
-    const module = core.device.createShaderModule({ code: cameraWGSL + soiShaderWGSL });
+  public async initialize(core: WebGPUCore, _scene: Scene): Promise<void> {
+    const module = await createShaderModule(
+      core.device,
+      'SOI Shader Module',
+      soiShaderWGSL,
+      { 'camera.wgsl': cameraWGSL }
+    );
     this.pipeline = core.device.createRenderPipeline({
       label: 'SOI Pipeline',
       layout: 'auto',
@@ -60,9 +66,9 @@ export class SOIPass implements IRenderPass {
 
         this.instanceData.push({
           position: [
-            body.position[0] * systemScale,
-            body.position[1] * systemScale,
-            body.position[2] * systemScale,
+            body.position[0],
+            body.position[1],
+            body.position[2],
           ],
           radius: soiRadius * systemScale,
         });

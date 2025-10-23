@@ -16,7 +16,7 @@ import { GlyphsPass } from './passes/glyphsPass';
 import { SOIPass } from './passes/soiPass';
 import { themes } from '../theme';
 import { spectralResponses } from '../spectral';
-import type { Theme } from '../shared/types';
+import type { Theme, FrameData } from '../shared/types';
 import { HUDManager } from '../hud';
 import type { SystemState } from '../shared/types';
 
@@ -81,13 +81,13 @@ export class Renderer {
     this.glyphsPass = new GlyphsPass();
     this.soiPass = new SOIPass();
     
-    this.computePass.initialize(this.core, this.scene);
-    this.galaxyPass.initialize(this.core, this.scene);
-    this.orbitsPass.initialize(this.core, this.scene);
-    this.postfxPass.initialize(this.core, this.scene);
-    this.mapPass.initialize(this.core, this.scene);
-    this.glyphsPass.initialize(this.core, this.scene);
-    this.soiPass.initialize(this.core, this.scene);
+    await this.computePass.initialize(this.core, this.scene);
+    await this.galaxyPass.initialize(this.core, this.scene);
+    await this.orbitsPass.initialize(this.core, this.scene);
+    await this.postfxPass.initialize(this.core, this.scene);
+    await this.mapPass.initialize(this.core, this.scene);
+    await this.glyphsPass.initialize(this.core, this.scene);
+    await this.soiPass.initialize(this.core, this.scene);
 
     this.handleResize();
     
@@ -146,8 +146,9 @@ export class Renderer {
   public getComputePass(): ComputePass { return this.computePass; }
   public getCanvas(): HTMLCanvasElement { return this.canvas; }
 
-  public render(camera: Camera, systemScale: number, deltaTime: number, lastSystemState: SystemState | undefined) {
+  public render(frameData: FrameData) {
     if (!this.core.device || !this.textureSize) return;
+    const { camera, systemScale, deltaTime } = frameData;
     this.lastDeltaTime = deltaTime;
     const theme = this.setTheme(this.currentThemeName, this.currentResponseName);
     if (!theme) return;
@@ -178,7 +179,7 @@ export class Renderer {
         this.computePass.run(encoder, context);
         // Clear any stale orbits overlay when in ship view
         PostFXPass.clearTexture(this.core.device, this.orbitsTexture);
-        this.postfxPass.run(encoder, context, theme, lastSystemState?.bodies ?? []);
+        this.postfxPass.run(encoder, context, theme, frameData.rawState.bodies ?? []);
     }
 
     this.core.device.queue.submit([encoder.finish()]);

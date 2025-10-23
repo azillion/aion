@@ -104,15 +104,15 @@ export class Scene {
 
       // Sphere.center
       if (useWorldSpace) {
-        // For the map, we want scaled world coordinates.
-        sphereData[f_base + 0] = body.position[0] * renderScale;
-        sphereData[f_base + 1] = body.position[1] * renderScale;
-        sphereData[f_base + 2] = body.position[2] * renderScale;
+        // Positions are pre-scaled for the map; write directly.
+        sphereData[f_base + 0] = body.position[0];
+        sphereData[f_base + 1] = body.position[1];
+        sphereData[f_base + 2] = body.position[2];
       } else {
-        // For the 3D view, we need camera-relative coordinates.
-        sphereData[f_base + 0] = (body.position[0] * renderScale) - camera.eye[0];
-        sphereData[f_base + 1] = (body.position[1] * renderScale) - camera.eye[1];
-        sphereData[f_base + 2] = (body.position[2] * renderScale) - camera.eye[2];
+        // For the 3D view, use camera-relative coordinates without additional scaling.
+        sphereData[f_base + 0] = body.position[0] - camera.eye[0];
+        sphereData[f_base + 1] = body.position[1] - camera.eye[1];
+        sphereData[f_base + 2] = body.position[2] - camera.eye[2];
       }
       sphereData[f_base + 3] = renderedRadius; // Sphere.radius
 
