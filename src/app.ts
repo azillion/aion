@@ -11,6 +11,7 @@ import { NEAR_TIER_CUTOFF, MID_TIER_CUTOFF, MID_TIER_SCALE, FAR_TIER_SCALE, PLAN
 import { CameraMode, ReferenceFrame } from './state';
 import { projectWorldToScreen } from './renderer/projection';
 import { type OrbitGlyphData } from './renderer/passes/orbitsPass';
+import Stats from 'stats.js';
 
 export class App {
   private readonly authority: Authority;
@@ -22,6 +23,10 @@ export class App {
   private scene!: Scene;
   private cameraManager: CameraManager;
   private lastFrameTime: number = 0;
+  private fpsAccumulator = 0;
+  private fpsFrameCount = 0;
+  private fpsLastReport = 0;
+  private stats: Stats | null = null;
 
   
 
@@ -46,13 +51,32 @@ export class App {
   public async start(): Promise<void> {
     await this.renderer.initialize(this.authority);
     this.scene = this.renderer.getScene();
+    // Initialize Stats.js overlay (FPS panel)
+    this.stats = new Stats();
+    this.stats.showPanel(0);
+    document.body.appendChild(this.stats.dom);
     requestAnimationFrame(this.updateLoop);
   }
 
   private updateLoop = async (time: number): Promise<void> => {
+    if (this.stats) this.stats.begin();
     if (this.lastFrameTime === 0) this.lastFrameTime = time;
     const deltaTime = (time - this.lastFrameTime) / 1000.0;
     this.lastFrameTime = time;
+
+    // Accumulate FPS and update UI ~2 times per second
+    this.fpsAccumulator += deltaTime;
+    this.fpsFrameCount += 1;
+    if ((time - this.fpsLastReport) > 500) {
+      const avgDelta = this.fpsAccumulator / Math.max(1, this.fpsFrameCount);
+      const fps = avgDelta > 0 ? (1 / avgDelta) : 0;
+      if (this.ui && typeof (this.ui as any).setFps === 'function') {
+        (this.ui as any).setFps(fps);
+      }
+      this.fpsAccumulator = 0;
+      this.fpsFrameCount = 0;
+      this.fpsLastReport = time;
+    }
 
     const clampedDeltaTime = Math.min(deltaTime, 1 / 20.0);
     await this.authority.tick(clampedDeltaTime, { deltaX: this.input.deltaX, deltaY: this.input.deltaY, keys: this.input.keys });
@@ -321,6 +345,7 @@ export class App {
     }
 
     this.input.tick();
+    if (this.stats) this.stats.end();
     requestAnimationFrame(this.updateLoop);
   };
 }

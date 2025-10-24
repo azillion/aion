@@ -19,6 +19,7 @@ export class UI {
         'Focus': 'Sun',
         'Theme': 'white',
         'Sensor': 'Full Color',
+        'FPS': '0',
         'Show Orbits': false,
         'Add Asteroid': () => this.addAsteroid(),
         'Warp x1': () => this.setWarp(1),
@@ -91,6 +92,9 @@ export class UI {
         this.gui.add(this.settings, 'Toggle View');
 
         this.gui.add(this.state, 'referenceFrame', Object.values(ReferenceFrame)).name('Reference Frame');
+
+        // Display FPS (read-only, updated by App)
+        this.gui.add(this.settings, 'FPS').listen();
     }
 
     public setFocus(bodyName: string) {
@@ -109,6 +113,11 @@ export class UI {
 
     private updateTheme = () => {
         this.renderer.setTheme(this.settings['Theme'], this.settings['Sensor']);
+    }
+
+    public setFps(fps: number) {
+        // Keep small stable string to avoid jitter; round to integer
+        this.settings['FPS'] = Math.round(fps).toString();
     }
 
     private async _createSceneControls() {
