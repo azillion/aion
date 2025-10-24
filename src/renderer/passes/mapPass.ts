@@ -86,7 +86,7 @@ export class MapPass implements IRenderPass {
       layout: this.pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: scene.sharedCameraUniformBuffer } },
-        { binding: 1, resource: { buffer: scene.spheresBuffer } },
+        { binding: 1, resource: { buffer: scene.mapSpheresBuffer } },
       ],
     });
     pass.setPipeline(this.pipeline);

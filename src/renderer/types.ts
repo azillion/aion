@@ -19,6 +19,7 @@ export interface RenderContext {
   
   // Uniforms
   themeUniformBuffer: GPUBuffer;
+  sceneUniformBuffer?: GPUBuffer;
   lastDeltaTime: number;
 }
 

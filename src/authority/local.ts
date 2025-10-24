@@ -140,34 +140,6 @@ export class LocalAuthority implements Authority {
 					}
 				}
 
-				// Nearest Body Lock (KeyN): face toward the nearest body (excluding the ship)
-				if (input.keys.has('KeyN')) {
-					let nearest: Body | null = null;
-					let nearestDistSq = Infinity;
-					for (const body of this.state.bodies) {
-						if (body.id === 'player-ship') continue;
-						const dx = body.position[0] - ship.position[0];
-						const dy = body.position[1] - ship.position[1];
-						const dz = body.position[2] - ship.position[2];
-						const d2 = dx * dx + dy * dy + dz * dz;
-						if (d2 < nearestDistSq) { nearestDistSq = d2; nearest = body; }
-					}
-					if (nearest) {
-						const toNearest = vec3.fromValues(
-							nearest.position[0] - ship.position[0],
-							nearest.position[1] - ship.position[1],
-							nearest.position[2] - ship.position[2]
-						);
-						if (vec3.length(toNearest) > 1) {
-							vec3.normalize(toNearest, toNearest);
-							const baseForward = vec3.fromValues(0, 0, -1);
-							const qrot = quat.create();
-							quat.rotationTo(qrot, baseForward, toNearest);
-							ship.orientation = [qrot[0], qrot[1], qrot[2], qrot[3]];
-						}
-					}
-				}
-
 				// Precision Mode (Tab): scale forces/torques for fine control
 				const isPrecisionMode = input.keys.has('Backquote');
 				if (isPrecisionMode) this.state.flags!.precision = true;

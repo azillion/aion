@@ -67,14 +67,14 @@ export class ShipRelativeController implements ICameraController {
     }
 
     public updateLookAt(camera: Camera, context: ShipRelativeLookAtContext): void {
-        const isLookingAtTarget = context.keys.has('KeyT');
-        const focusBody = camera.focusBodyId ? context.relativeBodies.find(b => b.id === camera.focusBodyId) : undefined;
+		const isLookingAtTarget = context.keys.has('KeyT');
+		const focusBody = camera.focusBodyId ? context.relativeBodies.find(b => b.id === camera.focusBodyId) : undefined;
 
-        if (isLookingAtTarget && focusBody) {
-            // Focused body position is already camera-relative; safe and precise
-            camera.look_at = focusBody.position as Vec3;
-            return;
-        }
+		if (isLookingAtTarget && focusBody) {
+			// Focused body position is already camera-relative; safe and precise
+			camera.look_at = focusBody.position as Vec3;
+			return;
+		}
 
         // Default: look forward from the cockpit (camera eye will be at origin by app loop)
         const ship = context.playerShip ?? null;

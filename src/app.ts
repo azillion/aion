@@ -7,6 +7,7 @@ import type { HUDManager } from './hud';
 import { Scene } from './renderer/scene';
 import { CameraManager } from './camera/manager';
 import type { Body, FrameData, Ship } from './shared/types';
+import { NEAR_TIER_CUTOFF, MID_TIER_CUTOFF, MID_TIER_SCALE, FAR_TIER_SCALE, PLANETARY_SOI_RADIUS_MULTIPLIER } from './shared/constants';
 import { CameraMode, ReferenceFrame } from './state';
 import { projectWorldToScreen } from './renderer/projection';
 import { type OrbitGlyphData } from './renderer/passes/orbitsPass';
@@ -58,6 +59,34 @@ export class App {
     
     const systemState = await this.authority.query();
 
+    // --- Reference Frame Management ---
+    const worldCameraEye = [...this.cameraManager.getCamera().eye];
+    let shipWorldCameraEye: [number, number, number] | null = null;
+    const currentReferenceBody = systemState.bodies.find(b => b.id === this.state.referenceBodyId) ?? systemState.bodies.find(b => b.id === 'sol');
+    let newReferenceBody = currentReferenceBody;
+    let closestDistSq = Infinity;
+
+    systemState.bodies.forEach(body => {
+      if (body.mass < 1e22) return; // Only consider sufficiently massive bodies
+      const dx = body.position[0] - worldCameraEye[0];
+      const dy = body.position[1] - worldCameraEye[1];
+      const dz = body.position[2] - worldCameraEye[2];
+      const distSq = dx*dx + dy*dy + dz*dz;
+      const soiRadius = body.radius * PLANETARY_SOI_RADIUS_MULTIPLIER;
+      if (distSq < (soiRadius * soiRadius) && distSq < closestDistSq) {
+        closestDistSq = distSq;
+        newReferenceBody = body;
+      }
+    });
+    if (closestDistSq === Infinity && this.state.referenceBodyId !== 'sol') {
+      newReferenceBody = systemState.bodies.find(b => b.id === 'sol');
+    }
+    if (newReferenceBody && this.state.referenceBodyId !== newReferenceBody.id) {
+      console.log(`Switching reference frame to: ${newReferenceBody.name}`);
+      this.state.referenceBodyId = newReferenceBody.id;
+    }
+    // --- End Reference Frame Management ---
+
     let bodiesToRender: Body[] = systemState.bodies;
     let renderScale: number;
     let camera = this.cameraManager.getCamera();
@@ -99,26 +128,99 @@ export class App {
         this.renderer.getSoiPass().update(bodiesForMap, this.scene, renderScale);
       }
     } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
-      renderScale = 1.0;
+      renderScale = 1.0; // This is now fixed for this mode.
       const playerShip = systemState.bodies.find(b => b.id === this.state.playerShipId) as Ship | undefined;
-      // 1) Update world-space camera from controller (no look_at here)
+
+      // 1) Update world-space camera from controller FIRST.
       this.cameraManager.update(this.state.cameraMode, { playerShip, keys: this.input.keys });
+      const shipCameraEyeWorld = [...camera.eye]; // Capture true f64 (JS number) camera position.
 
-      // 2) Build camera-relative bodies using the (world) camera.eye
-      bodiesToRender = systemState.bodies.map(b => ({
-        ...b,
-        position: [
-          b.position[0] - camera.eye[0],
-          b.position[1] - camera.eye[1],
-          b.position[2] - camera.eye[2],
-        ] as [number, number, number],
-      }));
+      // 2) Initialize lists for tiered renderables.
+      const nearRenderables: Body[] = [];
+      const midRenderables: Body[] = [];
+      const farRenderables: Body[] = [];
 
-      // 3) Move the main camera to origin for the rest of this frame
+      // 3) Sort all bodies from the authoritative state into tiers.
+      systemState.bodies.forEach(body => {
+        // Do not render the player ship itself in the ship-relative view to avoid
+        // the camera starting inside the ship's geometry and occluding the scene.
+        if (body.id === this.state.playerShipId) {
+          return;
+        }
+        // Use f64 math for distance calculation
+        const dx = body.position[0] - shipCameraEyeWorld[0];
+        const dy = body.position[1] - shipCameraEyeWorld[1];
+        const dz = body.position[2] - shipCameraEyeWorld[2];
+        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+
+        if (dist < NEAR_TIER_CUTOFF) {
+          const newBody: Body = {
+            ...body,
+            position: [dx, dy, dz] as [number, number, number],
+            radius: body.radius,
+          };
+          nearRenderables.push(newBody);
+        } else if (dist >= NEAR_TIER_CUTOFF && dist < MID_TIER_CUTOFF) {
+          const newBody: Body = {
+            ...body,
+            position: [dx / MID_TIER_SCALE, dy / MID_TIER_SCALE, dz / MID_TIER_SCALE] as [number, number, number],
+            radius: body.radius / MID_TIER_SCALE,
+          };
+          midRenderables.push(newBody);
+        } else { // dist >= MID_TIER_CUTOFF
+          const newBody: Body = {
+            ...body,
+            position: [dx / FAR_TIER_SCALE, dy / FAR_TIER_SCALE, dz / FAR_TIER_SCALE] as [number, number, number],
+            radius: body.radius / FAR_TIER_SCALE,
+          };
+          farRenderables.push(newBody);
+        }
+      });
+
+      // 4) HUD/selection should use unscaled, camera-relative positions.
+      // Provide a separate list for HUD logic while renderer uses tier buffers directly.
+      bodiesToRender = systemState.bodies
+        .filter(b => b.id !== this.state.playerShipId)
+        .map(b => {
+          const HUD_RENDER_DISTANCE = 5000; // keep within stable f32 range for projection
+          const p: [number, number, number] = [
+            b.position[0] - shipCameraEyeWorld[0],
+            b.position[1] - shipCameraEyeWorld[1],
+            b.position[2] - shipCameraEyeWorld[2],
+          ];
+          const dist = Math.hypot(p[0], p[1], p[2]);
+          if (dist > HUD_RENDER_DISTANCE) {
+            const inv = 1.0 / dist;
+            p[0] = p[0] * inv * HUD_RENDER_DISTANCE;
+            p[1] = p[1] * inv * HUD_RENDER_DISTANCE;
+            p[2] = p[2] * inv * HUD_RENDER_DISTANCE;
+          }
+          return { ...b, position: p };
+        });
+
+      shipWorldCameraEye = shipCameraEyeWorld as [number, number, number];
+
+      // 6) Move the main camera to the origin for this frame's rendering.
       camera.eye = [0, 0, 0];
 
-      // 4) Compute look_at using stable, camera-relative data
+      // 7) Compute look_at using stable, camera-relative data.
+      // We pass the combined list here, as the controller might need to find a target.
       this.cameraManager.updateLookAt(camera, { keys: this.input.keys, relativeBodies: bodiesToRender, playerShip });
+      // Upload tier data to GPU buffers for ship-relative rendering
+      this.scene.updateTiers(nearRenderables, midRenderables, farRenderables);
+      // Determine dominant light by emissive energy
+      let dominantLight = systemState.bodies[0];
+      let maxEmissiveEnergy = 0.0;
+      systemState.bodies.forEach(body => {
+        if (body.emissive) {
+          const energy = body.emissive[0] + body.emissive[1] + body.emissive[2];
+          if (energy > maxEmissiveEnergy) {
+            maxEmissiveEnergy = energy;
+            dominantLight = body;
+          }
+        }
+      });
+      (camera as any).dominantLight = dominantLight;
     } else {
       renderScale = 1.0;
       this.cameraManager.update(this.state.cameraMode, {});
@@ -128,14 +230,16 @@ export class App {
     camera.updateViewMatrix();
     this.renderer.writeCameraBuffer(camera);
 
-    const sceneScale = this.state.cameraMode === CameraMode.SYSTEM_MAP ? 1.0 : renderScale;
-    this.scene.update(
-      systemState,
-      camera,
-      bodiesToRender.filter(b => b.id !== this.state.playerShipId),
-      sceneScale,
-      true
-    );
+    const sceneScale = 1.0; // All scaling is now pre-applied in the tier sort.
+    if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
+      this.scene.updateMapBuffer(
+        systemState,
+        camera,
+        bodiesToRender.filter(b => b.id !== this.state.playerShipId),
+        sceneScale,
+        true
+      );
+    }
     // Do not update orbits in ship view; rings are hidden there
 
     const textureSize = this.renderer.getTextureSize();
@@ -149,7 +253,37 @@ export class App {
       deltaTime,
       cameraMode: this.state.cameraMode,
       playerShipId: this.state.playerShipId,
+      dominantLight: (camera as any).dominantLight,
+      worldCameraEye: (shipWorldCameraEye ?? worldCameraEye) as [number, number, number],
+      debugTierView: this.state.debugTierView,
     } : null;
+
+    // --- Handle Ship-Relative Targeting Keys ---
+    if (frameData && this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
+      // KeyN: Target nearest body (camera-relative)
+      if (this.input.wasPressed('KeyN')) {
+        const playerShip = systemState.bodies.find(b => b.id === this.state.playerShipId);
+        if (playerShip) {
+          let closestBodyId: string | null = null;
+          let closestDistSq = Infinity;
+          for (const body of systemState.bodies) {
+            if (body.id === this.state.playerShipId) continue;
+            const dx = body.position[0] - playerShip.position[0];
+            const dy = body.position[1] - playerShip.position[1];
+            const dz = body.position[2] - playerShip.position[2];
+            const distSq = dx*dx + dy*dy + dz*dz;
+            if (distSq < closestDistSq) {
+              closestDistSq = distSq;
+              closestBodyId = body.id;
+            }
+          }
+          if (closestBodyId) {
+            camera.focusBodyId = closestBodyId;
+            camera.pendingFrame = true;
+          }
+        }
+      }
+    }
 
     // Handle click selection in System Map using frameData
     if (frameData && this.state.cameraMode === CameraMode.SYSTEM_MAP && this.input.clicked) {

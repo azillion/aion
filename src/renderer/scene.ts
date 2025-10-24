@@ -36,13 +36,19 @@ export class Scene {
   private device: GPUDevice;
 
   // Scene object buffers
-  public spheresBuffer!: GPUBuffer;
+  public nearTierBuffer!: GPUBuffer;
+  public midTierBuffer!: GPUBuffer;
+  public farTierBuffer!: GPUBuffer;
+  public mapSpheresBuffer!: GPUBuffer;
   public starBuffer!: GPUBuffer;
 
   // A SINGLE, shared buffer for all camera data.
   public sharedCameraUniformBuffer!: GPUBuffer;
 
   public lastKnownBodyCount: number = 0;
+  public nearCount: number = 0;
+  public midCount: number = 0;
+  public farCount: number = 0;
   
   public get hierarchy(): Map<string, string | null> { return this._hierarchy; }
   private _hierarchy: Map<string, string | null> = new Map();
@@ -58,7 +64,7 @@ export class Scene {
 
   public initialize(systemState: SystemState, stars: Star[]) {
     this.lastKnownBodyCount = systemState.bodies.length;
-    this.recreateSpheresBuffer(this.lastKnownBodyCount);
+    this.initializeTierBuffers(this.lastKnownBodyCount);
 
     const starData = this.serializeStars(stars);
     this.starBuffer = this.device.createBuffer({
@@ -68,51 +74,88 @@ export class Scene {
     this.device.queue.writeBuffer(this.starBuffer, 0, starData);
   }
 
-  public recreateSpheresBuffer(numBodies: number) {
-    if (this.spheresBuffer) {
-      this.spheresBuffer.destroy();
+  public updateTiers(nearBodies: Body[], midBodies: Body[], farBodies: Body[]) {
+    const totalBodyCount = nearBodies.length + midBodies.length + farBodies.length;
+    if (totalBodyCount > this.lastKnownBodyCount) {
+      this.initializeTierBuffers(totalBodyCount);
+    }
+    this.nearCount = nearBodies.length;
+    this.midCount = midBodies.length;
+    this.farCount = farBodies.length;
+
+    // Write full zero-padded buffers each frame to avoid stale GPU data
+    const writeFullBuffer = (buffer: GPUBuffer, bodies: Body[]) => {
+      const data = this.serializeSystemState(bodies);
+      const zeroPadded = new Float32Array(buffer.size / 4);
+      zeroPadded.set(data);
+      this.device.queue.writeBuffer(buffer, 0, zeroPadded);
+    };
+
+    writeFullBuffer(this.nearTierBuffer, nearBodies);
+    writeFullBuffer(this.midTierBuffer, midBodies);
+    writeFullBuffer(this.farTierBuffer, farBodies);
+  }
+
+  public initializeTierBuffers(initialBodyCount: number) {
+    const size = Math.max(1, initialBodyCount * FLOATS_PER_SPHERE * 4);
+
+    if (this.nearTierBuffer) this.nearTierBuffer.destroy();
+    this.nearTierBuffer = this.device.createBuffer({
+      label: `Near Tier Buffer`,
+      size,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    if (this.midTierBuffer) this.midTierBuffer.destroy();
+    this.midTierBuffer = this.device.createBuffer({
+      label: `Mid Tier Buffer`,
+      size,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    if (this.farTierBuffer) this.farTierBuffer.destroy();
+    this.farTierBuffer = this.device.createBuffer({
+      label: `Far Tier Buffer`,
+      size,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    this.lastKnownBodyCount = initialBodyCount;
+  }
+
+  // Map view buffer management
+  public recreateMapSpheresBuffer(numBodies: number) {
+    if (this.mapSpheresBuffer) {
+      this.mapSpheresBuffer.destroy();
     }
     const size = Math.max(1, numBodies * FLOATS_PER_SPHERE * 4);
-    this.spheresBuffer = this.device.createBuffer({
-      label: `Spheres Buffer (${numBodies} bodies)`,
+    this.mapSpheresBuffer = this.device.createBuffer({
+      label: `Map Spheres Buffer (${numBodies} bodies)`,
       size,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     this.lastKnownBodyCount = numBodies;
   }
 
-  public update(systemState: SystemState, camera: Camera, bodiesToRender: Body[], renderScale: number, useWorldSpace: boolean = false) {
-    if (systemState.bodies.length !== this.lastKnownBodyCount) {
-      this.recreateSpheresBuffer(systemState.bodies.length);
+  public updateMapBuffer(systemState: SystemState, _camera: Camera, bodiesToRender: Body[], _renderScale: number, _useWorldSpace: boolean = false) {
+    if (systemState.bodies.length !== this.lastKnownBodyCount || !this.mapSpheresBuffer) {
+      this.recreateMapSpheresBuffer(systemState.bodies.length);
     }
-    
     this._hierarchy = buildSystemHierarchy(systemState.bodies);
-
-    const sphereData = this.serializeSystemState(bodiesToRender, camera, renderScale, useWorldSpace);
-    this.device.queue.writeBuffer(this.spheresBuffer, 0, sphereData);
+    const sphereData = this.serializeSystemState(bodiesToRender);
+    this.device.queue.writeBuffer(this.mapSpheresBuffer, 0, sphereData);
   }
 
-  private serializeSystemState(bodies: Body[], camera: Camera, renderScale: number, useWorldSpace: boolean) {
-    const sphereData = new Float32Array(this.lastKnownBodyCount * FLOATS_PER_SPHERE);
+  private serializeSystemState(bodies: Body[]) {
+    const sphereData = new Float32Array(bodies.length * FLOATS_PER_SPHERE);
     const sphereDataU32 = new Uint32Array(sphereData.buffer);
     bodies.forEach((body, i) => {
       const f_base = i * FLOATS_PER_SPHERE;
       const u_base = f_base;
-      const renderedRadius = body.radius * renderScale;
-
-      // Sphere.center
-      if (useWorldSpace) {
-        // For Map and Ship modes, positions are already correctly transformed (scaled or camera-relative)
-        sphereData[f_base + 0] = body.position[0];
-        sphereData[f_base + 1] = body.position[1];
-        sphereData[f_base + 2] = body.position[2];
-      } else {
-        // Fallback path for modes without preprocessing (kept for future use)
-        sphereData[f_base + 0] = body.position[0] - camera.eye[0];
-        sphereData[f_base + 1] = body.position[1] - camera.eye[1];
-        sphereData[f_base + 2] = body.position[2] - camera.eye[2];
-      }
-      sphereData[f_base + 3] = renderedRadius; // Sphere.radius
+      sphereData[f_base + 0] = body.position[0];
+      sphereData[f_base + 1] = body.position[1];
+      sphereData[f_base + 2] = body.position[2];
+      sphereData[f_base + 3] = body.radius;
 
       // Material
       sphereData.set(body.albedo, f_base + 4); // material.albedo

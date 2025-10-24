@@ -100,7 +100,7 @@ fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f
 
     // Tone map after persistence and vignette, then add subtle BG glow in LDR
     let tonemapped = finalColorWithVignette / (finalColorWithVignette + vec3<f32>(1.0));
-    let ldrWithBg = tonemapped + (theme.bg.rgb * theme.params.y * 0.25);
+    let ldrWithBg = tonemapped; // Temporarily disable background color addition
 
     // Final safety: scrub NaN and clamp
     let noNan = select(vec3<f32>(0.0), ldrWithBg, ldrWithBg == ldrWithBg);

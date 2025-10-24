@@ -21,11 +21,12 @@ export function projectWorldToScreen(
   const ndcX = clip[0] / w;
   const ndcY = clip[1] / w;
 
+  // Check if in view using NDC (-1 to +1 range is inside the view frustum)
+  const inView = ndcX >= -1 && ndcX <= 1 && ndcY >= -1 && ndcY <= 1;
+
   // Convert from Normalized Device Coordinates (-1 to +1) to screen coordinates (0 to width/height).
   let px = (ndcX * 0.5 + 0.5) * viewport.width;
   let py = (-ndcY * 0.5 + 0.5) * viewport.height; // Y is inverted in NDC
-
-  const inView = px >= 0 && px <= viewport.width && py >= 0 && py <= viewport.height;
 
   if (inView) {
     return { x: px, y: py, inView: true };

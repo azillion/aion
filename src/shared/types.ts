@@ -61,4 +61,7 @@ export interface FrameData {
 	deltaTime: number;
 	cameraMode: CameraMode;
 	playerShipId: string | null;
+  	dominantLight?: Body;
+  	worldCameraEye?: Vec3;
+    debugTierView?: number;
 }

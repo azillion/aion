@@ -94,12 +94,15 @@ export class HUDManager {
     // Only draw the prograde marker if we are moving
     const showPrograde = false;
     if (showPrograde && speed > 1) { // 1 km/s threshold
-      const progradeWorldPos: Vec3 = [
-        ship.position[0] + relativeVel[0],
-        ship.position[1] + relativeVel[1],
-        ship.position[2] + relativeVel[2]
+      // The prograde vector is just the normalized velocity.
+      // We can scale it by an arbitrary amount to make it visible.
+      // This position is ALREADY relative to the ship (which is at the origin).
+      const progradeRelativePos: Vec3 = [
+        relativeVel[0] / speed * 1000, // Scaled for visibility
+        relativeVel[1] / speed * 1000,
+        relativeVel[2] / speed * 1000
       ];
-      const screenPos = projectWorldToScreen(progradeWorldPos, camera, viewport);
+      const screenPos = projectWorldToScreen(progradeRelativePos, camera, viewport);
       if (screenPos && screenPos.inView) {
         this.drawProgradeMarker(screenPos.x, screenPos.y, false);
       }

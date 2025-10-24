@@ -2,12 +2,17 @@ export class InputManager {
     public deltaX = 0;
     public deltaY = 0;
     public keys: Set<string> = new Set();
+    public keysPressedThisFrame: Set<string> = new Set();
     public mouseX = 0;
     public mouseY = 0;
     public clicked = false;
 
     constructor(canvas: HTMLCanvasElement) {
         document.addEventListener('keydown', (e: KeyboardEvent) => {
+            // Edge-detect: only mark as pressed-this-frame if it wasn't already down
+            if (!this.keys.has(e.code)) {
+                this.keysPressedThisFrame.add(e.code);
+            }
             this.keys.add(e.code);
         });
         document.addEventListener('keyup', (e: KeyboardEvent) => {
@@ -29,10 +34,15 @@ export class InputManager {
         });
     }
 
+    public wasPressed(code: string): boolean {
+        return this.keysPressedThisFrame.has(code);
+    }
+
     public tick(): void {
         this.deltaX = 0;
         this.deltaY = 0;
         this.clicked = false;
+        this.keysPressedThisFrame.clear();
     }
 }
 

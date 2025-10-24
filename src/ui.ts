@@ -81,6 +81,13 @@ export class UI {
 
         this.gui.add(this.state, 'crtIntensity', 0.0, 1.0).name('CRT Effect');
 
+        this.gui.add(this.state, 'debugTierView', {
+            'Normal': -1,
+            'Near Tier Only': 0,
+            'Mid Tier Only': 1,
+            'Far Tier Only': 2,
+        }).name('Debug View');
+
         this.gui.add(this.settings, 'Toggle View');
 
         this.gui.add(this.state, 'referenceFrame', Object.values(ReferenceFrame)).name('Reference Frame');

@@ -7,7 +7,8 @@ import { Scene } from './scene';
 import type { RenderContext } from './types';
 import { vec3 } from 'gl-matrix';
 import type { UI } from '../ui';
-import { ComputePass } from './passes/computePass';
+import { TierPass } from './passes/tierPass';
+import { CompositorPass } from './passes/compositorPass';
 import { GalaxyPass } from './passes/galaxyPass';
 import { OrbitsPass } from './passes/orbitsPass';
 import { PostFXPass } from './passes/postfxPass';
@@ -18,6 +19,7 @@ import { themes } from '../theme';
 import { spectralResponses } from '../spectral';
 import type { Theme, FrameData } from '../shared/types';
 import { HUDManager } from '../hud';
+import { FAR_TIER_SCALE, MID_TIER_SCALE } from '../shared/constants';
 import type { SystemState } from '../shared/types';
 
 export class Renderer {
@@ -30,7 +32,10 @@ export class Renderer {
   private scene!: Scene;
   private galaxy: Galaxy;
   
-  private computePass!: ComputePass;
+  private nearTierPass!: TierPass;
+  private midTierPass!: TierPass;
+  private farTierPass!: TierPass;
+  private compositorPass!: CompositorPass;
   private galaxyPass!: GalaxyPass;
   private orbitsPass!: OrbitsPass;
   private postfxPass!: PostFXPass;
@@ -43,15 +48,24 @@ export class Renderer {
   private postFxTextureA!: GPUTexture;
   private postFxTextureB!: GPUTexture;
   private orbitsTexture!: GPUTexture;
+
+  // Per-tier render targets
+  private nearColorTexture!: GPUTexture;
+  private nearDepthTexture!: GPUTexture;
+  private midColorTexture!: GPUTexture;
+  private midDepthTexture!: GPUTexture;
+  private farColorTexture!: GPUTexture;
+  private farDepthTexture!: GPUTexture;
   
   private themeUniformBuffer!: GPUBuffer;
+  private sceneUniformBuffer!: GPUBuffer;
   private currentThemeName: string = 'white';
   private currentResponseName: string = 'Full Color';
   private lastDeltaTime: number = 1 / 60;
-  private lastFrameTime: number = 0;
+  private lastFrameTime: number = 0; // TODO: consider removing if unused
   private frameCount = 0;
   
-  private lastSystemState?: SystemState;
+  private lastSystemState?: SystemState; // TODO: consider removing if unused
 
   constructor(canvas: HTMLCanvasElement, state: AppState, hud: HUDManager) {
     this.canvas = canvas;
@@ -72,8 +86,15 @@ export class Renderer {
       size: 80,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this.sceneUniformBuffer = this.core.device.createBuffer({
+      size: 32, // two vec4<f32>
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
 
-    this.computePass = new ComputePass();
+    this.nearTierPass = new TierPass(this.scene.nearTierBuffer);
+    this.midTierPass = new TierPass(this.scene.midTierBuffer);
+    this.farTierPass = new TierPass(this.scene.farTierBuffer);
+    this.compositorPass = new CompositorPass();
     this.galaxyPass = new GalaxyPass();
     this.orbitsPass = new OrbitsPass();
     this.postfxPass = new PostFXPass();
@@ -81,7 +102,10 @@ export class Renderer {
     this.glyphsPass = new GlyphsPass();
     this.soiPass = new SOIPass();
     
-    await this.computePass.initialize(this.core, this.scene);
+    await this.nearTierPass.initialize(this.core, this.scene);
+    await this.midTierPass.initialize(this.core, this.scene);
+    await this.farTierPass.initialize(this.core, this.scene);
+    await this.compositorPass.initialize(this.core, this.scene);
     await this.galaxyPass.initialize(this.core, this.scene);
     await this.orbitsPass.initialize(this.core, this.scene);
     await this.postfxPass.initialize(this.core, this.scene);
@@ -109,13 +133,25 @@ export class Renderer {
     this.textureSize = { width, height };
     this.core.context.configure({ device: this.core.device, format: this.core.presentationFormat });
 
-    [this.mainSceneTexture, this.postFxTextureA, this.postFxTextureB, this.orbitsTexture]
+    [this.mainSceneTexture, this.postFxTextureA, this.postFxTextureB, this.orbitsTexture,
+     this.nearColorTexture, this.nearDepthTexture, this.midColorTexture, this.midDepthTexture,
+     this.farColorTexture, this.farDepthTexture]
         .forEach(tex => tex?.destroy());
 
-    this.mainSceneTexture = this.core.device.createTexture({ size: this.textureSize, format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+    this.mainSceneTexture = this.core.device.createTexture({ size: this.textureSize, format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT });
     this.postFxTextureA = this.core.device.createTexture({ size: this.textureSize, format: 'rgba16float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
     this.postFxTextureB = this.core.device.createTexture({ size: this.textureSize, format: 'rgba16float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
     this.orbitsTexture = this.core.device.createTexture({ size: this.textureSize, format: this.core.presentationFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+
+    // Tier textures
+    const size = this.textureSize;
+    const colorUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING;
+    this.nearColorTexture = this.core.device.createTexture({ size, format: 'rgba16float', usage: colorUsage });
+    this.nearDepthTexture = this.core.device.createTexture({ size, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+    this.midColorTexture = this.core.device.createTexture({ size, format: 'rgba16float', usage: colorUsage });
+    this.midDepthTexture = this.core.device.createTexture({ size, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+    this.farColorTexture = this.core.device.createTexture({ size, format: 'rgba16float', usage: colorUsage });
+    this.farDepthTexture = this.core.device.createTexture({ size, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
     
     PostFXPass.clearTexture(this.core.device, this.postFxTextureA);
     PostFXPass.clearTexture(this.core.device, this.postFxTextureB);
@@ -143,7 +179,6 @@ export class Renderer {
   public getOrbitsPass(): OrbitsPass { return this.orbitsPass; }
   public getGlyphsPass(): GlyphsPass { return this.glyphsPass; }
   public getSoiPass(): SOIPass { return this.soiPass; }
-  public getComputePass(): ComputePass { return this.computePass; }
   public getCanvas(): HTMLCanvasElement { return this.canvas; }
 
   public render(frameData: FrameData) {
@@ -159,7 +194,7 @@ export class Renderer {
     const context: RenderContext = {
       core: this.core, scene: this.scene, camera: camera, systemScale, textureSize: this.textureSize,
       sourceTexture: sourceTex, destinationTexture: destTex, mainSceneTexture: this.mainSceneTexture,
-      orbitsTexture: this.orbitsTexture, themeUniformBuffer: this.themeUniformBuffer, lastDeltaTime: deltaTime,
+      orbitsTexture: this.orbitsTexture, themeUniformBuffer: this.themeUniformBuffer, sceneUniformBuffer: this.sceneUniformBuffer, lastDeltaTime: deltaTime,
     };
 
     const encoder = this.core.device.createCommandEncoder();
@@ -176,8 +211,66 @@ export class Renderer {
           this.glyphsPass.run(encoder, context);
         }
     } else { // This is now the Ops View (SHIP_RELATIVE)
-        this.computePass.run(encoder, context);
-        // Present the compute result to the screen via PostFX (which also handles presentation)
+        // Clear tier color textures at the start of the frame to avoid uninitialized memory artifacts
+        const clearBlack = { r: 0, g: 0, b: 0, a: 1 };
+        encoder.beginRenderPass({
+          colorAttachments: [{ view: this.nearColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
+        }).end();
+        encoder.beginRenderPass({
+          colorAttachments: [{ view: this.midColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
+        }).end();
+        encoder.beginRenderPass({
+          colorAttachments: [{ view: this.farColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
+        }).end();
+        // Run tier passes into their respective textures
+        this.nearTierPass.setOutputTexture(this.nearColorTexture);
+        this.nearTierPass.setDepthTexture(this.nearDepthTexture);
+        this.midTierPass.setOutputTexture(this.midColorTexture);
+        this.midTierPass.setDepthTexture(this.midDepthTexture);
+        this.farTierPass.setOutputTexture(this.farColorTexture);
+        this.farTierPass.setDepthTexture(this.farDepthTexture);
+        this.nearTierPass.setTierBuffer(this.scene.nearTierBuffer);
+        this.midTierPass.setTierBuffer(this.scene.midTierBuffer);
+        this.farTierPass.setTierBuffer(this.scene.farTierBuffer);
+
+        if (frameData.dominantLight && frameData.worldCameraEye) {
+          const light = frameData.dominantLight;
+          const emissive = light.emissive ?? [1, 1, 1];
+          const LIGHT_INTENSITY = 30.0;
+          const lightDir: [number, number, number] = [
+            light.position[0] - frameData.worldCameraEye[0],
+            light.position[1] - frameData.worldCameraEye[1],
+            light.position[2] - frameData.worldCameraEye[2],
+          ];
+          const dirLen = Math.hypot(lightDir[0], lightDir[1], lightDir[2]);
+          if (dirLen > 0) {
+            lightDir[0] /= dirLen; lightDir[1] /= dirLen; lightDir[2] /= dirLen;
+          }
+
+          this.updateLightingUniforms(lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1);
+          this.farTierPass.run(encoder, context, this.scene.farCount);
+          this.midTierPass.run(encoder, context, this.scene.midCount);
+          this.nearTierPass.run(encoder, context, this.scene.nearCount);
+        } else {
+          this.farTierPass.run(encoder, context, this.scene.farCount);
+          this.midTierPass.run(encoder, context, this.scene.midCount);
+          this.nearTierPass.run(encoder, context, this.scene.nearCount);
+        }
+
+        // Composite tiers into mainSceneTexture (reuse sourceTexture as intermediate)
+        this.compositorPass.run(
+          encoder,
+          context,
+          this.nearColorTexture,
+          this.midColorTexture,
+          this.farColorTexture,
+          this.nearDepthTexture,
+          this.midDepthTexture,
+          this.farDepthTexture,
+          context.mainSceneTexture,
+        );
+
+        // Present the composited result via PostFX
         PostFXPass.clearTexture(this.core.device, this.orbitsTexture);
         this.postfxPass.run(encoder, context, theme, frameData.rawState.bodies ?? []);
     }
@@ -200,6 +293,23 @@ export class Renderer {
     themeData[17] = this.state.crtIntensity;
     this.core.device.queue.writeBuffer(this.themeUniformBuffer, 0, themeData);
     return theme;
+  }
+
+  public updateLightingUniforms(lightDirection: [number, number, number], emissive: [number, number, number], intensity: number, debugTierView: number) {
+    const len = Math.hypot(emissive[0], emissive[1], emissive[2]);
+    const finalLightColor: [number, number, number] = len > 0
+      ? [
+          (emissive[0] / len) * intensity,
+          (emissive[1] / len) * intensity,
+          (emissive[2] / len) * intensity,
+        ]
+      : [0, 0, 0];
+    const bufferData = new Float32Array(8);
+    bufferData.set(lightDirection, 0);
+    bufferData[3] = 0.0;
+    bufferData.set(finalLightColor, 4);
+    bufferData[7] = debugTierView;
+    this.core.device.queue.writeBuffer(this.sceneUniformBuffer, 0, bufferData);
   }
 
   public clearOrbitHistory(): void {
