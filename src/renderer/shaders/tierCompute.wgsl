@@ -30,6 +30,21 @@ struct Ray { origin: vec3<f32>, direction: vec3<f32> }
 
 fn rayAt(ray: Ray, t: f32) -> vec3<f32> { return ray.origin + ray.direction * t; }
 
+// Returns the parametric interval [t_min, t_max] where the ray intersects the sphere.
+// If there is no intersection, returns (INFINITY, -INFINITY).
+fn ray_sphere_interval(r: Ray, center: vec3<f32>, radius: f32) -> vec2<f32> {
+	let oc = r.origin - center;
+	let a = dot(r.direction, r.direction);
+	let b = dot(oc, r.direction);
+	let c = dot(oc, oc) - radius * radius;
+	let discriminant = b * b - a * c;
+	if (discriminant < 0.0) { return vec2<f32>(INFINITY, -INFINITY); }
+	let sqrtd = sqrt(discriminant);
+	let t0 = (-b - sqrtd) / a;
+	let t1 = (-b + sqrtd) / a;
+	return vec2<f32>(min(t0, t1), max(t0, t1));
+}
+
 fn hit_sphere(sphere: Sphere, r: Ray, ray_t: Interval, index: u32) -> HitRecord {
     var rec: HitRecord; rec.hit = false;
     let center = sphere.pos_and_radius.xyz; let radius = sphere.pos_and_radius.w;
@@ -96,24 +111,21 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
     let inter_body_shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), rec.object_index);
     if (inter_body_shadow_rec.hit && dot(inter_body_shadow_rec.emissive, inter_body_shadow_rec.emissive) < 0.1) { shadow_multiplier = 0.0; }
 
-	// Sunlight transmittance through atmosphere to the surface point
+	// Sunlight transmittance through atmosphere to the surface point (surface-to-sun)
 	var sun_color = scene.dominant_light_color_and_debug.xyz;
 	let has_atmosphere = sphere.albedo_and_atmos_flag.w > 0.5;
 	if (has_atmosphere) {
-		let atmos_params = get_earth_atmosphere();
-		let tier_scale = scene.tier_scale_and_pad.x;
-		let planet_radius_scaled = sphere.terrain_params.x;
-		let atmos_radius_scaled = planet_radius_scaled * ATMOSPHERE_RADIUS_SCALE;
-		let p_sample = rec.p - sphere.pos_and_radius.xyz;
-		let optical_depth_to_sun = get_optical_depth(p_sample, light_dir_to_source, atmos_params, tier_scale, planet_radius_scaled, atmos_radius_scaled);
-		let sun_transmittance = exp(-optical_depth_to_sun);
-		sun_color *= sun_transmittance;
+		let planet_radius_tier = sphere.pos_and_radius.w;
+		if (planet_radius_tier > 0.0) {
+			let surface_pos_unit = (rec.p - sphere.pos_and_radius.xyz) / planet_radius_tier;
+			sun_color *= get_sunlight_transmittance(surface_pos_unit, light_dir_to_source);
+		}
 	}
 
 	let diffuse = max(0.0, dot(surface_normal, light_dir_to_source));
 	let half_vec = normalize(light_dir_to_source + view_dir);
 	let specular = pow(max(0.0, dot(surface_normal, half_vec)), 64.0) * select(0.1, 1.0, is_ocean);
-	let ambient = select(0.0, 0.02, has_atmosphere);
+	let ambient = 0.0;
 	let diffuse_term = surface_albedo * diffuse;
 	let specular_term = specular;
 	let lit_color = (diffuse_term * sun_color + ambient * surface_albedo + specular_term * sun_color) * shadow_multiplier;
@@ -141,7 +153,38 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 	let ray = getRay(cam, u, v);
 
 	let atmosphereEnabled = scene.tier_scale_and_pad.y > 0.5;
-	var rec = hit_spheres(ray, createInterval(0.001, INFINITY), 9999u);
+
+	// Terrain-first intersection: prefer detailed SDF raymarching for bodies with terrain.
+	var rec: HitRecord; rec.hit = false;
+	var closest_so_far = INFINITY;
+	for (var i = 0u; i < params.bodyCount; i = i + 1u) {
+		let sphere = spheres[i];
+
+		// Broad phase: analytic sphere interval to early-out expensive raymarching when possible.
+		let t_interval = ray_sphere_interval(ray, sphere.pos_and_radius.xyz, sphere.pos_and_radius.w * 1.1);
+		if (t_interval.x > closest_so_far || t_interval.y < 0.0) { continue; }
+
+		if (sphere.emissive_and_terrain_flag.w > 0.5) {
+			// Terrain planet: ray march SDF for robust surface hits including grazing angles.
+			let terrain_uniforms = TerrainUniforms( sphere.terrain_params.x, sphere.terrain_params.y, sphere.terrain_params.z, sphere.terrain_params.w );
+			var hit_rec = ray_march(ray, closest_so_far, sphere.pos_and_radius.xyz, terrain_uniforms, camera, scene);
+			if (hit_rec.hit && hit_rec.t < closest_so_far) {
+				closest_so_far = hit_rec.t;
+				rec = hit_rec;
+				rec.albedo = sphere.albedo_and_atmos_flag.xyz;
+				rec.emissive = sphere.emissive_and_terrain_flag.xyz;
+				rec.object_index = i;
+			}
+		} else {
+			// Non-terrain bodies: fast analytic sphere hit test.
+			let hit_rec = hit_sphere(sphere, ray, createInterval(0.001, closest_so_far), i);
+			if (hit_rec.hit) {
+				closest_so_far = hit_rec.t;
+				rec = hit_rec;
+			}
+		}
+	}
+
 	var final_pixel_color = vec3<f32>(0.0);
 	var final_alpha = 0.0;
 
@@ -169,31 +212,37 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 			for (var i = 0u; i < params.bodyCount; i = i + 1u) {
 				let atmos_sphere = spheres[i];
 				if (atmos_sphere.albedo_and_atmos_flag.w > 0.5) {
-					let max_dist_for_atmos = select(rec.t, INFINITY, i == rec.object_index);
-					let atmos = get_sky_color(ray, atmos_sphere.pos_and_radius.xyz, atmos_sphere.terrain_params.x, -normalize(scene.dominant_light_direction.xyz), scene, max_dist_for_atmos);
-					total_in_scattering += atmos.in_scattering;
-					total_transmittance *= atmos.transmittance;
+					let planet_radius_tier = atmos_sphere.pos_and_radius.w;
+					if (planet_radius_tier > 0.0) {
+						let atmos = get_sky_color(ray, atmos_sphere.pos_and_radius.xyz, planet_radius_tier, -normalize(scene.dominant_light_direction.xyz), scene);
+						total_in_scattering += atmos.color;
+						if (i == rec.object_index) { total_transmittance = atmos.transmittance; }
+					}
 				}
 			}
 		}
-		final_pixel_color = surface_color * total_transmittance + total_in_scattering;
+		let is_emissive = dot(hit_sphere.emissive_and_terrain_flag.xyz, hit_sphere.emissive_and_terrain_flag.xyz) > 0.1;
+		if (is_emissive) {
+			final_pixel_color = surface_color + total_in_scattering;
+		} else {
+			final_pixel_color = surface_color * total_transmittance + total_in_scattering;
+		}
 		final_alpha = 1.0;
-    } else {
-        if (atmosphereEnabled) {
-            for (var i = 0u; i < params.bodyCount; i = i + 1u) {
-                let atmos_sphere = spheres[i];
-			if (atmos_sphere.albedo_and_atmos_flag.w > 0.5) {
-                    // Occlusion: skip if the solid planet blocks the view to its far-side atmosphere
-                    let t_solid = ray_sphere_intersect(ray.origin - atmos_sphere.pos_and_radius.xyz, ray.direction, atmos_sphere.pos_and_radius.w);
-                    if (t_solid.x > 0.0) { continue; }
-
-                    let atmos = get_sky_color(ray, atmos_sphere.pos_and_radius.xyz, atmos_sphere.terrain_params.x, -normalize(scene.dominant_light_direction.xyz), scene, INFINITY);
-                    final_pixel_color += atmos.in_scattering;
-                    final_alpha = max(final_alpha, atmos.alpha);
-                }
-            }
-        }
-    }
+	} else {
+		if (atmosphereEnabled) {
+			for (var i = 0u; i < params.bodyCount; i = i + 1u) {
+				let atmos_sphere = spheres[i];
+				if (atmos_sphere.albedo_and_atmos_flag.w > 0.5) {
+					let planet_radius_tier = atmos_sphere.pos_and_radius.w;
+					if (planet_radius_tier > 0.0) {
+						let atmos = get_sky_color(ray, atmos_sphere.pos_and_radius.xyz, planet_radius_tier, -normalize(scene.dominant_light_direction.xyz), scene);
+						final_pixel_color += atmos.color;
+						final_alpha = 1.0;
+					}
+				}
+			}
+		}
+	}
 	let hit_dist = select(1.0e10, rec.t, rec.hit);
 	textureStore(depthOut, coords_i, vec4<f32>(hit_dist, 0.0, 0.0, 0.0));
 	textureStore(output, coords_i, vec4<f32>(final_pixel_color, final_alpha));
