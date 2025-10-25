@@ -16,6 +16,7 @@ export class Camera {
 	public viewProjectionMatrix: mat4 = mat4.create();
 	public isOrthographic: boolean = false;
 	public distanceToTarget: number = 0;
+	public vfov: number = 25.0; // Vertical FOV in degrees
 
 	public recomputeViewFromLook(): void {
 		mat4.lookAt(this.viewMatrix, this.eye as unknown as number[], this.look_at as unknown as number[], this.up as unknown as number[]);
@@ -59,6 +60,7 @@ export class Camera {
 		newCam.focusBodyId = this.focusBodyId;
 		newCam.isOrthographic = this.isOrthographic;
 		newCam.distanceToTarget = this.distanceToTarget;
+		newCam.vfov = this.vfov;
 		mat4.copy(newCam.projectionMatrix, this.projectionMatrix);
 		return newCam;
 	}

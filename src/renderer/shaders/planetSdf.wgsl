@@ -27,7 +27,7 @@ fn h_noise(dir: vec3<f32>, params: TerrainUniforms, dist_to_surface: f32, base_r
     for(var i = 0; i < octaves; i = i + 1) {
         // Derived LOD: stop when projected feature size < 1px (with quality factor)
         let quality_factor = 2.0;
-        if (dist_to_surface > (base_radius / f) * (camera.lod_constant / quality_factor)) { break; }
+        if (dist_to_surface > (base_radius / f) * (camera.projection_constants.x / quality_factor)) { break; }
         let p = dir * f;
         h = h + a * snoise(p);
         total_amplitude = total_amplitude + a;

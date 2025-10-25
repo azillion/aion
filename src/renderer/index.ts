@@ -112,7 +112,7 @@ export class Renderer {
     await this.mapPass.initialize(this.core, this.scene);
     await this.glyphsPass.initialize(this.core, this.scene);
     await this.soiPass.initialize(this.core, this.scene);
-
+    
     this.handleResize();
     
     new ResizeObserver(this.handleResize).observe(this.canvas);
@@ -161,7 +161,7 @@ export class Renderer {
   
 
   public writeCameraBuffer(camera: Camera) {
-    const buffer = new Float32Array(64);
+    const buffer = new Float32Array(80);
     buffer.set(camera.viewMatrix as unknown as number[], 0);
     buffer.set(camera.projectionMatrix as unknown as number[], 16);
     buffer.set(camera.viewProjectionMatrix as unknown as number[], 32);
@@ -169,10 +169,11 @@ export class Renderer {
     const dist = vec3.distance(camera.eye as unknown as number[], camera.look_at as unknown as number[]);
     buffer[52] = camera.forward[0]; buffer[53] = camera.forward[1]; buffer[54] = camera.forward[2]; buffer[55] = dist;
     buffer[56] = camera.right[0]; buffer[57] = camera.right[1]; buffer[58] = camera.right[2]; buffer[59] = 0.0;
-    buffer[60] = camera.up[0]; buffer[61] = camera.up[1]; buffer[62] = camera.up[2];
-    const vfov_rad = 25.0 * (Math.PI / 180.0);
+    buffer[60] = camera.up[0]; buffer[61] = camera.up[1]; buffer[62] = camera.up[2]; buffer[63] = 0.0;
+    // projection_constants (vec4): .x = lod_constant
+    const vfov_rad = camera.vfov * (Math.PI / 180.0);
     const lod_constant = this.textureSize.height / vfov_rad;
-    buffer[63] = lod_constant;
+    buffer[64] = lod_constant;
     this.core.device.queue.writeBuffer(this.scene.sharedCameraUniformBuffer, 0, buffer);
   }
 

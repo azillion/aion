@@ -57,7 +57,7 @@ export class Scene {
     this.device = core.device;
     this.sharedCameraUniformBuffer = this.device.createBuffer({
       label: 'Shared Camera Uniform Buffer',
-      size: 256,
+      size: 320,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
   }
