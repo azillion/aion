@@ -24,4 +24,10 @@ export interface Authority {
 	 * Adds a new body to the simulation.
 	 */
 	addBody(body: Omit<Body, 'id'>): void;
+
+	/**
+	 * Initiates an auto-landing sequence for the player ship onto the target body.
+	 * If targetBodyId is null or invalid, the call is ignored.
+	 */
+	autoLand(targetBodyId: string | null): void;
 }

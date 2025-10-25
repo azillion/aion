@@ -17,6 +17,10 @@ export class HUDManager {
     return this.canvas;
   }
 
+  public clear(): void {
+    this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+  }
+
   public draw(frameData: FrameData): void {
     const { bodiesToRender, camera, viewport, cameraMode } = frameData;
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);

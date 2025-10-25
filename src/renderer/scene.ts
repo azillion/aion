@@ -2,7 +2,7 @@ import type { Body, SystemState, Star } from '../shared/types';
 import type { WebGPUCore } from './core';
 import type { Camera } from '../camera';
 
-const FLOATS_PER_SPHERE = 16;
+const FLOATS_PER_SPHERE = 24;
 const FLOATS_PER_STAR = 8;
 const VISUAL_SETTINGS = { systemViewSize: 20.0 } as const;
 
@@ -163,7 +163,21 @@ export class Scene {
       sphereData.set(emissive, f_base + 8); // material.emissive
       sphereData[f_base + 11] = 0.0; // material.fuzziness
       sphereData[f_base + 12] = 1.0; // material.refraction_index
-      sphereDataU32[u_base + 13] = 0; // material.mat_type (Lambertian)
+
+      // Planet data
+      if (body.terrain) {
+        sphereData[f_base + 16] = body.terrain.radius;      // base_radius
+        sphereData[f_base + 17] = body.terrain.seaLevel;    // sea_level
+        sphereData[f_base + 18] = body.terrain.maxHeight;   // max_height
+        sphereData[f_base + 19] = body.terrain.noiseSeed;   // seed
+        sphereDataU32[u_base + 20] = 1; // is_planet = true
+      } else {
+        sphereData[f_base + 16] = 0.0;
+        sphereData[f_base + 17] = 0.0;
+        sphereData[f_base + 18] = 0.0;
+        sphereData[f_base + 19] = 0.0;
+        sphereDataU32[u_base + 20] = 0; // is_planet = false
+      }
     });
     return sphereData;
   }

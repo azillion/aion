@@ -21,6 +21,13 @@ export class UI {
         'Sensor': 'Full Color',
         'FPS': '0',
         'Show Orbits': false,
+        'Auto Land': async () => {
+            const cam = this.cameraManager.getCamera();
+            const targetId = cam.focusBodyId;
+            if (targetId && targetId !== 'player-ship') {
+                this.authority.autoLand(targetId);
+            }
+        },
         'Add Asteroid': () => this.addAsteroid(),
         'Warp x1': () => this.setWarp(1),
         'Warp x100': () => this.setWarp(100),
@@ -64,6 +71,8 @@ export class UI {
 
         this._createSceneControls();
 
+        this.gui.add(this.settings, 'Auto Land');
+
         this.gui.add(this.settings, 'Add Asteroid');
 
         this.gui.add(this.settings, 'Theme', Object.keys(themes))
@@ -79,6 +88,8 @@ export class UI {
                     this.renderer.clearOrbitHistory();
                 }
             });
+
+        this.gui.add(this.state, 'showHUD').name('Show HUD');
 
         this.gui.add(this.state, 'crtIntensity', 0.0, 1.0).name('CRT Effect');
 

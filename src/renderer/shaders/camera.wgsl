@@ -25,7 +25,8 @@ struct CameraUniforms {
 
     // Row 4: Local Up axis (normalized)
     up: vec3<f32>,                    // Offset: 240
-    _pad3: f32,                       // Offset: 252
+    // Repurpose _pad3 to store viewport_height / vfov_rad for LOD calculations
+    lod_constant: f32,                // Offset: 252
 };
 
 

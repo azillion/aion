@@ -3,6 +3,13 @@ import type { Camera } from '../camera';
 
 export type Vec3 = [number, number, number];
 
+export interface TerrainParams {
+    radius: number;
+    seaLevel: number;
+    maxHeight: number;
+    noiseSeed: number;
+}
+
 export interface Body {
 	id: string;
 	name: string;
@@ -12,6 +19,7 @@ export interface Body {
 	mass: number;
 	albedo: Vec3;
 	emissive?: Vec3;
+    terrain?: TerrainParams;
 }
 
 export interface Ship extends Body {

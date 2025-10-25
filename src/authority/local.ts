@@ -1,11 +1,12 @@
 import type { Authority, InputState } from './authority';
 import { quat, vec3 } from 'gl-matrix';
-import type { Body, SystemState, Vec3, Ship } from '../shared/types';
+import type { Body, SystemState, Vec3, Ship, TerrainParams } from '../shared/types';
 import { G } from '../shared/constants';
 
 export class LocalAuthority implements Authority {
 	private state: SystemState;
 	private timeScalar: number;
+	private autoLanding: { active: boolean; targetId: string | null } = { active: false, targetId: null };
 
 	constructor() {
 		const sun: Body = {
@@ -32,6 +33,7 @@ export class LocalAuthority implements Authority {
 			radius: 6371,
 			mass: 5.972e24,
 			albedo: [0.2, 0.3, 0.8],
+			terrain: { radius: 6371, seaLevel: 1.5, maxHeight: 0.0013, noiseSeed: 42.0 } as TerrainParams,
 		};
 		
 		const moon_dist = 384400; // Lunar distance from Earth
@@ -45,6 +47,7 @@ export class LocalAuthority implements Authority {
             radius: 1737,
             mass: 7.347e22,
             albedo: [0.5, 0.5, 0.5],
+            terrain: { radius: 1737, seaLevel: 0.0, maxHeight: 0.0015, noiseSeed: 1337.0 } as TerrainParams,
           };
 
 		const playerShip: Ship = {
@@ -258,6 +261,58 @@ export class LocalAuthority implements Authority {
 					accelerations[playerIndex][1] += acc[1];
 					accelerations[playerIndex][2] += acc[2];
 				}
+
+				// Auto-landing guidance: apply corrective acceleration towards surface normal and damp velocity
+				const ship = this.state.bodies[playerIndex] as Ship;
+				if (this.autoLanding.active && this.autoLanding.targetId) {
+					const target = this.state.bodies.find(b => b.id === this.autoLanding.targetId);
+					if (target) {
+						// Vector from planet center to ship
+						const rx = ship.position[0] - target.position[0];
+						const ry = ship.position[1] - target.position[1];
+						const rz = ship.position[2] - target.position[2];
+						const r = Math.sqrt(rx*rx + ry*ry + rz*rz);
+						const nx = rx / Math.max(r, 1e-6);
+						const ny = ry / Math.max(r, 1e-6);
+						const nz = rz / Math.max(r, 1e-6);
+
+						// Estimate safe surface radius: use terrain if present, else radius
+						const baseR = target.terrain ? target.terrain.radius : target.radius;
+						const maxH = target.terrain ? target.terrain.maxHeight * baseR : 0.0;
+						const safety = Math.max(0.05 * baseR, 2.0); // 5% radius or 2 km buffer
+						const desiredR = baseR + maxH + safety;
+
+						// Radial and tangential velocity components
+						const vx = ship.velocity[0] - target.velocity[0];
+						const vy = ship.velocity[1] - target.velocity[1];
+						const vz = ship.velocity[2] - target.velocity[2];
+						const vRad = vx*nx + vy*ny + vz*nz;
+						const vtx = vx - vRad*nx;
+						const vty = vy - vRad*ny;
+						const vtz = vz - vRad*nz;
+
+						// Guidance: target zero tangential, small downward vRad while above surface, zero near surface
+						const kTangential = 1e-4; // weak lateral damping
+						accelerations[playerIndex][0] += -kTangential * vtx;
+						accelerations[playerIndex][1] += -kTangential * vty;
+						accelerations[playerIndex][2] += -kTangential * vtz;
+
+						// Radial control: PD towards desiredR
+						const dr = r - desiredR;
+						const kPos = 5e-6;
+						const kVel = 5e-4;
+						const aRad = -kPos * dr - kVel * vRad; // accelerate inward when above, brake descent near surface
+						accelerations[playerIndex][0] += aRad * nx;
+						accelerations[playerIndex][1] += aRad * ny;
+						accelerations[playerIndex][2] += aRad * nz;
+
+						// Completion check: close and slow
+						const speed = Math.sqrt(vx*vx + vy*vy + vz*vz);
+						if (r <= desiredR + 0.5 && speed < 0.01) {
+							this.autoLanding.active = false;
+						}
+					}
+				}
 			}
 			// Integrate
 			for (let i = 0; i < this.state.bodies.length; i++) {
@@ -272,6 +327,58 @@ export class LocalAuthority implements Authority {
 			this.state.timestamp += h * 1000;
 			remaining -= h;
 		}
+
+		// Penetration prevention: clamp ship above surface after integration
+		if (playerIndex >= 0) {
+			const ship = this.state.bodies[playerIndex] as Ship;
+			// Find nearest massive body (planet/moon) by distance
+			let nearest: Body | null = null;
+			let nearestR = Infinity;
+			for (const b of this.state.bodies) {
+				if (b.id === ship.id) continue;
+				const dx = ship.position[0] - b.position[0];
+				const dy = ship.position[1] - b.position[1];
+				const dz = ship.position[2] - b.position[2];
+				const r = Math.sqrt(dx*dx + dy*dy + dz*dz);
+				if (r < nearestR) { nearestR = r; nearest = b; }
+			}
+			if (nearest) {
+				const baseR = nearest.terrain ? nearest.terrain.radius : nearest.radius;
+				const maxH = nearest.terrain ? nearest.terrain.maxHeight * baseR : 0.0;
+				const safety = Math.max(0.05 * baseR, 2.0);
+				const minR = baseR + maxH + safety;
+				if (nearestR < minR) {
+					// Push ship out to surface along radial
+					const rx = ship.position[0] - nearest.position[0];
+					const ry = ship.position[1] - nearest.position[1];
+					const rz = ship.position[2] - nearest.position[2];
+					const inv = 1.0 / Math.max(nearestR, 1e-6);
+					const nx = rx * inv, ny = ry * inv, nz = rz * inv;
+					ship.position[0] = nearest.position[0] + nx * minR;
+					ship.position[1] = nearest.position[1] + ny * minR;
+					ship.position[2] = nearest.position[2] + nz * minR;
+					// Zero radial velocity into the ground
+					const vx = ship.velocity[0] - nearest.velocity[0];
+					const vy = ship.velocity[1] - nearest.velocity[1];
+					const vz = ship.velocity[2] - nearest.velocity[2];
+					const vRad = vx*nx + vy*ny + vz*nz;
+					if (vRad < 0) {
+						ship.velocity[0] -= vRad * nx;
+						ship.velocity[1] -= vRad * ny;
+						ship.velocity[2] -= vRad * nz;
+					}
+				}
+			}
+		}
+	}
+
+	public autoLand(targetBodyId: string | null): void {
+		if (!targetBodyId) return;
+		const target = this.state.bodies.find(b => b.id === targetBodyId);
+		const ship = this.state.bodies.find(b => b.id === 'player-ship');
+		if (!target || !ship) return;
+		this.autoLanding.active = true;
+		this.autoLanding.targetId = targetBodyId;
 	}
 
 	public setTimeScale(scale: number): void {

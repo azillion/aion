@@ -341,7 +341,11 @@ export class App {
     this.renderer.render(frameData ?? { rawState: systemState, bodiesToRender, camera, systemScale: renderScale, viewport: { width: 0, height: 0 }, deltaTime, cameraMode: this.state.cameraMode, playerShipId: this.state.playerShipId });
 
     if (frameData && this.hud) {
-      this.hud.draw(frameData);
+      if (this.state.showHUD) {
+        this.hud.draw(frameData);
+      } else {
+        this.hud.clear();
+      }
     }
 
     this.input.tick();

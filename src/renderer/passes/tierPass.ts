@@ -4,6 +4,9 @@ import type { IRenderPass, RenderContext } from '../types';
 import tierComputeWGSL from '../shaders/tierCompute.wgsl?raw';
 import cameraWGSL from '../shaders/camera.wgsl?raw';
 import sceneUniformsWGSL from '../shaders/sceneUniforms.wgsl?raw';
+import planetSdfWGSL from '../shaders/planetSdf.wgsl?raw';
+import noiseWGSL from '../shaders/noise.wgsl?raw';
+import atmosphereWGSL from '../shaders/atmosphere.wgsl?raw';
 import { createShaderModule } from '../shaderUtils';
 
 const WORKGROUP_SIZE = 8;
@@ -31,6 +34,9 @@ export class TierPass implements IRenderPass {
       {
         'camera.wgsl': cameraWGSL,
         'sceneUniforms.wgsl': sceneUniformsWGSL,
+        'planetSdf.wgsl': planetSdfWGSL,
+        'noise.wgsl': noiseWGSL,
+        'atmosphere.wgsl': atmosphereWGSL,
       }
     );
     this.bindGroupLayout = core.device.createBindGroupLayout({
