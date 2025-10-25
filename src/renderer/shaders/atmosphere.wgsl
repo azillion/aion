@@ -1,4 +1,4 @@
-const ATMOSPHERE_RADIUS_SCALE: f32 = 1.08;
+const ATMOSPHERE_RADIUS_SCALE: f32 = 1.01;
 const PI: f32 = 3.1415926535;
 
 struct AtmosphereParams {
@@ -68,43 +68,36 @@ fn get_optical_depth(
     return optical_depth;
 }
 
-// fn get_sky_color(ray: Ray, planet_center_world: vec3<f32>, planet_radius_scaled: f32, light_dir: vec3<f32>, scene: SceneUniforms, max_distance: f32) -> AtmosphereOutput {
-//     // The camera is at (0,0,0), so this vector is FROM the camera TO the planet center.
-//     let ray_origin_local = -planet_center_world;
-//     let dist_to_center = length(ray_origin_local);
-
-//     // Use the provided scaled planet radius.
-//     let atmosphere_radius_scaled = planet_radius_scaled * ATMOSPHERE_RADIUS_SCALE;
-
-//     // --- THE TEST ---
-//     // If the GPU thinks the camera is INSIDE the atmosphere, the screen will be GREEN.
-//     // If the GPU thinks the camera is OUTSIDE the atmosphere, the screen will be RED.
-//     if (dist_to_center < atmosphere_radius_scaled) {
-//         return AtmosphereOutput(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0), 1.0); // GREEN = INSIDE
-//     } else {
-//         return AtmosphereOutput(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0), 1.0); // RED = OUTSIDE
-//     }
-// }
-
 fn get_sky_color(ray: Ray, planet_center_world: vec3<f32>, planet_radius_scaled: f32, light_dir: vec3<f32>, scene: SceneUniforms, max_distance: f32) -> AtmosphereOutput {
     let params = get_earth_atmosphere();
     let tier_scale = scene.tier_scale_and_pad.x;
+    // planet_radius_scaled is now passed in from the sphere data.
     let atmosphere_radius_scaled = planet_radius_scaled * ATMOSPHERE_RADIUS_SCALE;
     let ray_origin_local = -planet_center_world;
     let t = ray_sphere_intersect(ray_origin_local, ray.direction, atmosphere_radius_scaled);
+    
+    // If the ray doesn't intersect the atmosphere at all, return nothing. This fixes the "horns".
     if (t.y < 0.0) { return AtmosphereOutput(vec3<f32>(0.0), vec3<f32>(1.0), 0.0); }
+    
     let start_offset = max(0.0, t.x);
     let end_t = select(t.y, min(t.y, max_distance), max_distance > 0.0);
     let dist_in_atmosphere = end_t - start_offset;
+    
     if (dist_in_atmosphere <= 0.0) { return AtmosphereOutput(vec3<f32>(0.0), vec3<f32>(1.0), 0.0); }
+    
     let num_samples = 16;
     let step_size_scaled = dist_in_atmosphere / f32(num_samples);
     let step_size_world = step_size_scaled * tier_scale;
     var transmittance = vec3<f32>(1.0);
     var scattered_light = vec3<f32>(0.0);
+
     for (var i = 0; i < num_samples; i = i + 1) {
         let t_sample = start_offset + (f32(i) + 0.5) * step_size_scaled;
         let p_sample = ray_origin_local + ray.direction * t_sample;
+
+        // Don't accumulate light from under the surface
+        if (length(p_sample) < planet_radius_scaled) { continue; }
+
         let h = max(0.0, length(p_sample) * tier_scale - params.planet_radius);
         let density_rayleigh = exp(-h / params.h_rayleigh);
         let density_mie = exp(-h / params.h_mie);
@@ -119,7 +112,8 @@ fn get_sky_color(ray: Ray, planet_center_world: vec3<f32>, planet_radius_scaled:
         scattered_light += transmittance * in_scatter * sun_transmittance * step_size_world;
         transmittance *= exp(-scattering_coefficients * step_size_world);
     }
-    let final_color = scattered_light * 20.0 * scene.dominant_light_color_and_debug.xyz;
+    
+    let final_color = scattered_light * 8.0 * scene.dominant_light_color_and_debug.xyz;
     let brightness = dot(final_color, vec3<f32>(0.2126, 0.7152, 0.0722));
     let alpha = 1.0 - exp(-brightness * 2.0);
     return AtmosphereOutput(final_color, transmittance, alpha);

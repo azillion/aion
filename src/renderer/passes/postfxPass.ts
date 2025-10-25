@@ -10,6 +10,7 @@ export class PostFXPass implements IRenderPass {
   private presentPipeline!: GPURenderPipeline;
   private sampler!: GPUSampler;
   private targetInfoUniform!: GPUBuffer;
+  private targetInfoScratch!: ArrayBuffer;
   private bindGroupLayoutPost!: GPUBindGroupLayout;
   private bindGroupLayoutPresent!: GPUBindGroupLayout;
 
@@ -60,6 +61,9 @@ export class PostFXPass implements IRenderPass {
       size: 272, // Matches WGSL OrbitMask struct
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+
+    // Reuse a single scratch ArrayBuffer instead of allocating every frame
+    this.targetInfoScratch = new ArrayBuffer(272);
   }
 
   public getPresentPipeline(): GPURenderPipeline {
@@ -127,7 +131,7 @@ export class PostFXPass implements IRenderPass {
   
   private updateTargetInfo(context: RenderContext, bodies: Body[]) {
     const { core, camera, systemScale, textureSize } = context;
-    const buf = new ArrayBuffer(272);
+    const buf = this.targetInfoScratch;
     const u32 = new Uint32Array(buf);
     const f32 = new Float32Array(buf);
 

@@ -23,7 +23,7 @@ export class LocalAuthority implements Authority {
 		const earth_dist = 149.6e6; // 1 AU in km
 		const earth_vel = Math.sqrt(G * sun.mass / earth_dist); // Circular orbit velocity
 
-		const earth: Body = {
+        const earth: Body = {
 			id: 'earth',
 			name: 'Earth',
 			// Start Earth on the Y axis to give the camera a side-on, lit view
@@ -33,7 +33,17 @@ export class LocalAuthority implements Authority {
 			radius: 6371,
 			mass: 5.972e24,
 			albedo: [0.2, 0.3, 0.8],
-			terrain: { radius: 6371, seaLevel: 4.0, maxHeight: 0.0013, noiseSeed: 42.0 } as TerrainParams,
+            terrain: {
+                radius: 6371,
+                seaLevel: 4.0,
+                maxHeight: 0.0013,
+                noiseSeed: 42.0,
+                atmosphere: {
+                    nitrogen: 0.78,
+                    oxygen: 0.21,
+                    argon: 0.01,
+                },
+            } as TerrainParams,
 		};
 		
 		const moon_dist = 384400; // Lunar distance from Earth
@@ -47,7 +57,7 @@ export class LocalAuthority implements Authority {
             radius: 1737,
             mass: 7.347e22,
             albedo: [0.5, 0.5, 0.5],
-            terrain: { radius: 1737, seaLevel: 0.0, maxHeight: 0.0015, noiseSeed: 1337.0 } as TerrainParams,
+            terrain: { radius: 1737, seaLevel: 0.0, maxHeight: 0.008, noiseSeed: 1337.0 } as TerrainParams,
           };
 
 		const playerShip: Ship = {

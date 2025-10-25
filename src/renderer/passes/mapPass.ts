@@ -10,6 +10,7 @@ import { createShaderModule } from '../shaderUtils';
 export class MapPass implements IRenderPass {
   private pipeline!: GPURenderPipeline;
   private backgroundPipeline!: GPURenderPipeline;
+  private sampler!: GPUSampler;
 
   public async initialize(core: WebGPUCore, _scene: Scene): Promise<void> {
     const module = await createShaderModule(
@@ -48,6 +49,9 @@ export class MapPass implements IRenderPass {
             targets: [{ format: core.presentationFormat }],
         },
     });
+
+    // Reuse a single sampler instead of creating one each frame
+    this.sampler = core.device.createSampler();
   }
 
   public run(encoder: GPUCommandEncoder, context: RenderContext, _theme: Theme, showOrbits: boolean): void {
@@ -66,12 +70,11 @@ export class MapPass implements IRenderPass {
     
     // 2. Draw the Orbits Texture as the background
     if (showOrbits) {
-        const sampler = core.device.createSampler();
         const backgroundBindGroup = core.device.createBindGroup({
             label: 'Map Background BindGroup',
             layout: this.backgroundPipeline.getBindGroupLayout(0),
             entries: [
-                { binding: 0, resource: sampler },
+                { binding: 0, resource: this.sampler },
                 { binding: 1, resource: orbitsTexture.createView() }
             ]
         });

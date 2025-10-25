@@ -3,11 +3,17 @@ import type { Camera } from '../camera';
 
 export type Vec3 = [number, number, number];
 
+// Atmospheric gas composition by fraction (should sum to ~1.0)
+export interface AtmosphereComposition {
+    [gas: string]: number;
+}
+
 export interface TerrainParams {
     radius: number;
     seaLevel: number;
     maxHeight: number;
     noiseSeed: number;
+    atmosphere?: AtmosphereComposition;
 }
 
 export interface Body {

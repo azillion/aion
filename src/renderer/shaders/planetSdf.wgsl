@@ -184,6 +184,21 @@ fn tex_triplanar(p: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     return x_proj * blend.x + y_proj * blend.y + z_proj * blend.z;
 }
 
+// --- Lunar material: grayscale, dusty/rocky blend based on slope
+fn get_lunar_material(p_local: vec3<f32>, normal: vec3<f32>) -> Material {
+    let slope = 1.0 - dot(normal, normalize(p_local));
+
+    // Base grayscale colors modulated by triplanar texture
+    let texval = tex_triplanar(p_local, normal);
+    let dust_color = vec3<f32>(0.5) * texval;
+    let rock_color = vec3<f32>(0.3) * texval;
+
+    // Blend between lighter dust and darker rock based on slope
+    let rock_amount = smoothstep(0.2, 0.5, slope);
+    let albedo = mix(dust_color, rock_color, rock_amount);
+    return Material(albedo);
+}
+
 fn get_material(p_local: vec3<f32>, normal: vec3<f32>, params: TerrainUniforms, h_scaled: f32) -> Material {
     let altitude = h_scaled;
     let slope = 1.0 - dot(normal, normalize(p_local));

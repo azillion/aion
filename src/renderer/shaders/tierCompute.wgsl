@@ -13,12 +13,12 @@ fn createInterval(min: f32, max: f32) -> Interval { return Interval(min, max); }
 fn intervalSurrounds(i: Interval, x: f32) -> bool { return i.minI < x && x < i.maxI; }
 
 struct Sphere {
-	pos_and_radius: vec4<f32>,      // .xyz = position, .w = geometric radius
-	albedo_and_pad: vec4<f32>,      // .xyz = albedo
-	emissive_and_fuzz: vec4<f32>,   // .xyz = emissive, .w = is_planet flag (fuzziness)
-	ref_idx_opacity_pad: vec4<f32>, // .x = ref_idx, .y = opacity, .zw unused (placeholder for alignment)
-	terrain_params: vec4<f32>,      // .x = base_radius, .y = sea_level, .z = max_height, .w = seed
-	padding_vec: vec4<f32>,         // Padding to maintain 24-float stride
+	pos_and_radius: vec4<f32>,              // .xyz = position, .w = geometric radius
+	albedo_and_atmos_flag: vec4<f32>,       // .xyz = albedo, .w = has_atmosphere_flag
+	emissive_and_terrain_flag: vec4<f32>,   // .xyz = emissive, .w = has_terrain_flag
+	ref_idx_opacity_pad: vec4<f32>,         // .x = ref_idx, .y = opacity, .zw unused (placeholder for alignment)
+	terrain_params: vec4<f32>,              // .x = base_radius, .y = sea_level, .z = max_height, .w = seed
+	padding_vec: vec4<f32>,                 // Padding to maintain 24-float stride
 }
 
 struct HitRecord {
@@ -41,7 +41,7 @@ fn hit_sphere(sphere: Sphere, r: Ray, ray_t: Interval, index: u32) -> HitRecord 
     let outward_normal = (rec.p - center) / radius;
     rec.front_face = dot(r.direction, outward_normal) < 0.0;
     rec.normal = outward_normal;
-    rec.albedo = sphere.albedo_and_pad.xyz; rec.emissive = sphere.emissive_and_fuzz.xyz; rec.object_index = index; rec.hit = true; return rec;
+    rec.albedo = sphere.albedo_and_atmos_flag.xyz; rec.emissive = sphere.emissive_and_terrain_flag.xyz; rec.object_index = index; rec.hit = true; return rec;
 }
 
 fn hit_spheres(r: Ray, ray_t: Interval, ignore_index: u32) -> HitRecord {
@@ -82,7 +82,11 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
         surface_normal = get_ocean_wave_normal(p_local_hit, normalize(p_local_hit));
     } else {
         surface_normal = get_terrain_normal_from_heightfield( rec.p, sphere.pos_and_radius.xyz, rec.normal, terrain_uniforms, rec.t, R_world, camera, scene );
-        surface_albedo = get_material(p_local_hit, surface_normal, terrain_uniforms, h_world).albedo;
+        if (terrain_uniforms.seed == 1337.0) {
+            surface_albedo = get_lunar_material(p_local_hit, surface_normal).albedo;
+        } else {
+            surface_albedo = get_material(p_local_hit, surface_normal, terrain_uniforms, h_world).albedo;
+        }
     }
 
     let light_dir_to_source = -normalize(scene.dominant_light_direction.xyz);
@@ -95,7 +99,9 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
     let diffuse = max(0.0, dot(surface_normal, light_dir_to_source));
     let half_vec = normalize(light_dir_to_source + view_dir);
     let specular = pow(max(0.0, dot(surface_normal, half_vec)), 64.0) * select(0.1, 1.0, is_ocean);
-    let ambient = 0.05;
+    // Ambient tied to atmosphere presence (albedo_and_atmos_flag.w)
+    let has_atmosphere = sphere.albedo_and_atmos_flag.w > 0.5;
+    let ambient = select(0.0, 0.00, has_atmosphere);
     let lit_color = (surface_albedo * (diffuse + ambient) + specular) * shadow_multiplier;
     return lit_color * scene.dominant_light_color_and_debug.xyz;
 }
@@ -128,9 +134,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 	if (rec.hit) {
 		let hit_sphere = spheres[rec.object_index];
 		var surface_color: vec3<f32>;
-		if (dot(hit_sphere.emissive_and_fuzz.xyz, hit_sphere.emissive_and_fuzz.xyz) > 0.1) {
-			surface_color = hit_sphere.emissive_and_fuzz.xyz;
-		} else if (hit_sphere.emissive_and_fuzz.w > 0.5) {
+		if (dot(hit_sphere.emissive_and_terrain_flag.xyz, hit_sphere.emissive_and_terrain_flag.xyz) > 0.1) {
+			surface_color = hit_sphere.emissive_and_terrain_flag.xyz;
+		} else if (hit_sphere.emissive_and_terrain_flag.w > 0.5) {
 			surface_color = shade_planet_surface(rec, hit_sphere, ray, scene, camera);
 		} else {
 			let light_dir_to_source = -normalize(scene.dominant_light_direction.xyz);
@@ -139,16 +145,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 			let shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), rec.object_index);
 			var shadow_multiplier = 1.0;
 			if (shadow_rec.hit && dot(shadow_rec.emissive, shadow_rec.emissive) < 0.1) { shadow_multiplier = 0.0; }
-			let ambient_light = 0.1;
+			let ambient_light = 0.0;
 			let final_intensity = ambient_light + diffuse_intensity * shadow_multiplier;
-			surface_color = hit_sphere.albedo_and_pad.xyz * final_intensity * scene.dominant_light_color_and_debug.xyz;
+			surface_color = hit_sphere.albedo_and_atmos_flag.xyz * final_intensity * scene.dominant_light_color_and_debug.xyz;
 		}
 		var total_in_scattering = vec3<f32>(0.0);
 		var total_transmittance = vec3<f32>(1.0);
 		if (atmosphereEnabled) {
 			for (var i = 0u; i < params.bodyCount; i = i + 1u) {
 				let atmos_sphere = spheres[i];
-				if (atmos_sphere.emissive_and_fuzz.w > 0.5) {
+				if (atmos_sphere.albedo_and_atmos_flag.w > 0.5) {
 					let atmos = get_sky_color(ray, atmos_sphere.pos_and_radius.xyz, atmos_sphere.terrain_params.x, -normalize(scene.dominant_light_direction.xyz), scene, rec.t);
 					total_in_scattering += atmos.in_scattering;
 					total_transmittance *= atmos.transmittance;
@@ -157,18 +163,22 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 		}
 		final_pixel_color = surface_color * total_transmittance + total_in_scattering;
 		final_alpha = 1.0;
-	} else {
-		if (atmosphereEnabled) {
-			for (var i = 0u; i < params.bodyCount; i = i + 1u) {
-				let atmos_sphere = spheres[i];
-				if (atmos_sphere.emissive_and_fuzz.w > 0.5) {
-					let atmos = get_sky_color(ray, atmos_sphere.pos_and_radius.xyz, atmos_sphere.terrain_params.x, -normalize(scene.dominant_light_direction.xyz), scene, INFINITY);
-					final_pixel_color += atmos.in_scattering;
-					final_alpha = max(final_alpha, atmos.alpha);
-				}
-			}
-		}
-	}
+    } else {
+        if (atmosphereEnabled) {
+            for (var i = 0u; i < params.bodyCount; i = i + 1u) {
+                let atmos_sphere = spheres[i];
+			if (atmos_sphere.albedo_and_atmos_flag.w > 0.5) {
+                    // Occlusion: skip if the solid planet blocks the view to its far-side atmosphere
+                    let t_solid = ray_sphere_intersect(ray.origin - atmos_sphere.pos_and_radius.xyz, ray.direction, atmos_sphere.pos_and_radius.w);
+                    if (t_solid.x > 0.0) { continue; }
+
+                    let atmos = get_sky_color(ray, atmos_sphere.pos_and_radius.xyz, atmos_sphere.terrain_params.x, -normalize(scene.dominant_light_direction.xyz), scene, INFINITY);
+                    final_pixel_color += atmos.in_scattering;
+                    final_alpha = max(final_alpha, atmos.alpha);
+                }
+            }
+        }
+    }
 	let hit_dist = select(1.0e10, rec.t, rec.hit);
 	textureStore(depthOut, coords_i, vec4<f32>(hit_dist, 0.0, 0.0, 0.0));
 	textureStore(output, coords_i, vec4<f32>(final_pixel_color, final_alpha));

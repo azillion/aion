@@ -49,6 +49,10 @@ export class Scene {
   public nearCount: number = 0;
   public midCount: number = 0;
   public farCount: number = 0;
+  // Reusable zero-padded CPU buffers matching GPU tier buffer sizes to avoid per-frame allocations
+  private nearZeroPadded?: Float32Array;
+  private midZeroPadded?: Float32Array;
+  private farZeroPadded?: Float32Array;
   
   public get hierarchy(): Map<string, string | null> { return this._hierarchy; }
   private _hierarchy: Map<string, string | null> = new Map();
@@ -83,17 +87,34 @@ export class Scene {
     this.midCount = midBodies.length;
     this.farCount = farBodies.length;
 
-    // Write full zero-padded buffers each frame to avoid stale GPU data
-    const writeFullBuffer = (buffer: GPUBuffer, bodies: Body[]) => {
-      const data = this.serializeSystemState(bodies);
-      const zeroPadded = new Float32Array(buffer.size / 4);
-      zeroPadded.set(data);
-      this.device.queue.writeBuffer(buffer, 0, zeroPadded);
-    };
-
-    writeFullBuffer(this.nearTierBuffer, nearBodies);
-    writeFullBuffer(this.midTierBuffer, midBodies);
-    writeFullBuffer(this.farTierBuffer, farBodies);
+    // Write full zero-padded buffers each frame using reusable scratch arrays
+    {
+      const data = this.serializeSystemState(nearBodies);
+      if (!this.nearZeroPadded || this.nearZeroPadded.length !== (this.nearTierBuffer.size / 4)) {
+        this.nearZeroPadded = new Float32Array(this.nearTierBuffer.size / 4);
+      }
+      this.nearZeroPadded.fill(0);
+      this.nearZeroPadded.set(data);
+      this.device.queue.writeBuffer(this.nearTierBuffer, 0, this.nearZeroPadded.buffer, 0, this.nearZeroPadded.byteLength);
+    }
+    {
+      const data = this.serializeSystemState(midBodies);
+      if (!this.midZeroPadded || this.midZeroPadded.length !== (this.midTierBuffer.size / 4)) {
+        this.midZeroPadded = new Float32Array(this.midTierBuffer.size / 4);
+      }
+      this.midZeroPadded.fill(0);
+      this.midZeroPadded.set(data);
+      this.device.queue.writeBuffer(this.midTierBuffer, 0, this.midZeroPadded.buffer, 0, this.midZeroPadded.byteLength);
+    }
+    {
+      const data = this.serializeSystemState(farBodies);
+      if (!this.farZeroPadded || this.farZeroPadded.length !== (this.farTierBuffer.size / 4)) {
+        this.farZeroPadded = new Float32Array(this.farTierBuffer.size / 4);
+      }
+      this.farZeroPadded.fill(0);
+      this.farZeroPadded.set(data);
+      this.device.queue.writeBuffer(this.farTierBuffer, 0, this.farZeroPadded.buffer, 0, this.farZeroPadded.byteLength);
+    }
   }
 
   public initializeTierBuffers(initialBodyCount: number) {
@@ -105,6 +126,7 @@ export class Scene {
       size,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    this.nearZeroPadded = new Float32Array(size / 4);
 
     if (this.midTierBuffer) this.midTierBuffer.destroy();
     this.midTierBuffer = this.device.createBuffer({
@@ -112,6 +134,7 @@ export class Scene {
       size,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    this.midZeroPadded = new Float32Array(size / 4);
 
     if (this.farTierBuffer) this.farTierBuffer.destroy();
     this.farTierBuffer = this.device.createBuffer({
@@ -119,6 +142,7 @@ export class Scene {
       size,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    this.farZeroPadded = new Float32Array(size / 4);
 
     this.lastKnownBodyCount = initialBodyCount;
   }
@@ -157,9 +181,12 @@ export class Scene {
 
       // Material
       sphereData.set(body.albedo, f_base + 4); // material.albedo
+      // Atmosphere flag in albedo vec4.w
+      sphereData[f_base + 7] = body.terrain && (body.terrain as any).atmosphere ? 1.0 : 0.0;
       const emissive = body.emissive ?? [0, 0, 0];
       sphereData.set(emissive, f_base + 8); // material.emissive
-      sphereData[f_base + 11] = body.terrain ? 1.0 : 0.0; // use fuzziness as is_planet flag
+      // Planet shading flag: 1.0 if terrain data exists (use detailed terrain shader)
+      sphereData[f_base + 11] = body.terrain ? 1.0 : 0.0;
       
 
       // Planet data
