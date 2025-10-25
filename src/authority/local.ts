@@ -378,7 +378,7 @@ export class LocalAuthority implements Authority {
 			if (nearest) {
 				const baseR = nearest.terrain ? nearest.terrain.radius : nearest.radius;
 				const maxH = nearest.terrain ? nearest.terrain.maxHeight * baseR : 0.0;
-				const safety = Math.max(0.05 * baseR, 2.0);
+				const safety = 0.5; // kilometers above local ground approximation
 				const minR = baseR + maxH + safety;
 				if (nearestR < minR) {
 					// Push ship out to surface along radial
@@ -408,10 +408,90 @@ export class LocalAuthority implements Authority {
 	public autoLand(targetBodyId: string | null): void {
 		if (!targetBodyId) return;
 		const target = this.state.bodies.find(b => b.id === targetBodyId);
-		const ship = this.state.bodies.find(b => b.id === 'player-ship');
+		const ship = this.state.bodies.find(b => b.id === 'player-ship') as Ship | undefined;
 		if (!target || !ship) return;
 		this.autoLanding.active = true;
 		this.autoLanding.targetId = targetBodyId;
+	}
+
+	public teleportToSurface(targetBodyId: string | null): void {
+		if (!targetBodyId) return;
+		const target = this.state.bodies.find(b => b.id === targetBodyId);
+		const ship = this.state.bodies.find(b => b.id === 'player-ship') as Ship | undefined;
+		if (!target || !ship) return;
+
+		// Compute safe altitude above surface, accounting for terrain if available
+		const baseR = target.terrain ? target.terrain.radius : target.radius;
+		const maxH = target.terrain ? target.terrain.maxHeight * baseR : 0.0;
+		const safety = 0.5; // kilometers above local ground approximation
+		const desiredR = baseR + maxH + safety;
+
+		// Determine a landing longitude/latitude: use current radial from target to ship if nonzero, otherwise pick +Y
+		let dir: vec3 = vec3.fromValues(0, 1, 0);
+		{
+			const rx = ship.position[0] - target.position[0];
+			const ry = ship.position[1] - target.position[1];
+			const rz = ship.position[2] - target.position[2];
+			const rlen = Math.hypot(rx, ry, rz);
+			if (rlen > 1e-6) {
+				vec3.set(dir, rx / rlen, ry / rlen, rz / rlen);
+			}
+		}
+
+		// Set ship world position to surface point along dir
+		ship.position[0] = target.position[0] + dir[0] * desiredR;
+		ship.position[1] = target.position[1] + dir[1] * desiredR;
+		ship.position[2] = target.position[2] + dir[2] * desiredR;
+
+		// Match target body's tangential/orbital velocity at that latitude to avoid immediate drift
+		ship.velocity[0] = target.velocity[0];
+		ship.velocity[1] = target.velocity[1];
+		ship.velocity[2] = target.velocity[2];
+
+		// Orient ship: up along +dir (away from center), forward roughly eastward
+		const up = vec3.clone(dir);
+		vec3.normalize(up, up);
+		// Choose an arbitrary world reference to build a right/forward that is not colinear with up
+		const worldRef = Math.abs(up[1]) > 0.9 ? vec3.fromValues(1, 0, 0) : vec3.fromValues(0, 1, 0);
+		const right = vec3.create();
+		vec3.normalize(right, vec3.cross(right, worldRef, up));
+		const forward = vec3.create();
+		vec3.normalize(forward, vec3.cross(forward, up, right));
+
+		// Build quaternion that maps base axes to desired axes (base forward -Z, up +Y)
+		const m00 = right[0], m01 = up[0], m02 = forward[0];
+		const m10 = right[1], m11 = up[1], m12 = forward[1];
+		const m20 = right[2], m21 = up[2], m22 = forward[2];
+		// Convert 3x3 to quaternion
+		const t = m00 + m11 + m22;
+		const q = quat.create();
+		if (t > 0) {
+			let s = Math.sqrt(t + 1.0) * 2.0; // s = 4 * qw
+			q[3] = 0.25 * s;
+			q[0] = (m21 - m12) / s;
+			q[1] = (m02 - m20) / s;
+			q[2] = (m10 - m01) / s;
+		} else if ((m00 > m11) && (m00 > m22)) {
+			let s = Math.sqrt(1.0 + m00 - m11 - m22) * 2.0; // s = 4 * qx
+			q[3] = (m21 - m12) / s;
+			q[0] = 0.25 * s;
+			q[1] = (m01 + m10) / s;
+			q[2] = (m02 + m20) / s;
+		} else if (m11 > m22) {
+			let s = Math.sqrt(1.0 + m11 - m00 - m22) * 2.0; // s = 4 * qy
+			q[3] = (m02 - m20) / s;
+			q[0] = (m01 + m10) / s;
+			q[1] = 0.25 * s;
+			q[2] = (m12 + m21) / s;
+		} else {
+			let s = Math.sqrt(1.0 + m22 - m00 - m11) * 2.0; // s = 4 * qz
+			q[3] = (m10 - m01) / s;
+			q[0] = (m02 + m20) / s;
+			q[1] = (m12 + m21) / s;
+			q[2] = 0.25 * s;
+		}
+		quat.normalize(q, q);
+		ship.orientation = [q[0], q[1], q[2], q[3]];
 	}
 
 	public setTimeScale(scale: number): void {

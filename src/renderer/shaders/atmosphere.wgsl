@@ -1,4 +1,4 @@
-const ATMOSPHERE_RADIUS_SCALE: f32 = 1.01;
+const ATMOSPHERE_RADIUS_SCALE: f32 = 1.02;
 const PI: f32 = 3.1415926535;
 
 struct AtmosphereParams {
@@ -17,7 +17,7 @@ fn get_earth_atmosphere() -> AtmosphereParams {
         6371.0 * ATMOSPHERE_RADIUS_SCALE,
         8.5,
         1.2,
-        vec3<f32>(5.802e-3, 9.558e-3, 33.1e-3),
+        vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6),
         vec3<f32>(3.996e-3),
         0.8
     );
@@ -104,16 +104,18 @@ fn get_sky_color(ray: Ray, planet_center_world: vec3<f32>, planet_radius_scaled:
         let scattering_coefficients = params.beta_rayleigh * density_rayleigh + params.beta_mie * density_mie;
         let optical_depth_to_sun = get_optical_depth(p_sample, light_dir, params, tier_scale, planet_radius_scaled, atmosphere_radius_scaled);
         let sun_transmittance = exp(-optical_depth_to_sun);
+        // Smoothly suppress scattering on the night side
+        let day_night_falloff = smoothstep(-0.1, 0.1, dot(normalize(p_sample), light_dir));
         let mu = dot(ray.direction, light_dir);
         let phase_rayleigh = 3.0 / (16.0 * PI) * (1.0 + mu * mu);
         let g = params.g_mie; let g2 = g * g;
         let phase_mie = (3.0 * (1.0 - g*g)) / (8.0 * PI * (2.0 + g*g)) * (1.0 + mu*mu) / max(1e-6, pow(1.0 + g*g - 2.0*g*mu, 1.5));
         let in_scatter = (params.beta_rayleigh * density_rayleigh * phase_rayleigh) + (params.beta_mie * density_mie * phase_mie);
-        scattered_light += transmittance * in_scatter * sun_transmittance * step_size_world;
+        scattered_light += transmittance * in_scatter * sun_transmittance * day_night_falloff * step_size_world;
         transmittance *= exp(-scattering_coefficients * step_size_world);
     }
     
-    let final_color = scattered_light * 8.0 * scene.dominant_light_color_and_debug.xyz;
+    let final_color = scattered_light * 20.0 * scene.dominant_light_color_and_debug.xyz;
     let brightness = dot(final_color, vec3<f32>(0.2126, 0.7152, 0.0722));
     let alpha = 1.0 - exp(-brightness * 2.0);
     return AtmosphereOutput(final_color, transmittance, alpha);

@@ -96,14 +96,28 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
     let inter_body_shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), rec.object_index);
     if (inter_body_shadow_rec.hit && dot(inter_body_shadow_rec.emissive, inter_body_shadow_rec.emissive) < 0.1) { shadow_multiplier = 0.0; }
 
-    let diffuse = max(0.0, dot(surface_normal, light_dir_to_source));
-    let half_vec = normalize(light_dir_to_source + view_dir);
-    let specular = pow(max(0.0, dot(surface_normal, half_vec)), 64.0) * select(0.1, 1.0, is_ocean);
-    // Ambient tied to atmosphere presence (albedo_and_atmos_flag.w)
-    let has_atmosphere = sphere.albedo_and_atmos_flag.w > 0.5;
-    let ambient = select(0.0, 0.00, has_atmosphere);
-    let lit_color = (surface_albedo * (diffuse + ambient) + specular) * shadow_multiplier;
-    return lit_color * scene.dominant_light_color_and_debug.xyz;
+	// Sunlight transmittance through atmosphere to the surface point
+	var sun_color = scene.dominant_light_color_and_debug.xyz;
+	let has_atmosphere = sphere.albedo_and_atmos_flag.w > 0.5;
+	if (has_atmosphere) {
+		let atmos_params = get_earth_atmosphere();
+		let tier_scale = scene.tier_scale_and_pad.x;
+		let planet_radius_scaled = sphere.terrain_params.x;
+		let atmos_radius_scaled = planet_radius_scaled * ATMOSPHERE_RADIUS_SCALE;
+		let p_sample = rec.p - sphere.pos_and_radius.xyz;
+		let optical_depth_to_sun = get_optical_depth(p_sample, light_dir_to_source, atmos_params, tier_scale, planet_radius_scaled, atmos_radius_scaled);
+		let sun_transmittance = exp(-optical_depth_to_sun);
+		sun_color *= sun_transmittance;
+	}
+
+	let diffuse = max(0.0, dot(surface_normal, light_dir_to_source));
+	let half_vec = normalize(light_dir_to_source + view_dir);
+	let specular = pow(max(0.0, dot(surface_normal, half_vec)), 64.0) * select(0.1, 1.0, is_ocean);
+	let ambient = select(0.0, 0.02, has_atmosphere);
+	let diffuse_term = surface_albedo * diffuse;
+	let specular_term = specular;
+	let lit_color = (diffuse_term * sun_color + ambient * surface_albedo + specular_term * sun_color) * shadow_multiplier;
+	return lit_color;
 }
 
 struct ComputeParams { bodyCount: u32 };
@@ -155,7 +169,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 			for (var i = 0u; i < params.bodyCount; i = i + 1u) {
 				let atmos_sphere = spheres[i];
 				if (atmos_sphere.albedo_and_atmos_flag.w > 0.5) {
-					let atmos = get_sky_color(ray, atmos_sphere.pos_and_radius.xyz, atmos_sphere.terrain_params.x, -normalize(scene.dominant_light_direction.xyz), scene, rec.t);
+					let max_dist_for_atmos = select(rec.t, INFINITY, i == rec.object_index);
+					let atmos = get_sky_color(ray, atmos_sphere.pos_and_radius.xyz, atmos_sphere.terrain_params.x, -normalize(scene.dominant_light_direction.xyz), scene, max_dist_for_atmos);
 					total_in_scattering += atmos.in_scattering;
 					total_transmittance *= atmos.transmittance;
 				}

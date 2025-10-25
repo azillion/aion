@@ -28,6 +28,15 @@ export class UI {
                 this.authority.autoLand(targetId);
             }
         },
+        'Teleport to Surface': async () => {
+            const cam = this.cameraManager.getCamera();
+            const targetId = cam.focusBodyId;
+            if (targetId && targetId !== 'player-ship') {
+                this.authority.teleportToSurface(targetId);
+                this.state.cameraMode = CameraMode.SHIP_RELATIVE;
+                cam.pendingFrame = true;
+            }
+        },
         'Add Asteroid': () => this.addAsteroid(),
         'Warp x1': () => this.setWarp(1),
         'Warp x100': () => this.setWarp(100),
@@ -72,6 +81,7 @@ export class UI {
         this._createSceneControls();
 
         this.gui.add(this.settings, 'Auto Land');
+        this.gui.add(this.settings, 'Teleport to Surface');
 
         this.gui.add(this.settings, 'Add Asteroid');
 

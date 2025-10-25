@@ -30,4 +30,11 @@ export interface Authority {
 	 * If targetBodyId is null or invalid, the call is ignored.
 	 */
 	autoLand(targetBodyId: string | null): void;
+
+    /**
+     * Instantly moves the player ship to just above the surface of the target body
+     * and orients the ship so that its up vector matches the local horizon normal.
+     * If targetBodyId is null or invalid, the call is ignored.
+     */
+    teleportToSurface(targetBodyId: string | null): void;
 }
