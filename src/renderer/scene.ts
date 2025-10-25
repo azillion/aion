@@ -148,10 +148,8 @@ export class Scene {
 
   private serializeSystemState(bodies: Body[]) {
     const sphereData = new Float32Array(bodies.length * FLOATS_PER_SPHERE);
-    const sphereDataU32 = new Uint32Array(sphereData.buffer);
     bodies.forEach((body, i) => {
       const f_base = i * FLOATS_PER_SPHERE;
-      const u_base = f_base;
       sphereData[f_base + 0] = body.position[0];
       sphereData[f_base + 1] = body.position[1];
       sphereData[f_base + 2] = body.position[2];
@@ -161,8 +159,8 @@ export class Scene {
       sphereData.set(body.albedo, f_base + 4); // material.albedo
       const emissive = body.emissive ?? [0, 0, 0];
       sphereData.set(emissive, f_base + 8); // material.emissive
-      sphereData[f_base + 11] = 0.0; // material.fuzziness
-      sphereData[f_base + 12] = 1.0; // material.refraction_index
+      sphereData[f_base + 11] = body.terrain ? 1.0 : 0.0; // use fuzziness as is_planet flag
+      
 
       // Planet data
       if (body.terrain) {
@@ -170,13 +168,11 @@ export class Scene {
         sphereData[f_base + 17] = body.terrain.seaLevel;    // sea_level
         sphereData[f_base + 18] = body.terrain.maxHeight;   // max_height
         sphereData[f_base + 19] = body.terrain.noiseSeed;   // seed
-        sphereDataU32[u_base + 20] = 1; // is_planet = true
       } else {
         sphereData[f_base + 16] = 0.0;
         sphereData[f_base + 17] = 0.0;
         sphereData[f_base + 18] = 0.0;
         sphereData[f_base + 19] = 0.0;
-        sphereDataU32[u_base + 20] = 0; // is_planet = false
       }
     });
     return sphereData;

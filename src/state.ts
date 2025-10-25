@@ -12,6 +12,7 @@ export enum CameraMode {
 export class AppState {
   public cameraMode: CameraMode = CameraMode.SHIP_RELATIVE;
   public showOrbits: boolean = false;
+  public showAtmosphere: boolean = true;
   public showHUD: boolean = true;
   public playerShipId: string | null = null;
   public crtIntensity: number = 1.0;

@@ -239,17 +239,32 @@ export class Renderer {
 
         if (frameData.dominantLight && frameData.worldCameraEye) {
           const light = frameData.dominantLight;
-          const emissive = light.emissive ?? [1, 1, 1];
-          const LIGHT_INTENSITY = 30.0;
+          // For debugging: override the sun's natural color with pure white
+          const emissive: [number, number, number] = [1.0, 1.0, 1.0];
+          // Boosted intensity to make atmosphere and highlights clearly visible
+          const LIGHT_INTENSITY = 15.0;
+
+          // Compute a stable light direction relative to a reference body near the camera
+          let referenceBody = frameData.rawState.bodies.find(b => b.id === 'sol');
+          let closestDistSq = Number.POSITIVE_INFINITY;
+          for (const b of frameData.rawState.bodies) {
+            if (typeof b.mass === 'number' && b.mass >= 1e22) {
+              const dx = b.position[0] - frameData.worldCameraEye[0];
+              const dy = b.position[1] - frameData.worldCameraEye[1];
+              const dz = b.position[2] - frameData.worldCameraEye[2];
+              const d2 = dx*dx + dy*dy + dz*dz;
+              if (d2 < closestDistSq) { closestDistSq = d2; referenceBody = b; }
+            }
+          }
+          const refPos = referenceBody ? referenceBody.position : ([0,0,0] as [number, number, number]);
+          // Direction FROM sun TO reference frame origin (light travel direction)
           const lightDir: [number, number, number] = [
-            light.position[0] - frameData.worldCameraEye[0],
-            light.position[1] - frameData.worldCameraEye[1],
-            light.position[2] - frameData.worldCameraEye[2],
+            refPos[0] - light.position[0],
+            refPos[1] - light.position[1],
+            refPos[2] - light.position[2],
           ];
           const dirLen = Math.hypot(lightDir[0], lightDir[1], lightDir[2]);
-          if (dirLen > 0) {
-            lightDir[0] /= dirLen; lightDir[1] /= dirLen; lightDir[2] /= dirLen;
-          }
+          if (dirLen > 0) { lightDir[0] /= dirLen; lightDir[1] /= dirLen; lightDir[2] /= dirLen; }
 
           // Update per-tier lighting with tier scale awareness
           this.updateLightingUniforms(lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, FAR_TIER_SCALE);
@@ -321,7 +336,7 @@ export class Renderer {
     bufferData.set(finalLightColor, 4);
     bufferData[7] = debugTierView;
     bufferData[8] = tierScale;
-    bufferData[9] = 0.0;
+    bufferData[9] = this.state.showAtmosphere ? 1.0 : 0.0;
     bufferData[10] = 0.0;
     bufferData[11] = 0.0;
     this.core.device.queue.writeBuffer(this.sceneUniformBuffer, 0, bufferData);

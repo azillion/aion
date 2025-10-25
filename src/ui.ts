@@ -89,6 +89,8 @@ export class UI {
                 }
             });
 
+        this.gui.add(this.state, 'showAtmosphere').name('Show Atmosphere');
+
         this.gui.add(this.state, 'showHUD').name('Show HUD');
 
         this.gui.add(this.state, 'crtIntensity', 0.0, 1.0).name('CRT Effect');

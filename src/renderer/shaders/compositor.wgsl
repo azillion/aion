@@ -34,18 +34,17 @@ fn fragmentMain(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f3
             break;
         }
         default: {
-            let coords = vec2<i32>(floor(fragCoord.xy));
-            let depthNear = textureLoad(nearDepth, coords, 0).x;
-            if (depthNear > 0.0) {
-                final_color = textureSampleLevel(nearColor, s, uv, 0.0);
+            let near_c = textureSampleLevel(nearColor, s, uv, 0.0);
+            if (near_c.a > 0.0) {
+                final_color = near_c;
             } else {
-                let depthMid = textureLoad(midDepth, coords, 0).x;
-                if (depthMid > 0.0) {
-                    final_color = textureSampleLevel(midColor, s, uv, 0.0);
+                let mid_c = textureSampleLevel(midColor, s, uv, 0.0);
+                if (mid_c.a > 0.0) {
+                    final_color = mid_c;
                 } else {
-                    let depthFar = textureLoad(farDepth, coords, 0).x;
-                    if (depthFar > 0.0) {
-                        final_color = textureSampleLevel(farColor, s, uv, 0.0);
+                    let far_c = textureSampleLevel(farColor, s, uv, 0.0);
+                    if (far_c.a > 0.0) {
+                        final_color = far_c;
                     } else {
                         final_color = vec4<f32>(0.0, 0.0, 0.0, 1.0);
                     }

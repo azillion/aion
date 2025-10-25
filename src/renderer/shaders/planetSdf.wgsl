@@ -20,7 +20,7 @@ fn warp(p: vec3<f32>, seed: f32) -> vec3<f32> {
 fn h_noise(dir: vec3<f32>, params: TerrainUniforms, dist_to_surface: f32, base_radius: f32, camera: CameraUniforms) -> f32 {
     var h = 0.0;
     var a = 1.0;
-    var f = 2.5;
+    var f = 4.0;
     let octaves = 6; // Fixed octaves for now.
 
     var total_amplitude = 0.0;
@@ -131,13 +131,15 @@ fn ray_march(
         let p_local = p - planet_center;
         let d = dWorld(p_local, params, t, camera, scene);
 
-        if (d < 0.001 * t || d < 0.001) {
+        // Adaptive hit threshold proportional to distance marched
+        let threshold = max(0.001, 0.001 * t);
+        if (d < threshold) {
             rec.hit = true;
             rec.t = t;
             rec.p = p;
             let outward_normal = get_sdf_normal(p, planet_center, params, camera, scene);
             rec.front_face = dot(ray.direction, outward_normal) < 0.0;
-            rec.normal = select(-outward_normal, outward_normal, rec.front_face);
+            rec.normal = outward_normal;
             return rec;
         }
 
@@ -182,8 +184,8 @@ fn tex_triplanar(p: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
     return x_proj * blend.x + y_proj * blend.y + z_proj * blend.z;
 }
 
-fn get_material(p_local: vec3<f32>, normal: vec3<f32>, params: TerrainUniforms) -> Material {
-    let altitude = length(p_local) - params.base_radius;
+fn get_material(p_local: vec3<f32>, normal: vec3<f32>, params: TerrainUniforms, h_scaled: f32) -> Material {
+    let altitude = h_scaled;
     let slope = 1.0 - dot(normal, normalize(p_local));
 
     // Base material colors modulated by triplanar texture
