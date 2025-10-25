@@ -33,7 +33,7 @@ export class LocalAuthority implements Authority {
 			radius: 6371,
 			mass: 5.972e24,
 			albedo: [0.2, 0.3, 0.8],
-			terrain: { radius: 6371, seaLevel: 1.5, maxHeight: 0.0013, noiseSeed: 42.0 } as TerrainParams,
+			terrain: { radius: 6371, seaLevel: 4.0, maxHeight: 0.0013, noiseSeed: 42.0 } as TerrainParams,
 		};
 		
 		const moon_dist = 384400; // Lunar distance from Earth
@@ -262,7 +262,7 @@ export class LocalAuthority implements Authority {
 					accelerations[playerIndex][2] += acc[2];
 				}
 
-				// Auto-landing guidance: apply corrective acceleration towards surface normal and damp velocity
+				// Auto-landing guidance: brachistochrone-style bang-bang with stopping-distance logic
 				const ship = this.state.bodies[playerIndex] as Ship;
 				if (this.autoLanding.active && this.autoLanding.targetId) {
 					const target = this.state.bodies.find(b => b.id === this.autoLanding.targetId);
@@ -272,17 +272,18 @@ export class LocalAuthority implements Authority {
 						const ry = ship.position[1] - target.position[1];
 						const rz = ship.position[2] - target.position[2];
 						const r = Math.sqrt(rx*rx + ry*ry + rz*rz);
-						const nx = rx / Math.max(r, 1e-6);
-						const ny = ry / Math.max(r, 1e-6);
-						const nz = rz / Math.max(r, 1e-6);
+						const invR = 1.0 / Math.max(r, 1e-6);
+						const nx = rx * invR;
+						const ny = ry * invR;
+						const nz = rz * invR;
 
-						// Estimate safe surface radius: use terrain if present, else radius
+						// Safe surface radius: terrain-aware + buffer
 						const baseR = target.terrain ? target.terrain.radius : target.radius;
 						const maxH = target.terrain ? target.terrain.maxHeight * baseR : 0.0;
-						const safety = Math.max(0.05 * baseR, 2.0); // 5% radius or 2 km buffer
+						const safety = Math.max(0.05 * baseR, 2.0);
 						const desiredR = baseR + maxH + safety;
 
-						// Radial and tangential velocity components
+						// Relative velocity (ship wrt target)
 						const vx = ship.velocity[0] - target.velocity[0];
 						const vy = ship.velocity[1] - target.velocity[1];
 						const vz = ship.velocity[2] - target.velocity[2];
@@ -291,22 +292,44 @@ export class LocalAuthority implements Authority {
 						const vty = vy - vRad*ny;
 						const vtz = vz - vRad*nz;
 
-						// Guidance: target zero tangential, small downward vRad while above surface, zero near surface
-						const kTangential = 1e-4; // weak lateral damping
-						accelerations[playerIndex][0] += -kTangential * vtx;
-						accelerations[playerIndex][1] += -kTangential * vty;
-						accelerations[playerIndex][2] += -kTangential * vtz;
+						// Max accel capability (assume forward thrust worst-case, scale to acceleration)
+						const MAX_THRUST_ACC = 5e5 / ship.mass; // matches THRUST_FORCE above
+						const LAT_ACC = MAX_THRUST_ACC * 0.25; // lateral authority
 
-						// Radial control: PD towards desiredR
-						const dr = r - desiredR;
-						const kPos = 5e-6;
-						const kVel = 5e-4;
-						const aRad = -kPos * dr - kVel * vRad; // accelerate inward when above, brake descent near surface
-						accelerations[playerIndex][0] += aRad * nx;
-						accelerations[playerIndex][1] += aRad * ny;
-						accelerations[playerIndex][2] += aRad * nz;
+						// Damp tangential velocity with limited lateral authority
+						accelerations[playerIndex][0] += -Math.min(1.0, LAT_ACC / Math.max(1e-6, Math.hypot(vtx, vty, vtz))) * vtx;
+						accelerations[playerIndex][1] += -Math.min(1.0, LAT_ACC / Math.max(1e-6, Math.hypot(vtx, vty, vtz))) * vty;
+						accelerations[playerIndex][2] += -Math.min(1.0, LAT_ACC / Math.max(1e-6, Math.hypot(vtx, vty, vtz))) * vtz;
 
-						// Completion check: close and slow
+						// Gravity towards target (approximate) at current altitude
+						const mu = G * target.mass;
+						const gMag = mu / Math.max(r*r, 1e-6);
+						const gRad = -gMag; // along -n (towards center)
+
+						// Brachistochrone switch: accelerate inward until stopping distance equals remaining distance to the pad, then full retro to stop at desiredR
+						// stopping_distance = v^2 / (2 * a_eff)
+						const aEffBrake = MAX_THRUST_ACC; // assume we can point retrograde
+						const radialDistToGo = Math.max(0, r - desiredR);
+						const vRadAbs = Math.abs(vRad);
+						const stoppingDist = (vRadAbs * vRadAbs) / Math.max(2 * aEffBrake, 1e-6);
+						const shouldBrake = stoppingDist >= radialDistToGo * 0.98; // include a small bias to avoid overshoot
+
+						let aCmd = 0;
+						if (!shouldBrake) {
+							// Accelerate inward to make progress but cap so we don't exceed structural limits; compensate for gravity so net accel ~ MAX_THRUST_ACC
+							aCmd = -MAX_THRUST_ACC - gRad; // inward is negative along n because n is outward
+						} else {
+							// Brake: accelerate outward to null vRad at desiredR; add gravity comp so net brake equals capability
+							aCmd = MAX_THRUST_ACC - gRad; // outward positive along n
+						}
+						// Limit aCmd magnitude
+						aCmd = Math.max(-MAX_THRUST_ACC, Math.min(MAX_THRUST_ACC, aCmd));
+
+						accelerations[playerIndex][0] += aCmd * nx;
+						accelerations[playerIndex][1] += aCmd * ny;
+						accelerations[playerIndex][2] += aCmd * nz;
+
+						// Completion: above surface, nearly stationary relative to target
 						const speed = Math.sqrt(vx*vx + vy*vy + vz*vz);
 						if (r <= desiredR + 0.5 && speed < 0.01) {
 							this.autoLanding.active = false;

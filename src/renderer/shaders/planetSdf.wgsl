@@ -52,10 +52,12 @@ fn get_terrain_normal_from_heightfield(
     params: TerrainUniforms,
     dist_to_surface: f32,
     base_radius: f32,
-    camera: CameraUniforms
+    camera: CameraUniforms,
+    scene: SceneUniforms
 ) -> vec3<f32> {
     // Adaptive epsilon proportional to camera distance to avoid catastrophic cancellation
-    let eps = max(0.001, dist_to_surface * 0.0001);
+    let eps = max(0.001, dist_to_surface * 0.00001);
+    let tier_scale = scene.tier_scale_and_pad.x;
 
     var up_vec = vec3<f32>(0.0, 1.0, 0.0);
     if (abs(dot(analytic_normal, up_vec)) > 0.999) { up_vec = vec3<f32>(1.0, 0.0, 0.0); }
@@ -63,12 +65,154 @@ fn get_terrain_normal_from_heightfield(
     let bitangent = normalize(cross(analytic_normal, tangent));
 
     let h0 = h_noise(normalize(p_on_sphere - planet_center), params, dist_to_surface, base_radius, camera);
-    let h1 = h_noise(normalize(p_on_sphere + tangent * eps - planet_center), params, dist_to_surface, base_radius, camera);
-    let h2 = h_noise(normalize(p_on_sphere + bitangent * eps - planet_center), params, dist_to_surface, base_radius, camera);
+    let h1 = h_noise(normalize(p_on_sphere + tangent * eps - planet_center), params, dist_to_surface + eps, base_radius, camera);
+    let h2 = h_noise(normalize(p_on_sphere + bitangent * eps - planet_center), params, dist_to_surface + eps, base_radius, camera);
 
     let final_normal = normalize(
-        analytic_normal - tangent * (h1 - h0) / eps - bitangent * (h2 - h0) / eps
+        analytic_normal - (tangent * (h1 - h0) / eps + bitangent * (h2 - h0) / eps) * (1.0 / tier_scale)
     );
     return final_normal;
+}
+
+fn get_sdf_normal(
+    p: vec3<f32>,
+    planet_center: vec3<f32>,
+    params: TerrainUniforms,
+    camera: CameraUniforms,
+    scene: SceneUniforms
+) -> vec3<f32> {
+    let eps = 0.01;
+    let dx = vec3<f32>(eps, 0.0, 0.0);
+    let dy = vec3<f32>(0.0, eps, 0.0);
+    let dz = vec3<f32>(0.0, 0.0, eps);
+
+    let p_local = p - planet_center;
+    let dist_to_p = length(p);
+
+    let nx = dWorld(p_local + dx, params, dist_to_p, camera, scene) - dWorld(p_local - dx, params, dist_to_p, camera, scene);
+    let ny = dWorld(p_local + dy, params, dist_to_p, camera, scene) - dWorld(p_local - dy, params, dist_to_p, camera, scene);
+    let nz = dWorld(p_local + dz, params, dist_to_p, camera, scene) - dWorld(p_local - dz, params, dist_to_p, camera, scene);
+
+    return normalize(vec3<f32>(nx, ny, nz));
+}
+
+fn dWorld(
+    p_local: vec3<f32>,
+    params: TerrainUniforms,
+    dist_marched: f32,
+    camera: CameraUniforms,
+    scene: SceneUniforms
+) -> f32 {
+    let dir = normalize(p_local);
+    let tier_scale = scene.tier_scale_and_pad.x;
+    let real_dist_for_lod = dist_marched * tier_scale;
+    let h = h_noise(dir, params, real_dist_for_lod, params.base_radius, camera);
+    let h_scaled = h / tier_scale;
+    let R_scaled = params.base_radius / tier_scale;
+    let d_terrain = length(p_local) - (R_scaled + h_scaled);
+    let water_radius_scaled = (params.base_radius + params.sea_level) / tier_scale;
+    let d_ocean = length(p_local) - water_radius_scaled;
+    return min(d_terrain, d_ocean);
+}
+
+fn ray_march(
+    ray: Ray,
+    max_dist: f32,
+    planet_center: vec3<f32>,
+    params: TerrainUniforms,
+    camera: CameraUniforms,
+    scene: SceneUniforms
+) -> HitRecord {
+    var rec: HitRecord; rec.hit = false;
+    var t = 0.0;
+
+    for (var i = 0; i < 128; i = i + 1) {
+        let p = rayAt(ray, t);
+        let p_local = p - planet_center;
+        let d = dWorld(p_local, params, t, camera, scene);
+
+        if (d < 0.001 * t || d < 0.001) {
+            rec.hit = true;
+            rec.t = t;
+            rec.p = p;
+            let outward_normal = get_sdf_normal(p, planet_center, params, camera, scene);
+            rec.front_face = dot(ray.direction, outward_normal) < 0.0;
+            rec.normal = select(-outward_normal, outward_normal, rec.front_face);
+            return rec;
+        }
+
+        t = t + max(0.001, d * 0.8);
+        if (t > max_dist) { break; }
+    }
+
+    return rec;
+}
+
+
+// --- Phase 3: Shading & Materials ---
+
+struct Material {
+    albedo: vec3<f32>,
+};
+
+// Simple procedural texture returning grayscale variation
+fn tex3(p: vec3<f32>) -> vec3<f32> {
+    let scale = 0.05;
+    let n = snoise(p * scale) * 0.5 + 0.5;
+    return vec3<f32>(n);
+}
+
+// 2D variant used by triplanar projections
+fn tex2(p: vec2<f32>) -> vec3<f32> {
+    let scale = 0.05;
+    let n = snoise(vec3<f32>(p * scale, 0.0)) * 0.5 + 0.5;
+    return vec3<f32>(n);
+}
+
+// Triplanar mapping with normalized blend weights
+fn tex_triplanar(p: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    let weights = abs(normal);
+    let denom = max(1e-5, weights.x + weights.y + weights.z);
+    let blend = weights / denom;
+
+    let x_proj = tex2(p.yz);
+    let y_proj = tex2(p.xz);
+    let z_proj = tex2(p.xy);
+
+    return x_proj * blend.x + y_proj * blend.y + z_proj * blend.z;
+}
+
+fn get_material(p_local: vec3<f32>, normal: vec3<f32>, params: TerrainUniforms) -> Material {
+    let altitude = length(p_local) - params.base_radius;
+    let slope = 1.0 - dot(normal, normalize(p_local));
+
+    // Base material colors modulated by triplanar texture
+    let texval = tex_triplanar(p_local, normal);
+    let rock_color = vec3<f32>(0.5, 0.45, 0.4) * texval;
+    let ground_color = vec3<f32>(0.3, 0.4, 0.15) * texval;
+    let snow_color = vec3<f32>(0.9, 0.9, 0.95) * texval;
+
+    // Blends
+    let rock_amount = smoothstep(0.4, 0.6, slope);
+    let snow_start = params.max_height * params.base_radius * 0.6;
+    let snow_end = params.max_height * params.base_radius * 0.8;
+    let snow_amount = smoothstep(snow_start, snow_end, altitude);
+
+    var albedo = mix(ground_color, rock_color, rock_amount);
+    albedo = mix(albedo, snow_color, snow_amount);
+    return Material(albedo);
+}
+
+fn get_ocean_wave_normal(p_local: vec3<f32>, base_normal: vec3<f32>) -> vec3<f32> {
+    let wave_freq = 50.0;
+    let wave_amp = 0.01;
+    let wave_noise = snoise(p_local * wave_freq);
+    return normalize(base_normal + wave_amp * vec3<f32>(wave_noise));
+}
+
+fn get_ocean_material(p_local: vec3<f32>) -> Material {
+    // Base, unlit ocean color
+    let water_albedo = vec3<f32>(0.05, 0.15, 0.2);
+    return Material(water_albedo);
 }
 

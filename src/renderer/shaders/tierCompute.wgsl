@@ -2,6 +2,7 @@
 #include "sceneUniforms.wgsl"
 #include "noise.wgsl"
 #include "planetSdf.wgsl"
+#include "atmosphere.wgsl"
 
 const PI: f32 = 3.1415926535897932385;
 const INFINITY: f32 = 1e38;
@@ -126,7 +127,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     var rec = hit_spheres(ray, createInterval(0.001, INFINITY), 9999u);
 
     // Derive color: restore lighting with simple directional shadow
-    var pixel_color = vec3<f32>(0.0);
+    var pixel_color = get_sky_color(ray.direction);
     if (rec.hit) {
         let sphere = spheres[rec.object_index];
 
@@ -134,57 +135,135 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         if (dot(sphere.emissive_and_fuzz.xyz, sphere.emissive_and_fuzz.xyz) > 0.1) {
             pixel_color = sphere.emissive_and_fuzz.xyz;
         } else if (sphere.is_planet == 1u) {
-            // Create the params struct from the buffer data.
             let terrain_uniforms = TerrainUniforms(
                 sphere.terrain_params.x,
                 sphere.terrain_params.y,
                 sphere.terrain_params.z,
                 sphere.terrain_params.w
             );
-
-            // Calculate displacement.
             let planet_center = sphere.pos_and_radius.xyz;
-            let dir = normalize(rec.p - planet_center);
-            // Reconstruct real-world distance for LOD decisions
-            let real_dist_to_surface = rec.t * scene.tier_scale_and_pad.x;
-            let h = h_noise(dir, terrain_uniforms, real_dist_to_surface, terrain_uniforms.base_radius, camera);
-            
-            // Displace the hit point along the original analytic normal.
-            rec.p = rec.p + rec.normal * h;
+            let tier_scale = scene.tier_scale_and_pad.x;
 
-            // IMPORTANT: Update hit distance `t` for correct depth compositing.
-            rec.t = dot(rec.p - ray.origin, ray.direction);
+            let R_world = terrain_uniforms.base_radius;
+            let H_max_world = R_world * terrain_uniforms.max_height;
+            let R_scaled = R_world / tier_scale;
+            let H_max_scaled = H_max_world / tier_scale;
 
-            // Replace the analytic normal with a more accurate one.
-            rec.normal = get_terrain_normal_from_heightfield(
-                rec.p - dir * h, // original point on analytic sphere
-                planet_center,
-                rec.normal,
-                terrain_uniforms,
-                rec.t,
-                terrain_uniforms.base_radius,
-                camera
-            );
+            let dist_to_center = length(ray.origin - planet_center);
 
-            // --- Basic Lighting (using improved normal) ---
-            let light_dir = normalize(scene.dominant_light_direction.xyz);
-            let diffuse_intensity = max(dot(rec.normal, light_dir), 0.0);
-            // Shadow check (re-using the displaced point `rec.p`)
-            const SHADOW_BIAS: f32 = 0.1; // larger bias, offset along analytic normal
-            let shadow_ray = Ray(rec.p + dir * SHADOW_BIAS, light_dir);
-            let dist_to_light = 1.0e12;
-            let shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, dist_to_light), rec.object_index);
-            var shadow_multiplier = 1.0;
-            if (shadow_rec.hit && dot(shadow_rec.emissive, shadow_rec.emissive) < 0.1) {
-                shadow_multiplier = 0.0;
+            // --- HYBRID DISPATCH ---
+            if (dist_to_center < R_scaled + H_max_scaled * 5.0) {
+                // --- 3D RAY MARCHING PATH (Near Surface) ---
+                let center = sphere.pos_and_radius.xyz;
+                let radius = sphere.pos_and_radius.w * 1.1; // slightly larger bounding sphere
+                let oc = center - ray.origin;
+                let a = dot(ray.direction, ray.direction);
+                let h = dot(ray.direction, oc);
+                let c = dot(oc, oc) - radius * radius;
+                let discriminant = h * h - a * c;
+
+                if (discriminant > 0.0) {
+                    let sqrtd = sqrt(discriminant);
+                    let t_enter = (h - sqrtd) / a;
+                    let t_exit = (h + sqrtd) / a;
+                    let march_start_t = max(0.001, t_enter);
+                    let march_ray = Ray(rayAt(ray, march_start_t), ray.direction);
+                    let max_march_dist = t_exit - march_start_t;
+                    if (max_march_dist > 0.0) {
+                        var march_rec = ray_march(march_ray, max_march_dist, planet_center, terrain_uniforms, camera, scene);
+                        if (march_rec.hit) {
+                            rec = march_rec;
+                            rec.t = march_start_t + march_rec.t;
+                            rec.object_index = rec.object_index;
+
+                            // Ocean vs terrain via direct height vs sea level
+                            let p_local_hit = rec.p - planet_center;
+                            let real_dist_for_lod = rec.t * tier_scale;
+                            let h_world = h_noise(normalize(p_local_hit), terrain_uniforms, real_dist_for_lod, R_world, camera);
+                            let is_ocean = h_world < terrain_uniforms.sea_level;
+
+                            var final_albedo: vec3<f32>;
+                            var final_normal = rec.normal;
+                            if (is_ocean) {
+                                final_albedo = get_ocean_material(p_local_hit).albedo;
+                                final_normal = get_ocean_wave_normal(p_local_hit, normalize(p_local_hit));
+                            } else {
+                                final_albedo = get_material(p_local_hit, final_normal, terrain_uniforms).albedo;
+                            }
+
+                            // Unified lighting
+                            let light_dir = normalize(scene.dominant_light_direction.xyz);
+                            let diffuse_intensity = max(dot(final_normal, light_dir), 0.0);
+                            let view_dir = normalize(ray.origin - rec.p);
+                            let half_vec = normalize(light_dir - view_dir);
+                            let spec_angle = max(0.0, dot(final_normal, half_vec));
+                            let specular = pow(spec_angle, 64.0) * select(0.0, 1.0, is_ocean);
+                            const SHADOW_BIAS: f32 = 0.5;
+                            let shadow_ray = Ray(rec.p + final_normal * SHADOW_BIAS, light_dir);
+                            let shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), rec.object_index);
+                            var shadow_multiplier = 1.0;
+                            if (shadow_rec.hit && dot(shadow_rec.emissive, shadow_rec.emissive) < 0.1) {
+                                shadow_multiplier = 0.0;
+                            }
+                            let terminator_fade = smoothstep(-0.01, 0.01, dot(normalize(p_local_hit), light_dir));
+                            let ambient_light = 0.1;
+                            let final_intensity = (ambient_light + diffuse_intensity * shadow_multiplier) * terminator_fade;
+                            pixel_color = (final_albedo * final_intensity + specular) * scene.dominant_light_color_and_debug.xyz;
+                        } else {
+                            rec.hit = false; // March missed
+                        }
+                    } else {
+                        rec.hit = false; // Invalid march interval
+                    }
+                } else {
+                    rec.hit = false; // Ray missed bounding sphere
+                }
+            } else {
+                // --- RELIEF MAPPING PATH (Orbital View) ---
+                let dir = normalize(rec.p - planet_center);
+                let real_dist_to_surface = rec.t * tier_scale;
+                let h = h_noise(dir, terrain_uniforms, real_dist_to_surface, R_world, camera);
+
+                rec.p = rec.p + rec.normal * (h / tier_scale);
+                rec.t = dot(rec.p - ray.origin, ray.direction);
+                rec.normal = get_terrain_normal_from_heightfield(
+                    rec.p - dir * (h / tier_scale),
+                    planet_center,
+                    rec.normal,
+                    terrain_uniforms,
+                    rec.t,
+                    R_world,
+                    camera,
+                    scene
+                );
+
+                // Derive material albedo (terrain vs ocean)
+                let p_local_hit = rec.p - planet_center;
+                let real_dist_for_lod2 = rec.t * tier_scale;
+                let h_world2 = h_noise(normalize(p_local_hit), terrain_uniforms, real_dist_for_lod2, R_world, camera);
+                let is_ocean2 = h_world2 < terrain_uniforms.sea_level;
+
+                var final_normal2 = rec.normal;
+                var final_albedo2 = get_material(p_local_hit, final_normal2, terrain_uniforms).albedo;
+                if (is_ocean2) {
+                    final_albedo2 = vec3<f32>(0.1, 0.2, 0.5);
+                    final_normal2 = normalize(p_local_hit);
+                }
+
+                let light_dir = normalize(scene.dominant_light_direction.xyz);
+                let diffuse_intensity = max(dot(final_normal2, light_dir), 0.0);
+                const SHADOW_BIAS: f32 = 0.1;
+                let shadow_ray = Ray(rec.p + dir * SHADOW_BIAS, light_dir);
+                let shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), rec.object_index);
+                var shadow_multiplier = 1.0;
+                if (shadow_rec.hit && dot(shadow_rec.emissive, shadow_rec.emissive) < 0.1) {
+                    shadow_multiplier = 0.0;
+                }
+                let terminator_fade = smoothstep(-0.01, 0.01, dot(dir, light_dir));
+                let ambient_light = 0.1;
+                let final_intensity = (ambient_light + diffuse_intensity * shadow_multiplier) * terminator_fade;
+                pixel_color = final_albedo2 * final_intensity * scene.dominant_light_color_and_debug.xyz;
             }
-            // --- Terminator Softening ---
-            // Use smooth analytic normal ('dir') to control day/night (prevents dark-side speckles)
-            let terminator_fade = smoothstep(-0.01, 0.01, dot(dir, light_dir));
-            // Add simple ambient light so shadows are not pure black
-            let ambient_light = 0.1;
-            let final_intensity = (ambient_light + diffuse_intensity * shadow_multiplier) * terminator_fade;
-            pixel_color = rec.albedo * final_intensity * scene.dominant_light_color_and_debug.xyz;
         } else {
             // Standard non-emissive, non-planet sphere
             let light_dir = normalize(scene.dominant_light_direction.xyz);
