@@ -188,11 +188,13 @@ export class App {
           const newBody: Body = {
             ...body,
             position: [dx / MID_TIER_SCALE, dy / MID_TIER_SCALE, dz / MID_TIER_SCALE] as [number, number, number],
+            // Scale geometric radius into mid-tier local space
             radius: body.radius / MID_TIER_SCALE,
             terrain: body.terrain ? {
               ...body.terrain,
-              radius: body.terrain.radius / MID_TIER_SCALE,
-              seaLevel: body.terrain.seaLevel / MID_TIER_SCALE,
+              // Keep physical terrain parameters in world units; shaders handle tier scaling
+              radius: body.terrain.radius,
+              seaLevel: body.terrain.seaLevel,
               maxHeight: body.terrain.maxHeight,
             } : undefined,
           };
@@ -201,11 +203,13 @@ export class App {
           const newBody: Body = {
             ...body,
             position: [dx / FAR_TIER_SCALE, dy / FAR_TIER_SCALE, dz / FAR_TIER_SCALE] as [number, number, number],
+            // Scale geometric radius into far-tier local space
             radius: body.radius / FAR_TIER_SCALE,
             terrain: body.terrain ? {
               ...body.terrain,
-              radius: body.terrain.radius / FAR_TIER_SCALE,
-              seaLevel: body.terrain.seaLevel / FAR_TIER_SCALE,
+              // Keep physical terrain parameters in world units; shaders handle tier scaling
+              radius: body.terrain.radius,
+              seaLevel: body.terrain.seaLevel,
               maxHeight: body.terrain.maxHeight,
             } : undefined,
           };

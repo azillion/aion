@@ -17,7 +17,7 @@ fn warp(p: vec3<f32>, seed: f32) -> vec3<f32> {
 }
 
 // Calculates signed terrain height (km) using Fractal Brownian Motion (FBM).
-fn h_noise(dir: vec3<f32>, params: TerrainUniforms, dist_to_surface: f32, base_radius: f32, camera: CameraUniforms) -> f32 {
+fn h_noise(dir: vec3<f32>, params: TerrainUniforms, dist_to_surface: f32, base_radius: f32, camera: CameraUniforms, scene: SceneUniforms) -> f32 {
     var h = 0.0;
     var a = 1.0;
     var f = 4.0;
@@ -27,6 +27,7 @@ fn h_noise(dir: vec3<f32>, params: TerrainUniforms, dist_to_surface: f32, base_r
     for(var i = 0; i < octaves; i = i + 1) {
         // Derived LOD: stop when projected feature size < 1px (with quality factor)
         let quality_factor = 2.0;
+        // Both dist_to_surface and base_radius are in world-space kilometers; no extra scaling needed.
         if (dist_to_surface > (base_radius / f) * (camera.projection_constants.x / quality_factor)) { break; }
         let p = dir * f;
         h = h + a * snoise(p);
@@ -64,9 +65,9 @@ fn get_terrain_normal_from_heightfield(
     let tangent = normalize(cross(analytic_normal, up_vec));
     let bitangent = normalize(cross(analytic_normal, tangent));
 
-    let h0 = h_noise(normalize(p_on_sphere - planet_center), params, dist_to_surface, base_radius, camera);
-    let h1 = h_noise(normalize(p_on_sphere + tangent * eps - planet_center), params, dist_to_surface + eps, base_radius, camera);
-    let h2 = h_noise(normalize(p_on_sphere + bitangent * eps - planet_center), params, dist_to_surface + eps, base_radius, camera);
+    let h0 = h_noise(normalize(p_on_sphere - planet_center), params, dist_to_surface, base_radius, camera, scene);
+    let h1 = h_noise(normalize(p_on_sphere + tangent * eps - planet_center), params, dist_to_surface + eps, base_radius, camera, scene);
+    let h2 = h_noise(normalize(p_on_sphere + bitangent * eps - planet_center), params, dist_to_surface + eps, base_radius, camera, scene);
 
     let final_normal = normalize(
         analytic_normal - (tangent * (h1 - h0) / eps + bitangent * (h2 - h0) / eps) * (1.0 / tier_scale)
@@ -106,7 +107,7 @@ fn dWorld(
     let dir = normalize(p_local);
     let tier_scale = scene.tier_scale_and_pad.x;
     let real_dist_for_lod = dist_marched * tier_scale;
-    let h = h_noise(dir, params, real_dist_for_lod, params.base_radius, camera);
+    let h = h_noise(dir, params, real_dist_for_lod, params.base_radius, camera, scene);
     let h_scaled = h / tier_scale;
     let R_scaled = params.base_radius / tier_scale;
     let d_terrain = length(p_local) - (R_scaled + h_scaled);
