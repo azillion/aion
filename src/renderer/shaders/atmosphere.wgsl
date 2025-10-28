@@ -1,5 +1,4 @@
 const ATMOSPHERE_RADIUS_SCALE: f32 = 1.025;
-const NUM_OUT_SCATTER_SAMPLES: u32 = 8;
 const NUM_IN_SCATTER_SAMPLES: u32 = 16;
 
 struct AtmosphereParams {
@@ -22,8 +21,11 @@ fn get_earth_atmosphere() -> AtmosphereParams {
     return AtmosphereParams(
         6371.0, 6371.0 * ATMOSPHERE_RADIUS_SCALE,
         // Beta coefficients include 1/wavelength^4 dependency for Rayleigh
-        vec3<f32>(5.8e-3, 13.5e-3, 33.1e-3), 8.5,
-        vec3<f32>(2.1e-3), 1.2,
+        vec3<f32>(5.8e-3, 13.5e-3, 33.1e-3), 8.5, // h_rayleigh = 8.5km
+        // The previous beta_mie value (2.1e-3) was too high, causing excessive white
+        // haze at grazing angles (sunrise/sunset). Reducing it significantly makes the
+        // atmosphere much clearer, allowing Rayleigh's red scattering to dominate.
+        vec3<f32>(0.4e-3), 1.2, // h_mie = 1.2km
         0.76 // Positive for forward scattering
     );
 }
@@ -37,6 +39,58 @@ fn ray_sphere_intersect(r0: vec3<f32>, rd: vec3<f32>, sr: f32) -> vec2<f32> {
 }
 
 struct AtmosphereOutput { in_scattering: vec3<f32>, transmittance: vec3<f32>, alpha: f32 };
+
+// Phase 2: New self-contained analytic shader function.
+// This function replaces a costly ray-marching loop with a direct mathematical
+// approximation for the optical length of a ray traveling out to space. It is based
+// on the method described by Christian Schüler.
+fn calculate_optical_length_to_space(
+    p_start: vec3<f32>,         // Ray start point, relative to planet center (local tier units)
+    ray_dir: vec3<f32>,         // Ray direction (unit vector)
+    planet_radius: f32,         // Planet radius (local tier units)
+    atmosphere_radius: f32,     // Atmosphere radius (local tier units)
+    h_rayleigh: f32,            // Rayleigh scale height (world units, km)
+    h_mie: f32,                 // Mie scale height (world units, km)
+    tier_scale: f32             // Scale factor from local tier units to world km
+) -> vec2<f32> { // Returns optical length for (Rayleigh, Mie)
+    // 1. Find intersection of the ray with the top of the atmosphere. We only care
+    // about the exit point, which is the far intersection.
+    let t_atmos_exit = ray_sphere_intersect(p_start, ray_dir, atmosphere_radius).y;
+
+    // If the ray doesn't exit the atmosphere in the forward direction, it means we are
+    // outside and looking away, or the ray is tangent. No attenuation.
+    if (t_atmos_exit <= 0.0) {
+        return vec2<f32>(0.0);
+    }
+
+    // 2. Removed hard occlusion check to allow soft, density-based attenuation near the limb.
+    
+    // 3. Approximate the integral by taking a single sample at the midpoint of the path.
+    // This is an excellent trade-off between accuracy and performance.
+    let path_length = t_atmos_exit;
+    let p_mid = p_start + ray_dir * (path_length * 0.5);
+
+    // 4. Calculate the altitude of the midpoint. The density at this altitude will represent
+    // the average density over the entire path.
+    let h_mid_local = length(p_mid) - planet_radius;
+    var h_mid_world = h_mid_local * tier_scale; // Convert to world units for density calculation
+    // Clamp altitude to avoid underground midpoint on long grazing rays
+    h_mid_world = max(0.0, h_mid_world);
+
+    // --- Earth Curvature Correction ---
+    // Approximate Chapman function using 1 / cos(zenith_angle) to account
+    // for longer path through dense air at grazing angles.
+    let up = normalize(p_start);
+    let mu = dot(ray_dir, up);
+    let curvature_correction = 1.0 / max(mu, 0.001);
+
+    // 5. Calculate the optical length for Rayleigh and Mie scattering.
+    // Optical Length = Average Density * Path Length. Density is unitless, path length is in tier units.
+    let optical_length_r = exp(-h_mid_world / h_rayleigh) * path_length * curvature_correction;
+    let optical_length_m = exp(-h_mid_world / h_mie) * path_length * curvature_correction;
+
+    return vec2<f32>(optical_length_r, optical_length_m);
+}
 
 fn get_sky_color(
     ray: Ray,
@@ -69,16 +123,14 @@ fn get_sky_color(
 
     // --- 2. Sampling ---
     // Fixed sample counts for stability and quality.
-    let num_in_scatter_samples = 16;
-    let num_out_scatter_samples = 8;
 
     // --- 3. Initialize accumulators ---
-    let step_size = ray_length / f32(num_in_scatter_samples);
+    let step_size = ray_length / f32(NUM_IN_SCATTER_SAMPLES);
     var transmittance = vec3<f32>(1.0);
     var scattered_light = vec3<f32>(0.0);
 
     // --- 4. March along the view ray ---
-    for (var i = 0; i < num_in_scatter_samples; i = i + 1) {
+    for (var i = 0u; i < NUM_IN_SCATTER_SAMPLES; i = i + 1u) {
         let p_sample = r0 + rd * (t_start + (f32(i) + 0.5) * step_size);
         if (length(p_sample) < planet_radius_local) { continue; }
         // Numerically stable altitude: (|p|^2 - R^2) / (2R), with |p| in world units.
@@ -102,28 +154,22 @@ fn get_sky_color(
 
             // Only if NOT in a global shadow, do we calculate atmospheric scattering.
             if (!eclipse_rec.hit || dot(eclipse_rec.emissive, eclipse_rec.emissive) > 0.1) {
-                // II. Not eclipsed. Now check for self-shadowing and calculate out-scattering.
-                // Compute transmittance only if the sun ray does NOT intersect the planet.
-                let t_to_planet_surface = ray_sphere_intersect(p_sample, light_dir, planet_radius_local).x;
-                if (t_to_planet_surface < 0.0 || t_to_planet_surface > 1.0e4) {
-                    let t_sun_atmos = ray_sphere_intersect(p_sample, light_dir, atmosphere_radius_local).y;
-                    var optical_depth_sun = vec3<f32>(0.0);
-                    if (t_sun_atmos > 0.0) {
-                        let sun_step_size = t_sun_atmos / f32(num_out_scatter_samples);
-                        for (var j = 0; j < num_out_scatter_samples; j = j + 1) {
-                            let p_sun_sample = p_sample + light_dir * (f32(j) + 0.5) * sun_step_size;
-                            // Stable altitude for sun-ray samples as well
-                            let p_sun_world_sq = dot(p_sun_sample, p_sun_sample) * tier_scale * tier_scale;
-                            let h_sun = (p_sun_world_sq - physical_radius_world*physical_radius_world) / (2.0 * physical_radius_world);
-                            if (h_sun > 0.0) {
-                                optical_depth_sun += (
-                                    params.beta_rayleigh * exp(-h_sun / params.h_rayleigh) +
-                                    params.beta_mie * exp(-h_sun / params.h_mie)
-                                ) * sun_step_size * tier_scale;
-                            }
-                        }
-                    }
-                    sun_transmittance = exp(-optical_depth_sun);
+                // Phase 3: Integrate the analytic function.
+                // Replace the expensive inner ray-marching loop for sun transmittance
+                // with a single call to our new, fast analytic function.
+                let optical_lengths = calculate_optical_length_to_space(
+                    p_sample, light_dir, 
+                    planet_radius_local,
+                    atmosphere_radius_local,
+                    params.h_rayleigh, params.h_mie,
+                    tier_scale
+                );
+                
+                // Check for occlusion (indicated by a large optical length).
+                if (optical_lengths.x < 1e9) {
+                    let optical_depth_sun = params.beta_rayleigh * optical_lengths.x + params.beta_mie * optical_lengths.y;
+                    // The path length is in tier units, so we must scale by tier_scale to get world optical depth.
+                    sun_transmittance = exp(-optical_depth_sun * tier_scale);
                 }
             }
 
@@ -143,11 +189,4 @@ fn get_sky_color(
     let final_color = scattered_light * E_sun * light_color;
     
     return AtmosphereOutput(final_color, transmittance, 1.0 - transmittance.g);
-}
-
-// --- Dummy functions for compatibility with tierCompute.wgsl ---
-// These ensure the shader compiles but are not used by the main logic.
-struct AtmosphereParamsDummy { dummy: f32 };
-fn get_optical_length(p_start: vec3<f32>, ray_dir: vec3<f32>, length: f32, params_dummy: AtmosphereParams, tier_scale: f32) -> vec2<f32> {
-    return vec2<f32>(0.0);
 }

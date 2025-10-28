@@ -122,24 +122,44 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
 	// Sunlight transmittance through atmosphere to the surface point
 	var sun_color = light_color;
 	let has_atmosphere = sphere.albedo_and_atmos_flag.w > 0.5;
+	var lit_color = surface_albedo * select(0.0, 0.02, has_atmosphere); // Start with a minimal non-atmospheric ambient
+
 	if (has_atmosphere) {
-		let atmos_out = get_sky_color(
-			Ray(rec.p - sphere.pos_and_radius.xyz, light_dir_to_source),
+		// --- UNIFIED LIGHTING MODEL ---
+		// The surface is ALWAYS lit by the sky. This is our base ambient term.
+		let zenith_dir = surface_normal;
+		let sky_ambient = get_sky_color(
+			Ray(rec.p - sphere.pos_and_radius.xyz, zenith_dir),
 			sphere.pos_and_radius.w, sphere.terrain_params.x,
-			sphere.pos_and_radius.xyz,
-			light_dir_to_source, vec3<f32>(1.0), scene, INFINITY,
+			sphere.pos_and_radius.xyz, light_dir_to_source, light_color, scene, INFINITY,
 			&shadow_casters, shadowParams, self_pos_world
 		);
-		sun_color *= atmos_out.transmittance;
-	}
+		lit_color = surface_albedo * sky_ambient.in_scattering;
 
-	let diffuse = max(0.0, dot(surface_normal, light_dir_to_source));
-	let half_vec = normalize(light_dir_to_source + view_dir);
-	let specular = pow(max(0.0, dot(surface_normal, half_vec)), 64.0) * select(0.1, 1.0, is_ocean);
-	let ambient = select(0.0, 0.02, has_atmosphere);
-	let diffuse_term = surface_albedo * diffuse;
-    let specular_term = specular * sun_color;
-	let lit_color = (diffuse_term * sun_color + ambient * surface_albedo + specular_term * sun_color) * shadow_multiplier;
+		// The surface is ADDITIONALLY lit by the sun if it's above the horizon.
+		let dot_nl = dot(surface_normal, light_dir_to_source);
+		if (dot_nl > 0.0 && shadow_multiplier > 0.01) {
+			// Calculate transmittance for the direct sunbeam
+			 let params = get_earth_atmosphere();
+			 let tier_scale = scene.tier_scale_and_pad.x;
+			 let p_start_local = rec.p - sphere.pos_and_radius.xyz;
+			 let optical_lengths = calculate_optical_length_to_space(
+			 	 p_start_local, light_dir_to_source,
+			 	 sphere.pos_and_radius.w, sphere.pos_and_radius.w * ATMOSPHERE_RADIUS_SCALE,
+			 	 params.h_rayleigh, params.h_mie, tier_scale
+			 );
+			 let optical_depth = (params.beta_rayleigh * optical_lengths.x + params.beta_mie * optical_lengths.y) * tier_scale;
+			 let transmittance = exp(-optical_depth);
+			 let final_sun_color = light_color * transmittance;
+
+			// Add diffuse and specular from the direct sunbeam
+			 let diffuse_term = surface_albedo * dot_nl * final_sun_color;
+			 let half_vec = normalize(light_dir_to_source + view_dir);
+			 let specular_term = pow(max(0.0, dot(surface_normal, half_vec)), 64.0) * select(0.1, 1.0, is_ocean) * final_sun_color;
+			 lit_color += (diffuse_term + specular_term);
+		}
+	}
+	
 	return lit_color;
 }
 
