@@ -71,49 +71,53 @@ fn getRay(camera: Camera, s: f32, t: f32) -> Ray {
 }
 
 fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUniforms, camera: CameraUniforms) -> vec3<f32> {
-    let terrain_uniforms = TerrainUniforms( sphere.terrain_params.x, sphere.terrain_params.y, sphere.terrain_params.z, sphere.terrain_params.w );
-    let tier_scale = scene.tier_scale_and_pad.x;
-    let R_world = terrain_uniforms.base_radius;
-    let p_local_hit = rec.p - sphere.pos_and_radius.xyz;
-	let h_world = h_noise(normalize(p_local_hit), terrain_uniforms, rec.t * tier_scale, R_world, camera, scene);
-    let is_ocean = h_world < terrain_uniforms.sea_level;
+    // let terrain_uniforms = TerrainUniforms( sphere.terrain_params.x, sphere.terrain_params.y, sphere.terrain_params.z, sphere.terrain_params.w );
+    // let tier_scale = scene.tier_scale_and_pad.x;
+    // let R_world = terrain_uniforms.base_radius;
+	// // Use a consistent LOD distance per-planet for this frame to avoid discontinuities
+	// let dist_to_center = length(sphere.pos_and_radius.xyz);
+	// let lod_dist_world = dist_to_center * tier_scale;
+    // let p_local_hit = rec.p - sphere.pos_and_radius.xyz;
+	// let h_world = h_noise(normalize(p_local_hit), terrain_uniforms, lod_dist_world, R_world, camera, scene);
+    // let is_ocean = h_world < terrain_uniforms.sea_level;
 
-    var surface_albedo: vec3<f32>; var surface_normal: vec3<f32>;
-    if (is_ocean) {
-        surface_albedo = get_ocean_material(p_local_hit).albedo;
-        surface_normal = get_ocean_wave_normal(p_local_hit, normalize(p_local_hit));
-    } else {
-        surface_normal = get_terrain_normal_from_heightfield( rec.p, sphere.pos_and_radius.xyz, rec.normal, terrain_uniforms, rec.t * tier_scale, R_world, camera, scene );
-        if (terrain_uniforms.seed == 1337.0) {
-            surface_albedo = get_lunar_material(p_local_hit, surface_normal).albedo;
-        } else {
-            surface_albedo = get_material(p_local_hit, surface_normal, terrain_uniforms, h_world).albedo;
-        }
-    }
+    // var surface_albedo: vec3<f32>; var surface_normal: vec3<f32>;
+    // if (is_ocean) {
+    //     surface_albedo = get_ocean_material(p_local_hit).albedo;
+    //     surface_normal = get_ocean_wave_normal(p_local_hit, normalize(p_local_hit));
+    // } else {
+	// 	surface_normal = get_terrain_normal_from_heightfield( rec.p, sphere.pos_and_radius.xyz, rec.normal, terrain_uniforms, lod_dist_world, R_world, camera, scene );
+    //     if (terrain_uniforms.seed == 1337.0) {
+    //         surface_albedo = get_lunar_material(p_local_hit, surface_normal).albedo;
+    //     } else {
+    //         surface_albedo = get_material(p_local_hit, surface_normal, terrain_uniforms, h_world).albedo;
+    //     }
+    // }
+
+        // --- DEBUG: Simplified shading for a smooth sphere to isolate atmosphere issues ---
+        let surface_albedo = sphere.albedo_and_atmos_flag.xyz;
+        let surface_normal = rec.normal;
+        let is_ocean = sphere.terrain_params.y > 0.0; // Simple ocean check based on sea level
 
     let light_dir_to_source = -normalize(scene.dominant_light_direction.xyz);
     let light_color = scene.dominant_light_color_and_debug.xyz;
     let view_dir = normalize(ray.origin - rec.p);
     var shadow_multiplier = 1.0;
     let shadow_ray = Ray(rec.p + surface_normal * 0.02, light_dir_to_source);
-    let inter_body_shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), rec.object_index);
+	let inter_body_shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), 9999u);
     if (inter_body_shadow_rec.hit && dot(inter_body_shadow_rec.emissive, inter_body_shadow_rec.emissive) < 0.1) { shadow_multiplier = 0.0; }
 
 	// Sunlight transmittance through atmosphere to the surface point
-    var sun_color = light_color;
-    let has_atmosphere = sphere.albedo_and_atmos_flag.w > 0.5;
-    if (has_atmosphere) {
-        let atmos_params = get_earth_atmosphere();
-        let tier_scale = scene.tier_scale_and_pad.x;
-        // Use the already-scaled geometric radius for geometric checks
-        let planet_radius_local = sphere.pos_and_radius.w;
-        let atmos_radius_local = planet_radius_local * ATMOSPHERE_RADIUS_SCALE;
-        let p_sample = rec.p - sphere.pos_and_radius.xyz;
-        let physical_radius = sphere.terrain_params.x;
-        let optical_depth_to_sun = get_optical_depth(p_sample, light_dir_to_source, atmos_params, tier_scale, planet_radius_local, atmos_radius_local, physical_radius);
-        let sun_transmittance = exp(-optical_depth_to_sun);
-        sun_color *= sun_transmittance;
-    }
+	var sun_color = light_color;
+	let has_atmosphere = sphere.albedo_and_atmos_flag.w > 0.5;
+	if (has_atmosphere) {
+		let atmos_out = get_sky_color(
+			Ray(rec.p - sphere.pos_and_radius.xyz, light_dir_to_source),
+			sphere.pos_and_radius.w, sphere.terrain_params.x,
+			light_dir_to_source, vec3<f32>(1.0), scene, INFINITY
+		);
+		sun_color *= atmos_out.transmittance;
+	}
 
 	let diffuse = max(0.0, dot(surface_normal, light_dir_to_source));
 	let half_vec = normalize(light_dir_to_source + view_dir);
@@ -174,24 +178,73 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
 	let atmosphereEnabled = scene.tier_scale_and_pad.y > 0.5;
 
-	// --- NEW, PHYSICALLY-BASED RENDER LOOP ---
+	// --- NEW, HIGH-PERFORMANCE RENDER LOOP ---
 
-	// 1. Find the first solid object intersection to determine the ray's maximum travel distance.
-	let rec = hit_spheres(ray, createInterval(0.001, INFINITY), 9999u);
+	// 1. BROAD PHASE: Find the closest analytical sphere hit. This is very fast.
+	var rec = hit_spheres(ray, createInterval(0.001, INFINITY), 9999u);
+
+	// 2. NARROW PHASE (CONDITIONAL): If the closest hit was a terrain planet,
+	//    refine the intersection with the expensive ray march.
+	// if (rec.hit) {
+	// 	let hit_sphere = spheres[rec.object_index];
+	// 	if (hit_sphere.emissive_and_terrain_flag.w > 0.5 && atmosphereEnabled) {
+	// 		// This is a terrain planet, so we must refine the hit.
+	// 		let initial_hit_index = rec.object_index;
+	// 		let terrain_params = TerrainUniforms(hit_sphere.terrain_params.x, hit_sphere.terrain_params.y, hit_sphere.terrain_params.z, hit_sphere.terrain_params.w);
+			
+	// 		// We use the analytical hit distance as a hint for the max distance to march.
+	// 		let max_march_dist = rec.t + hit_sphere.pos_and_radius.w * 2.0;
+	// 		let terrain_rec = ray_march(ray, max_march_dist, hit_sphere.pos_and_radius.xyz, terrain_params, camera, scene, rec.t);
+
+	// 		if (terrain_rec.hit) {
+	// 			rec = terrain_rec;
+	// 			rec.object_index = initial_hit_index; // Restore the object index!
+	// 		} else {
+	// 			// The ray hit the bounding sphere but missed the terrain (e.g., grazed the edge).
+	// 			// Treat it as a miss.
+	// 			rec.hit = false;
+	// 		}
+	// 	}
+	// }
+
+	var final_pixel_color = vec3<f32>(0.0);
+	var final_alpha = 0.0;
+
 	let max_dist = select(INFINITY, rec.t, rec.hit);
 
-	// 2. Calculate the color of the object at the end of the ray. Default to black space.
-	var surface_color = vec3<f32>(0.0);
+	var total_transmittance = vec3<f32>(1.0);
+	var total_in_scattering = vec3<f32>(0.0);
+
+	if (atmosphereEnabled) {
+		for (var i = 0u; i < params.bodyCount; i = i + 1u) {
+			if (rec.hit && rec.object_index == i) { continue; }
+			let atmos_sphere = spheres[i];
+			if (atmos_sphere.albedo_and_atmos_flag.w > 0.5) {
+				let atmos = get_sky_color(
+					Ray(ray.origin - atmos_sphere.pos_and_radius.xyz, ray.direction),
+					atmos_sphere.pos_and_radius.w, atmos_sphere.terrain_params.x,
+					-normalize(scene.dominant_light_direction.xyz), scene.dominant_light_color_and_debug.xyz,
+					scene, max_dist
+				);
+				total_in_scattering += atmos.in_scattering * total_transmittance;
+				total_transmittance *= atmos.transmittance;
+				final_alpha = max(final_alpha, atmos.alpha);
+			}
+		}
+	}
+
 	if (rec.hit) {
 		let hit_sphere = spheres[rec.object_index];
+		var surface_color = vec3<f32>(0.0);
+
 		if (dot(hit_sphere.emissive_and_terrain_flag.xyz, hit_sphere.emissive_and_terrain_flag.xyz) > 0.1) {
-			// It's an emissive body like the Sun.
 			surface_color = hit_sphere.emissive_and_terrain_flag.xyz;
 		} else if (atmosphereEnabled && hit_sphere.albedo_and_atmos_flag.w > 0.5) {
-			// It's a planet with an atmosphere; calculate its lit surface color.
+			// This is a planet with terrain, use the corrected function.
+			// Note: hit_sphere.albedo_and_atmos_flag.w is the atmosphere flag.
+			// hit_sphere.emissive_and_terrain_flag.w is the terrain flag.
 			surface_color = get_lit_planet_color(rec, hit_sphere, ray, scene, camera);
-		} else {
-			// It's a non-atmospheric body like the Moon.
+		} else { // Moon or other simple sphere
 			let light_dir_to_source = -normalize(scene.dominant_light_direction.xyz);
 			let light_color = scene.dominant_light_color_and_debug.xyz;
 			let diffuse_intensity = max(dot(rec.normal, light_dir_to_source), 0.0);
@@ -199,39 +252,18 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 			let shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), rec.object_index);
 			var shadow_multiplier = 1.0;
 			if (shadow_rec.hit && dot(shadow_rec.emissive, shadow_rec.emissive) < 0.1) { shadow_multiplier = 0.0; }
-			let ambient_light = 0.01;
+			let ambient_light = 0.00;
 			let final_intensity = ambient_light + diffuse_intensity * shadow_multiplier;
 			surface_color = hit_sphere.albedo_and_atmos_flag.xyz * final_intensity * light_color;
 		}
+		
+		final_pixel_color = surface_color * total_transmittance + total_in_scattering;
+		final_alpha = 1.0;
+	} else {
+		final_pixel_color = total_in_scattering;
 	}
 
-    // 3. Accumulate atmospheric effects (scattering and transmittance) along the path to the object (or infinity).
-    var total_transmittance = vec3<f32>(1.0);
-    var total_in_scattering = vec3<f32>(0.0);
-    var final_alpha = 0.0;
-
-    if (atmosphereEnabled) {
-        for (var i = 0u; i < params.bodyCount; i = i + 1u) {
-            let atmos_sphere = spheres[i];
-            if (atmos_sphere.albedo_and_atmos_flag.w > 0.5) {
-                let atmos = get_sky_color(
-                    Ray(ray.origin - atmos_sphere.pos_and_radius.xyz, ray.direction),
-                    atmos_sphere.pos_and_radius.w,
-                    atmos_sphere.terrain_params.x,
-                    -normalize(scene.dominant_light_direction.xyz),
-                    scene.dominant_light_color_and_debug.xyz,
-                    scene,
-                    max_dist
-                );
-                total_in_scattering += atmos.in_scattering * total_transmittance;
-                total_transmittance *= atmos.transmittance;
-                final_alpha = max(final_alpha, atmos.alpha);
-            }
-        }
-    }
-
-	let final_pixel_color = surface_color * total_transmittance + total_in_scattering;
 	let hit_dist = select(1.0e10, rec.t, rec.hit);
 	textureStore(depthOut, coords_i, vec4<f32>(hit_dist, 0.0, 0.0, 0.0));
-	textureStore(output, coords_i, vec4<f32>(final_pixel_color, select(final_alpha, 1.0, rec.hit)));
+	textureStore(output, coords_i, vec4<f32>(final_pixel_color, final_alpha));
 }

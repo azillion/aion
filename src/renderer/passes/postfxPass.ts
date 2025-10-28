@@ -74,7 +74,7 @@ export class PostFXPass implements IRenderPass {
     return this.sampler;
   }
 
-  public run(encoder: GPUCommandEncoder, context: RenderContext, theme: Theme, bodies: Body[]): void {
+  public run(encoder: GPUCommandEncoder, context: RenderContext, _theme: Theme, bodies: Body[]): void {
     const { core, destinationTexture, sourceTexture } = context;
 
     this.updateTargetInfo(context, bodies);
@@ -135,12 +135,14 @@ export class PostFXPass implements IRenderPass {
     const u32 = new Uint32Array(buf);
     const f32 = new Float32Array(buf);
 
-    u32[0] = bodies.length;
+    const maxTargets = 16;
+    const clampedCount = Math.min(bodies.length, maxTargets);
+    u32[0] = clampedCount;
     f32[1] = 20.0; // targetRadiusPx
     f32[2] = textureSize.width;
     f32[3] = textureSize.height;
 
-    for (let i = 0; i < bodies.length; i++) {
+    for (let i = 0; i < clampedCount; i++) {
         const b = bodies[i];
         const worldPos: Vec3 = [
             b.position[0] * systemScale,

@@ -18,30 +18,31 @@ fn warp(p: vec3<f32>, seed: f32) -> vec3<f32> {
 
 // Calculates signed terrain height (km) using Fractal Brownian Motion (FBM).
 fn h_noise(dir: vec3<f32>, params: TerrainUniforms, dist_to_surface: f32, base_radius: f32, camera: CameraUniforms, scene: SceneUniforms) -> f32 {
-    var h = 0.0;
-    var a = 1.0;
-    var f = 4.0;
-    let octaves = 6; // Fixed octaves for now.
+    // var h = 0.0;
+    // var a = 1.0;
+    // var f = 4.0;
+    // let octaves = 6; // Fixed octaves for now.
 
-    var total_amplitude = 0.0;
-    for(var i = 0; i < octaves; i = i + 1) {
-        // Derived LOD: stop when projected feature size < quality factor (pixels)
-        let quality_factor = 2.0;
-        let feature_size_world = base_radius / f; // km
-        let projected_size_pixels = (feature_size_world / max(1e-6, dist_to_surface)) * camera.projection_constants.x;
-        if (projected_size_pixels < quality_factor) { break; }
-        let p = dir * f;
-        h = h + a * snoise(p);
-        total_amplitude = total_amplitude + a;
-        a = a * 0.5;
-        f = f * 2.0;
-    }
+    // var total_amplitude = 0.0;
+    // for(var i = 0; i < octaves; i = i + 1) {
+    //     // Derived LOD: stop when projected feature size < quality factor (pixels)
+    //     let quality_factor = 2.0;
+    //     let feature_size_world = base_radius / f; // km
+    //     let projected_size_pixels = (feature_size_world / max(1e-6, dist_to_surface)) * camera.projection_constants.x;
+    //     if (projected_size_pixels < quality_factor) { break; }
+    //     let p = dir * f;
+    //     h = h + a * snoise(p);
+    //     total_amplitude = total_amplitude + a;
+    //     a = a * 0.5;
+    //     f = f * 2.0;
+    // }
 
-    if (total_amplitude == 0.0) { return 0.0; }
-    let normalized_h = h / total_amplitude;
-    // Map [-1,1] -> [0,1], then scale by base_radius and proportional max_height scalar
-    let height_in_km = (normalized_h * 0.5 + 0.5) * params.base_radius * params.max_height;
-    return height_in_km;
+    // if (total_amplitude == 0.0) { return 0.0; }
+    // let normalized_h = h / total_amplitude;
+    // // Map [-1,1] -> [0,1], then scale by base_radius and proportional max_height scalar
+    // let height_in_km = (normalized_h * 0.5 + 0.5) * params.base_radius * params.max_height;
+    // return height_in_km;
+    return 0.0;
 }
 
 // Calculates a more accurate normal for a displaced heightfield via central differencing.
@@ -91,9 +92,10 @@ fn get_sdf_normal(
     let p_local = p - planet_center;
     let dist_to_p = length(p);
 
-    let nx = dWorld(p_local + dx, params, dist_to_p, camera, scene) - dWorld(p_local - dx, params, dist_to_p, camera, scene);
-    let ny = dWorld(p_local + dy, params, dist_to_p, camera, scene) - dWorld(p_local - dy, params, dist_to_p, camera, scene);
-    let nz = dWorld(p_local + dz, params, dist_to_p, camera, scene) - dWorld(p_local - dz, params, dist_to_p, camera, scene);
+    // Use a fixed LOD distance for normal sampling to avoid LOD discontinuities during differencing
+    let nx = dWorld(p_local + dx, params, dist_to_p, camera, scene, dist_to_p) - dWorld(p_local - dx, params, dist_to_p, camera, scene, dist_to_p);
+    let ny = dWorld(p_local + dy, params, dist_to_p, camera, scene, dist_to_p) - dWorld(p_local - dy, params, dist_to_p, camera, scene, dist_to_p);
+    let nz = dWorld(p_local + dz, params, dist_to_p, camera, scene, dist_to_p) - dWorld(p_local - dz, params, dist_to_p, camera, scene, dist_to_p);
 
     return normalize(vec3<f32>(nx, ny, nz));
 }
@@ -103,11 +105,12 @@ fn dWorld(
     params: TerrainUniforms,
     dist_marched: f32,
     camera: CameraUniforms,
-    scene: SceneUniforms
+    scene: SceneUniforms,
+    lod_dist: f32
 ) -> f32 {
     let dir = normalize(p_local);
     let tier_scale = scene.tier_scale_and_pad.x;
-    let real_dist_for_lod = dist_marched * tier_scale;
+    let real_dist_for_lod = lod_dist * tier_scale;
     let h = h_noise(dir, params, real_dist_for_lod, params.base_radius, camera, scene);
     let h_scaled = h / tier_scale;
     let R_scaled = params.base_radius / tier_scale;
@@ -123,7 +126,8 @@ fn ray_march(
     planet_center: vec3<f32>,
     params: TerrainUniforms,
     camera: CameraUniforms,
-    scene: SceneUniforms
+    scene: SceneUniforms,
+    lod_dist: f32
 ) -> HitRecord {
     var rec: HitRecord; rec.hit = false;
     var t = 0.0;
@@ -131,7 +135,7 @@ fn ray_march(
     for (var i = 0; i < 128; i = i + 1) {
         let p = rayAt(ray, t);
         let p_local = p - planet_center;
-        let d = dWorld(p_local, params, t, camera, scene);
+        let d = dWorld(p_local, params, t, camera, scene, lod_dist);
 
         // Adaptive hit threshold proportional to distance marched
         let threshold = max(0.001, 0.001 * t);

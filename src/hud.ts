@@ -120,14 +120,25 @@ export class HUDManager {
     // 4. Target Info
     const focusBody = rawState.bodies.find(b => b.id === camera.focusBodyId);
     if (focusBody && focusBody.id !== playerShipId) {
-      const dist = Math.hypot(
-        focusBody.position[0] - ship.position[0],
-        focusBody.position[1] - ship.position[1],
-        focusBody.position[2] - ship.position[2]
-      );
+      const dx = focusBody.position[0] - ship.position[0];
+      const dy = focusBody.position[1] - ship.position[1];
+      const dz = focusBody.position[2] - ship.position[2];
+      const distKm = Math.hypot(dx, dy, dz);
+
+      // Terrain-aware surface radius (km)
+      const baseR = (focusBody as any).terrain ? (focusBody as any).terrain.radius : focusBody.radius;
+      const sea = (focusBody as any).terrain ? (focusBody as any).terrain.seaLevel : 0.0;
+      const maxH = (focusBody as any).terrain ? (focusBody as any).terrain.maxHeight * baseR : 0.0;
+      const surfaceR = baseR + Math.max(sea, maxH);
+      const altitudeKm = Math.max(0, distKm - surfaceR);
+
+      const rangeStr = this._formatDistance(distKm);
+      const altStr = this._formatDistance(altitudeKm);
+
       this.context.textAlign = 'right';
-      this.context.fillText(`TARGET: ${focusBody.name.toUpperCase()}`, viewport.width - 12, viewport.height - 30);
-      this.context.fillText(`RANGE: ${(dist/1_000_000).toFixed(2)} Gm`, viewport.width - 12, viewport.height - 12);
+      this.context.fillText(`TARGET: ${focusBody.name.toUpperCase()}`, viewport.width - 12, viewport.height - 44);
+      this.context.fillText(`ALT: ${altStr}`, viewport.width - 12, viewport.height - 28);
+      this.context.fillText(`RANGE: ${rangeStr}`, viewport.width - 12, viewport.height - 12);
     }
 
     // 5. Indicators: Precision / Kill Rotation
@@ -214,5 +225,27 @@ export class HUDManager {
     this.context.closePath();
     this.context.fill();
     this.context.restore();
+  }
+
+  // Distance formatting helper (input: km)
+  private _formatDistance(km: number): string {
+    const AU_KM = 149_597_870.7;
+    if (km >= 0.1 * AU_KM) {
+      const au = km / AU_KM;
+      return `${au.toFixed(3)} AU`;
+    }
+    if (km >= 1_000_000) {
+      const gm = km / 1_000_000; // 1 Gm = 1e6 km
+      return `${gm.toFixed(gm >= 100 ? 0 : 2)} Gm`;
+    }
+    if (km >= 1_000) {
+      const mm = km / 1_000; // 1 Mm = 1e3 km
+      return `${mm.toFixed(mm >= 100 ? 0 : 1)} Mm`;
+    }
+    if (km >= 1) {
+      return `${km.toFixed(km >= 100 ? 0 : km >= 10 ? 1 : 2)} km`;
+    }
+    const m = km * 1000;
+    return `${m.toFixed(m >= 100 ? 0 : m >= 10 ? 1 : 2)} m`;
   }
 }

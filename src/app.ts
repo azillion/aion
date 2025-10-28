@@ -175,16 +175,18 @@ export class App {
         const dx = body.position[0] - shipCameraEyeWorld[0];
         const dy = body.position[1] - shipCameraEyeWorld[1];
         const dz = body.position[2] - shipCameraEyeWorld[2];
-        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        const dist_to_center = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        // Use distance to surface for tier sorting (altitude), not center distance
+        const dist_to_surface = Math.max(0, dist_to_center - body.radius);
 
-        if (dist < NEAR_TIER_CUTOFF) {
+        if (dist_to_surface < NEAR_TIER_CUTOFF) {
           const newBody: Body = {
             ...body,
             position: [dx, dy, dz] as [number, number, number],
             radius: body.radius,
           };
           nearRenderables.push(newBody);
-        } else if (dist >= NEAR_TIER_CUTOFF && dist < MID_TIER_CUTOFF) {
+        } else if (dist_to_surface >= NEAR_TIER_CUTOFF && dist_to_surface < MID_TIER_CUTOFF) {
           const newBody: Body = {
             ...body,
             position: [dx / MID_TIER_SCALE, dy / MID_TIER_SCALE, dz / MID_TIER_SCALE] as [number, number, number],
@@ -199,7 +201,7 @@ export class App {
             } : undefined,
           };
           midRenderables.push(newBody);
-        } else { // dist >= MID_TIER_CUTOFF
+        } else { // dist_to_surface >= MID_TIER_CUTOFF
           const newBody: Body = {
             ...body,
             position: [dx / FAR_TIER_SCALE, dy / FAR_TIER_SCALE, dz / FAR_TIER_SCALE] as [number, number, number],
