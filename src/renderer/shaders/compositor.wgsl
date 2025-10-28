@@ -25,7 +25,7 @@ fn fragmentMain(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f3
     let mid_d = textureLoad(midDepth, coords_i, 0).r;
     let far_d = textureLoad(farDepth, coords_i, 0).r;
 
-    // Sample colors from all tiers
+    // Perform a back-to-front composite to correctly layer skies over distant solids.
     let near_c = textureSampleLevel(nearColor, s, uv, 0.0);
     let mid_c = textureSampleLevel(midColor, s, uv, 0.0);
     let far_c = textureSampleLevel(farColor, s, uv, 0.0);

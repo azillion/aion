@@ -182,7 +182,7 @@ export class App {
 
         // Build global shadow caster list in unscaled camera-relative space
         if (body.mass > 1e22) {
-          const hasAtmosphere = !!(body.terrain && body.terrain.atmosphere);
+          const hasAtmosphere = body.terrain?.atmosphere !== undefined;
           const ATMOSPHERE_RADIUS_SCALE = 1.025;
           let shadowRadius = body.terrain ? body.terrain.radius : body.radius;
           if (hasAtmosphere) {
