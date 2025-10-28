@@ -59,6 +59,9 @@ export class Renderer {
   
   private themeUniformBuffer!: GPUBuffer;
   private sceneUniformBuffer!: GPUBuffer;
+  private nearSceneUniformBuffer!: GPUBuffer;
+  private midSceneUniformBuffer!: GPUBuffer;
+  private farSceneUniformBuffer!: GPUBuffer;
   private currentThemeName: string = 'white';
   private currentResponseName: string = 'Full Color';
   private lastDeltaTime: number = 1 / 60;
@@ -88,6 +91,20 @@ export class Renderer {
     });
     this.sceneUniformBuffer = this.core.device.createBuffer({
       size: 48, // three vec4<f32> (added tier_scale_and_pad)
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    // Per-tier scene uniforms to avoid CPU/GPU timeline hazards across dispatches
+    const sceneUniformBufferSize = 48;
+    this.nearSceneUniformBuffer = this.core.device.createBuffer({
+      size: sceneUniformBufferSize,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.midSceneUniformBuffer = this.core.device.createBuffer({
+      size: sceneUniformBufferSize,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.farSceneUniformBuffer = this.core.device.createBuffer({
+      size: sceneUniformBufferSize,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -266,21 +283,21 @@ export class Renderer {
           const dirLen = Math.hypot(lightDir[0], lightDir[1], lightDir[2]);
           if (dirLen > 0) { lightDir[0] /= dirLen; lightDir[1] /= dirLen; lightDir[2] /= dirLen; }
 
-          // Update per-tier lighting with tier scale awareness
-          this.updateLightingUniforms(lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, FAR_TIER_SCALE);
-          this.farTierPass.run(encoder, context, this.scene.farCount);
-          this.updateLightingUniforms(lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, MID_TIER_SCALE);
-          this.midTierPass.run(encoder, context, this.scene.midCount);
-          this.updateLightingUniforms(lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, 1.0);
-          this.nearTierPass.run(encoder, context, this.scene.nearCount);
+          // Update per-tier lighting with tier scale awareness (using dedicated buffers)
+          this.updateTierLightingUniforms(this.farSceneUniformBuffer, lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, FAR_TIER_SCALE);
+          this.farTierPass.run(encoder, context, this.scene.farCount, this.farSceneUniformBuffer);
+          this.updateTierLightingUniforms(this.midSceneUniformBuffer, lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, MID_TIER_SCALE);
+          this.midTierPass.run(encoder, context, this.scene.midCount, this.midSceneUniformBuffer);
+          this.updateTierLightingUniforms(this.nearSceneUniformBuffer, lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, 1.0);
+          this.nearTierPass.run(encoder, context, this.scene.nearCount, this.nearSceneUniformBuffer);
         } else {
           // No light available; still set tier scale so shader LOD works
-          this.updateLightingUniforms([0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, FAR_TIER_SCALE);
-          this.farTierPass.run(encoder, context, this.scene.farCount);
-          this.updateLightingUniforms([0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, MID_TIER_SCALE);
-          this.midTierPass.run(encoder, context, this.scene.midCount);
-          this.updateLightingUniforms([0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, 1.0);
-          this.nearTierPass.run(encoder, context, this.scene.nearCount);
+          this.updateTierLightingUniforms(this.farSceneUniformBuffer, [0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, FAR_TIER_SCALE);
+          this.farTierPass.run(encoder, context, this.scene.farCount, this.farSceneUniformBuffer);
+          this.updateTierLightingUniforms(this.midSceneUniformBuffer, [0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, MID_TIER_SCALE);
+          this.midTierPass.run(encoder, context, this.scene.midCount, this.midSceneUniformBuffer);
+          this.updateTierLightingUniforms(this.nearSceneUniformBuffer, [0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, 1.0);
+          this.nearTierPass.run(encoder, context, this.scene.nearCount, this.nearSceneUniformBuffer);
         }
 
         // Composite tiers into mainSceneTexture (reuse sourceTexture as intermediate)
@@ -321,7 +338,7 @@ export class Renderer {
     return theme;
   }
 
-  public updateLightingUniforms(lightDirection: [number, number, number], emissive: [number, number, number], intensity: number, debugTierView: number, tierScale: number) {
+  public updateTierLightingUniforms(targetBuffer: GPUBuffer, lightDirection: [number, number, number], emissive: [number, number, number], intensity: number, debugTierView: number, tierScale: number) {
     const len = Math.hypot(emissive[0], emissive[1], emissive[2]);
     const finalLightColor: [number, number, number] = len > 0
       ? [
@@ -339,7 +356,7 @@ export class Renderer {
     bufferData[9] = this.state.showAtmosphere ? 1.0 : 0.0;
     bufferData[10] = 0.0;
     bufferData[11] = 0.0;
-    this.core.device.queue.writeBuffer(this.sceneUniformBuffer, 0, bufferData);
+    this.core.device.queue.writeBuffer(targetBuffer, 0, bufferData);
   }
 
   public clearOrbitHistory(): void {

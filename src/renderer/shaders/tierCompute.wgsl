@@ -4,6 +4,7 @@
 #include "planetSdf.wgsl"
 
 const INFINITY: f32 = 1e38;
+const PI: f32 = 3.1415926535;
 
 fn degreesToRadians(degrees: f32) -> f32 { return degrees * PI / 180.0; }
 
@@ -82,7 +83,7 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
         surface_albedo = get_ocean_material(p_local_hit).albedo;
         surface_normal = get_ocean_wave_normal(p_local_hit, normalize(p_local_hit));
     } else {
-        surface_normal = get_terrain_normal_from_heightfield( rec.p, sphere.pos_and_radius.xyz, rec.normal, terrain_uniforms, rec.t, R_world, camera, scene );
+        surface_normal = get_terrain_normal_from_heightfield( rec.p, sphere.pos_and_radius.xyz, rec.normal, terrain_uniforms, rec.t * tier_scale, R_world, camera, scene );
         if (terrain_uniforms.seed == 1337.0) {
             surface_albedo = get_lunar_material(p_local_hit, surface_normal).albedo;
         } else {
@@ -91,6 +92,7 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
     }
 
     let light_dir_to_source = -normalize(scene.dominant_light_direction.xyz);
+    let light_color = scene.dominant_light_color_and_debug.xyz;
     let view_dir = normalize(ray.origin - rec.p);
     var shadow_multiplier = 1.0;
     let shadow_ray = Ray(rec.p + surface_normal * 0.02, light_dir_to_source);
@@ -98,16 +100,17 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
     if (inter_body_shadow_rec.hit && dot(inter_body_shadow_rec.emissive, inter_body_shadow_rec.emissive) < 0.1) { shadow_multiplier = 0.0; }
 
 	// Sunlight transmittance through atmosphere to the surface point
-    var sun_color = scene.dominant_light_color_and_debug.xyz;
+    var sun_color = light_color;
     let has_atmosphere = sphere.albedo_and_atmos_flag.w > 0.5;
     if (has_atmosphere) {
         let atmos_params = get_earth_atmosphere();
         let tier_scale = scene.tier_scale_and_pad.x;
         // Use the already-scaled geometric radius for geometric checks
         let planet_radius_local = sphere.pos_and_radius.w;
-        let atmos_radius_local = atmos_params.atmosphere_radius / tier_scale;
+        let atmos_radius_local = planet_radius_local * ATMOSPHERE_RADIUS_SCALE;
         let p_sample = rec.p - sphere.pos_and_radius.xyz;
-        let optical_depth_to_sun = get_optical_depth(p_sample, light_dir_to_source, atmos_params, tier_scale, planet_radius_local, atmos_radius_local);
+        let physical_radius = sphere.terrain_params.x;
+        let optical_depth_to_sun = get_optical_depth(p_sample, light_dir_to_source, atmos_params, tier_scale, planet_radius_local, atmos_radius_local, physical_radius);
         let sun_transmittance = exp(-optical_depth_to_sun);
         sun_color *= sun_transmittance;
     }
@@ -123,22 +126,29 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
 }
 
 fn get_lit_planet_color(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUniforms, camera: CameraUniforms) -> vec3<f32> {
-	// Base surface color lit by atmospherically-attenuated sunlight
-	let base_surface_color = shade_planet_surface(rec, sphere, ray, scene, camera);
+    // Base surface color lit by atmospherically-attenuated sunlight
+    let base_surface_color = shade_planet_surface(
+        rec,
+        sphere,
+        ray,
+        scene,
+        camera
+    );
 
     // Atmospheric effects along the view ray (camera -> surface)
-    // Pass the already-scaled geometric radius for local-space checks
     let scaled_geometric_radius = sphere.pos_and_radius.w;
-	let view_atmos = get_sky_color(
-		ray,
-		sphere.pos_and_radius.xyz,
+    let physical_radius = sphere.terrain_params.x;
+    let view_atmos = get_sky_color(
+        Ray(ray.origin - sphere.pos_and_radius.xyz, ray.direction),
         scaled_geometric_radius,
-		-normalize(scene.dominant_light_direction.xyz),
-		scene,
-		rec.t
-	);
+        physical_radius,
+        -normalize(scene.dominant_light_direction.xyz),
+        scene.dominant_light_color_and_debug.xyz,
+        scene,
+        rec.t
+    );
 
-	return base_surface_color * view_atmos.transmittance + view_atmos.in_scattering;
+    return base_surface_color * view_atmos.transmittance + view_atmos.in_scattering;
 }
 
 struct ComputeParams { bodyCount: u32 };
@@ -163,66 +173,65 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 	let ray = getRay(cam, u, v);
 
 	let atmosphereEnabled = scene.tier_scale_and_pad.y > 0.5;
-	var rec = hit_spheres(ray, createInterval(0.001, INFINITY), 9999u);
-	var final_pixel_color = vec3<f32>(0.0);
-	var final_alpha = 0.0;
 
+	// --- NEW, PHYSICALLY-BASED RENDER LOOP ---
+
+	// 1. Find the first solid object intersection to determine the ray's maximum travel distance.
+	let rec = hit_spheres(ray, createInterval(0.001, INFINITY), 9999u);
+	let max_dist = select(INFINITY, rec.t, rec.hit);
+
+	// 2. Calculate the color of the object at the end of the ray. Default to black space.
+	var surface_color = vec3<f32>(0.0);
 	if (rec.hit) {
 		let hit_sphere = spheres[rec.object_index];
-		final_alpha = 1.0;
-
 		if (dot(hit_sphere.emissive_and_terrain_flag.xyz, hit_sphere.emissive_and_terrain_flag.xyz) > 0.1) {
-			final_pixel_color = hit_sphere.emissive_and_terrain_flag.xyz;
+			// It's an emissive body like the Sun.
+			surface_color = hit_sphere.emissive_and_terrain_flag.xyz;
 		} else if (atmosphereEnabled && hit_sphere.albedo_and_atmos_flag.w > 0.5) {
-			final_pixel_color = get_lit_planet_color(rec, hit_sphere, ray, scene, camera);
+			// It's a planet with an atmosphere; calculate its lit surface color.
+			surface_color = get_lit_planet_color(rec, hit_sphere, ray, scene, camera);
 		} else {
-			// Non-atmospheric body (e.g., Moon)
+			// It's a non-atmospheric body like the Moon.
 			let light_dir_to_source = -normalize(scene.dominant_light_direction.xyz);
+			let light_color = scene.dominant_light_color_and_debug.xyz;
 			let diffuse_intensity = max(dot(rec.normal, light_dir_to_source), 0.0);
 			let shadow_ray = Ray(rec.p + rec.normal * 0.02, light_dir_to_source);
 			let shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), rec.object_index);
 			var shadow_multiplier = 1.0;
 			if (shadow_rec.hit && dot(shadow_rec.emissive, shadow_rec.emissive) < 0.1) { shadow_multiplier = 0.0; }
-			let ambient_light = 0.00;
+			let ambient_light = 0.01;
 			let final_intensity = ambient_light + diffuse_intensity * shadow_multiplier;
-			let surface_color = hit_sphere.albedo_and_atmos_flag.xyz * final_intensity * scene.dominant_light_color_and_debug.xyz;
-
-			// Apply atmospheric haze from other atmospheres between camera and object
-			var transmittance = vec3<f32>(1.0);
-			var in_scattering = vec3<f32>(0.0);
-			if (atmosphereEnabled) {
-				for (var i = 0u; i < params.bodyCount; i = i + 1u) {
-					if (i == rec.object_index) { continue; }
-					let atmos_sphere = spheres[i];
-					if (atmos_sphere.albedo_and_atmos_flag.w > 0.5) {
-                        // Pass the already-scaled geometric radius
-                        let atmos = get_sky_color(ray, atmos_sphere.pos_and_radius.xyz, atmos_sphere.pos_and_radius.w, -normalize(scene.dominant_light_direction.xyz), scene, rec.t);
-						in_scattering += atmos.in_scattering;
-						transmittance *= atmos.transmittance;
-					}
-				}
-			}
-			final_pixel_color = surface_color * transmittance + in_scattering;
-		}
-	} else {
-		// Sky only
-		if (atmosphereEnabled) {
-			for (var i = 0u; i < params.bodyCount; i = i + 1u) {
-				let atmos_sphere = spheres[i];
-				if (atmos_sphere.albedo_and_atmos_flag.w > 0.5) {
-					// Skip far-side atmosphere through the solid planet
-					let t_solid = ray_sphere_intersect(ray.origin - atmos_sphere.pos_and_radius.xyz, ray.direction, atmos_sphere.pos_and_radius.w);
-					if (t_solid.x > 0.0 && t_solid.y > t_solid.x) { continue; }
-
-                    // Pass the already-scaled geometric radius
-                    let atmos = get_sky_color(ray, atmos_sphere.pos_and_radius.xyz, atmos_sphere.pos_and_radius.w, -normalize(scene.dominant_light_direction.xyz), scene, INFINITY);
-					final_pixel_color += atmos.in_scattering;
-					final_alpha = max(final_alpha, atmos.alpha);
-				}
-			}
+			surface_color = hit_sphere.albedo_and_atmos_flag.xyz * final_intensity * light_color;
 		}
 	}
+
+    // 3. Accumulate atmospheric effects (scattering and transmittance) along the path to the object (or infinity).
+    var total_transmittance = vec3<f32>(1.0);
+    var total_in_scattering = vec3<f32>(0.0);
+    var final_alpha = 0.0;
+
+    if (atmosphereEnabled) {
+        for (var i = 0u; i < params.bodyCount; i = i + 1u) {
+            let atmos_sphere = spheres[i];
+            if (atmos_sphere.albedo_and_atmos_flag.w > 0.5) {
+                let atmos = get_sky_color(
+                    Ray(ray.origin - atmos_sphere.pos_and_radius.xyz, ray.direction),
+                    atmos_sphere.pos_and_radius.w,
+                    atmos_sphere.terrain_params.x,
+                    -normalize(scene.dominant_light_direction.xyz),
+                    scene.dominant_light_color_and_debug.xyz,
+                    scene,
+                    max_dist
+                );
+                total_in_scattering += atmos.in_scattering * total_transmittance;
+                total_transmittance *= atmos.transmittance;
+                final_alpha = max(final_alpha, atmos.alpha);
+            }
+        }
+    }
+
+	let final_pixel_color = surface_color * total_transmittance + total_in_scattering;
 	let hit_dist = select(1.0e10, rec.t, rec.hit);
 	textureStore(depthOut, coords_i, vec4<f32>(hit_dist, 0.0, 0.0, 0.0));
-	textureStore(output, coords_i, vec4<f32>(final_pixel_color, final_alpha));
+	textureStore(output, coords_i, vec4<f32>(final_pixel_color, select(final_alpha, 1.0, rec.hit)));
 }

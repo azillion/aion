@@ -70,7 +70,7 @@ export class TierPass implements IRenderPass {
     this.tierBuffer = buf;
   }
 
-  public run(encoder: GPUCommandEncoder, context: RenderContext, bodyCount: number): void {
+  public run(encoder: GPUCommandEncoder, context: RenderContext, bodyCount: number, sceneUniforms: GPUBuffer): void {
     if (!this.outputTexture || !this.depthTexture) return;
     context.core.device.queue.writeBuffer(this.paramsUniformBuffer, 0, new Uint32Array([bodyCount]));
 
@@ -83,7 +83,7 @@ export class TierPass implements IRenderPass {
         { binding: 2, resource: this.outputTexture.createView() },
         { binding: 3, resource: { buffer: context.scene.sharedCameraUniformBuffer } },
         { binding: 4, resource: this.depthTexture.createView() },
-        { binding: 5, resource: { buffer: context.sceneUniformBuffer! } },
+        { binding: 5, resource: { buffer: sceneUniforms } },
       ]
     });
 

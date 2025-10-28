@@ -35,8 +35,8 @@ export class LocalAuthority implements Authority {
 			albedo: [0.2, 0.3, 0.8],
             terrain: {
                 radius: 6371,
-                seaLevel: 4.0,
-                maxHeight: 0.0013,
+                seaLevel: 0.05,
+                maxHeight: 0.0010,
                 noiseSeed: 42.0,
                 atmosphere: {
                     nitrogen: 0.78,
@@ -287,11 +287,13 @@ export class LocalAuthority implements Authority {
 						const ny = ry * invR;
 						const nz = rz * invR;
 
-						// Safe surface radius: terrain-aware + buffer
-						const baseR = target.terrain ? target.terrain.radius : target.radius;
-						const maxH = target.terrain ? target.terrain.maxHeight * baseR : 0.0;
-						const safety = Math.max(0.05 * baseR, 2.0);
-						const desiredR = baseR + maxH + safety;
+                        // Safe surface radius: terrain-aware (max of sea level and terrain relief) + buffer
+                        const baseR = target.terrain ? target.terrain.radius : target.radius;
+                        const sea = target.terrain ? target.terrain.seaLevel : 0.0;
+                        const maxH = target.terrain ? target.terrain.maxHeight * baseR : 0.0;
+                        const surfaceR = baseR + Math.max(sea, maxH);
+                        const safety = Math.max(0.05 * baseR, 2.0);
+                        const desiredR = surfaceR + safety;
 
 						// Relative velocity (ship wrt target)
 						const vx = ship.velocity[0] - target.velocity[0];
@@ -375,11 +377,13 @@ export class LocalAuthority implements Authority {
 				const r = Math.sqrt(dx*dx + dy*dy + dz*dz);
 				if (r < nearestR) { nearestR = r; nearest = b; }
 			}
-			if (nearest) {
-				const baseR = nearest.terrain ? nearest.terrain.radius : nearest.radius;
-				const maxH = nearest.terrain ? nearest.terrain.maxHeight * baseR : 0.0;
-				const safety = 0.5; // kilometers above local ground approximation
-				const minR = baseR + maxH + safety;
+            if (nearest) {
+                const baseR = nearest.terrain ? nearest.terrain.radius : nearest.radius;
+                const sea = nearest.terrain ? nearest.terrain.seaLevel : 0.0;
+                const maxH = nearest.terrain ? nearest.terrain.maxHeight * baseR : 0.0;
+                const surfaceR = baseR + Math.max(sea, maxH);
+                const safety = Math.max(0.02 * baseR, 0.5); // proportional or at least 0.5 km
+                const minR = surfaceR + safety;
 				if (nearestR < minR) {
 					// Push ship out to surface along radial
 					const rx = ship.position[0] - nearest.position[0];
@@ -420,11 +424,13 @@ export class LocalAuthority implements Authority {
 		const ship = this.state.bodies.find(b => b.id === 'player-ship') as Ship | undefined;
 		if (!target || !ship) return;
 
-		// Compute safe altitude above surface, accounting for terrain if available
+		// Compute safe altitude above surface, accounting for sea level or maximum terrain relief
 		const baseR = target.terrain ? target.terrain.radius : target.radius;
+		const sea = target.terrain ? target.terrain.seaLevel : 0.0;
 		const maxH = target.terrain ? target.terrain.maxHeight * baseR : 0.0;
-		const safety = 0.5; // kilometers above local ground approximation
-		const desiredR = baseR + maxH + safety;
+		const surfaceR = baseR + Math.max(sea, maxH);
+		const safety = Math.max(0.02 * baseR, 0.5); // proportional or minimum buffer
+		const desiredR = surfaceR + safety;
 
 		// Determine a landing longitude/latitude: use current radial from target to ship if nonzero, otherwise pick +Y
 		let dir: vec3 = vec3.fromValues(0, 1, 0);

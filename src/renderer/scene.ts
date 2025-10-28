@@ -188,6 +188,12 @@ export class Scene {
       // Planet shading flag: 1.0 if terrain data exists (use detailed terrain shader)
       sphereData[f_base + 11] = body.terrain ? 1.0 : 0.0;
       
+      // Maintain struct alignment: ref_idx_opacity_pad vec4 slot (offset 12..15)
+      // Even if unused, fill with sane defaults to match WGSL layout.
+      sphereData[f_base + 12] = 1.0; // ref_idx
+      sphereData[f_base + 13] = 1.0; // opacity
+      sphereData[f_base + 14] = 0.0; // pad
+      sphereData[f_base + 15] = 0.0; // pad
 
       // Planet data
       if (body.terrain) {
