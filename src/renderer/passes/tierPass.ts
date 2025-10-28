@@ -48,6 +48,8 @@ export class TierPass implements IRenderPass {
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
         { binding: 4, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r32float' } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       ]
     });
 
@@ -84,6 +86,8 @@ export class TierPass implements IRenderPass {
         { binding: 3, resource: { buffer: context.scene.sharedCameraUniformBuffer } },
         { binding: 4, resource: this.depthTexture.createView() },
         { binding: 5, resource: { buffer: sceneUniforms } },
+        { binding: 6, resource: { buffer: context.scene.shadowCasterBuffer } },
+        { binding: 7, resource: { buffer: context.scene.shadowCasterCountBuffer } },
       ]
     });
 

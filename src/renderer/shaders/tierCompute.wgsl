@@ -28,7 +28,9 @@ struct HitRecord {
 
 struct Ray { origin: vec3<f32>, direction: vec3<f32> }
 
-#include "atmosphere.wgsl"
+@group(0) @binding(6) var<storage, read> shadow_casters: array<Sphere>;
+struct ShadowParams { count: u32 };
+@group(0) @binding(7) var<uniform> shadowParams: ShadowParams;
 
 fn rayAt(ray: Ray, t: f32) -> vec3<f32> { return ray.origin + ray.direction * t; }
 
@@ -46,15 +48,19 @@ fn hit_sphere(sphere: Sphere, r: Ray, ray_t: Interval, index: u32) -> HitRecord 
     rec.albedo = sphere.albedo_and_atmos_flag.xyz; rec.emissive = sphere.emissive_and_terrain_flag.xyz; rec.object_index = index; rec.hit = true; return rec;
 }
 
-fn hit_spheres(r: Ray, ray_t: Interval, ignore_index: u32) -> HitRecord {
+fn hit_spheres(r: Ray, ray_t: Interval, spheres_in: ptr<storage, array<Sphere>, read>, sphere_count: u32, ignore_pos: vec3<f32>) -> HitRecord {
     var closest_so_far = ray_t.maxI; var rec: HitRecord; rec.hit = false;
-    for (var i = 0u; i < params.bodyCount; i++) {
-        if (i == ignore_index) { continue; }
-        let sphere_rec = hit_sphere(spheres[i], r, Interval(ray_t.minI, closest_so_far), i);
+    for (var i = 0u; i < sphere_count; i++) {
+        // Ignore if the sphere center is very close to the position we want to ignore (e.g., self-shadowing).
+        if (distance((*spheres_in)[i].pos_and_radius.xyz, ignore_pos) < 1.0) { continue; }
+        let sphere_rec = hit_sphere((*spheres_in)[i], r, Interval(ray_t.minI, closest_so_far), i);
         if (sphere_rec.hit) { closest_so_far = sphere_rec.t; rec = sphere_rec; }
     }
     return rec;
 }
+
+#include "atmosphere.wgsl"
+ 
 
 struct Camera { origin: vec3<f32>, lower_left_corner: vec3<f32>, horizontal: vec3<f32>, vertical: vec3<f32> }
 
@@ -103,8 +109,14 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
     let light_color = scene.dominant_light_color_and_debug.xyz;
     let view_dir = normalize(ray.origin - rec.p);
     var shadow_multiplier = 1.0;
-    let shadow_ray = Ray(rec.p + surface_normal * 0.02, light_dir_to_source);
-	let inter_body_shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), 9999u);
+    let tier_scale = scene.tier_scale_and_pad.x;
+    let p_world = rec.p * tier_scale;
+	// The normal in world space is unchanged under uniform scale; using rec.normal directly is correct.
+	// The previous normalize(rec.normal * tier_scale) was a no-op and unnecessary.
+	let shadow_ray = Ray(p_world + rec.normal * 0.2, light_dir_to_source);
+	// Ignore the planet this surface belongs to when checking for inter-body shadows.
+	let self_pos_world = sphere.pos_and_radius.xyz * tier_scale;
+	let inter_body_shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), &shadow_casters, shadowParams.count, self_pos_world);
     if (inter_body_shadow_rec.hit && dot(inter_body_shadow_rec.emissive, inter_body_shadow_rec.emissive) < 0.1) { shadow_multiplier = 0.0; }
 
 	// Sunlight transmittance through atmosphere to the surface point
@@ -114,7 +126,9 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
 		let atmos_out = get_sky_color(
 			Ray(rec.p - sphere.pos_and_radius.xyz, light_dir_to_source),
 			sphere.pos_and_radius.w, sphere.terrain_params.x,
-			light_dir_to_source, vec3<f32>(1.0), scene, INFINITY
+			sphere.pos_and_radius.xyz,
+			light_dir_to_source, vec3<f32>(1.0), scene, INFINITY,
+			&shadow_casters, shadowParams, self_pos_world
 		);
 		sun_color *= atmos_out.transmittance;
 	}
@@ -129,31 +143,7 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
 	return lit_color;
 }
 
-fn get_lit_planet_color(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUniforms, camera: CameraUniforms) -> vec3<f32> {
-    // Base surface color lit by atmospherically-attenuated sunlight
-    let base_surface_color = shade_planet_surface(
-        rec,
-        sphere,
-        ray,
-        scene,
-        camera
-    );
-
-    // Atmospheric effects along the view ray (camera -> surface)
-    let scaled_geometric_radius = sphere.pos_and_radius.w;
-    let physical_radius = sphere.terrain_params.x;
-    let view_atmos = get_sky_color(
-        Ray(ray.origin - sphere.pos_and_radius.xyz, ray.direction),
-        scaled_geometric_radius,
-        physical_radius,
-        -normalize(scene.dominant_light_direction.xyz),
-        scene.dominant_light_color_and_debug.xyz,
-        scene,
-        rec.t
-    );
-
-    return base_surface_color * view_atmos.transmittance + view_atmos.in_scattering;
-}
+ 
 
 struct ComputeParams { bodyCount: u32 };
 @group(0) @binding(0) var<uniform> params: ComputeParams;
@@ -181,7 +171,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 	// --- NEW, HIGH-PERFORMANCE RENDER LOOP ---
 
 	// 1. BROAD PHASE: Find the closest analytical sphere hit. This is very fast.
-	var rec = hit_spheres(ray, createInterval(0.001, INFINITY), 9999u);
+var rec = hit_spheres(ray, createInterval(0.001, INFINITY), &spheres, params.bodyCount, vec3<f32>(1e30));
 
 	// 2. NARROW PHASE (CONDITIONAL): If the closest hit was a terrain planet,
 	//    refine the intersection with the expensive ray march.
@@ -220,11 +210,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 			if (rec.hit && rec.object_index == i) { continue; }
 			let atmos_sphere = spheres[i];
 			if (atmos_sphere.albedo_and_atmos_flag.w > 0.5) {
+				let self_pos_world = atmos_sphere.pos_and_radius.xyz * scene.tier_scale_and_pad.x;
 				let atmos = get_sky_color(
 					Ray(ray.origin - atmos_sphere.pos_and_radius.xyz, ray.direction),
 					atmos_sphere.pos_and_radius.w, atmos_sphere.terrain_params.x,
-					-normalize(scene.dominant_light_direction.xyz), scene.dominant_light_color_and_debug.xyz,
-					scene, max_dist
+					atmos_sphere.pos_and_radius.xyz,
+					-normalize(scene.dominant_light_direction.xyz),
+					scene.dominant_light_color_and_debug.xyz, //
+					scene, max_dist, &shadow_casters, shadowParams, self_pos_world
 				);
 				total_in_scattering += atmos.in_scattering * total_transmittance;
 				total_transmittance *= atmos.transmittance;
@@ -240,16 +233,29 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 		if (dot(hit_sphere.emissive_and_terrain_flag.xyz, hit_sphere.emissive_and_terrain_flag.xyz) > 0.1) {
 			surface_color = hit_sphere.emissive_and_terrain_flag.xyz;
 		} else if (atmosphereEnabled && hit_sphere.albedo_and_atmos_flag.w > 0.5) {
-			// This is a planet with terrain, use the corrected function.
-			// Note: hit_sphere.albedo_and_atmos_flag.w is the atmosphere flag.
-			// hit_sphere.emissive_and_terrain_flag.w is the terrain flag.
-			surface_color = get_lit_planet_color(rec, hit_sphere, ray, scene, camera);
+			// 1. Get the color of the surface, lit by sunlight that has passed through the atmosphere.
+			let ground_color = shade_planet_surface(rec, hit_sphere, ray, scene, camera);
+
+			// 2. Calculate atmospheric scattering along the view ray (from camera to the surface).
+			let self_pos_world = hit_sphere.pos_and_radius.xyz * scene.tier_scale_and_pad.x;
+			let view_atmos = get_sky_color(
+				Ray(ray.origin - hit_sphere.pos_and_radius.xyz, ray.direction),
+				hit_sphere.pos_and_radius.w, hit_sphere.terrain_params.x,
+				hit_sphere.pos_and_radius.xyz,
+				-normalize(scene.dominant_light_direction.xyz),
+				scene.dominant_light_color_and_debug.xyz,
+				scene, rec.t, &shadow_casters, shadowParams, self_pos_world
+			);
+
+			// 3. Combine them: Surface color is attenuated by the view ray, then in-scattered light is added.
+			surface_color = ground_color * view_atmos.transmittance + view_atmos.in_scattering;
 		} else { // Moon or other simple sphere
 			let light_dir_to_source = -normalize(scene.dominant_light_direction.xyz);
 			let light_color = scene.dominant_light_color_and_debug.xyz;
 			let diffuse_intensity = max(dot(rec.normal, light_dir_to_source), 0.0);
 			let shadow_ray = Ray(rec.p + rec.normal * 0.02, light_dir_to_source);
-			let shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), rec.object_index);
+			let self_pos_world = hit_sphere.pos_and_radius.xyz * scene.tier_scale_and_pad.x;
+			let shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), &spheres, params.bodyCount, self_pos_world);
 			var shadow_multiplier = 1.0;
 			if (shadow_rec.hit && dot(shadow_rec.emissive, shadow_rec.emissive) < 0.1) { shadow_multiplier = 0.0; }
 			let ambient_light = 0.00;

@@ -159,10 +159,11 @@ export class App {
       this.cameraManager.update(this.state.cameraMode, { playerShip, keys: this.input.keys });
       const shipCameraEyeWorld = [...camera.eye]; // Capture true f64 (JS number) camera position.
 
-      // 2) Initialize lists for tiered renderables.
+      // 2) Initialize lists for tiered renderables and global shadow casters.
       const nearRenderables: Body[] = [];
       const midRenderables: Body[] = [];
       const farRenderables: Body[] = [];
+      const shadowCasters: Body[] = [];
 
       // 3) Sort all bodies from the authoritative state into tiers.
       systemState.bodies.forEach(body => {
@@ -178,6 +179,21 @@ export class App {
         const dist_to_center = Math.sqrt(dx*dx + dy*dy + dz*dz);
         // Use distance to surface for tier sorting (altitude), not center distance
         const dist_to_surface = Math.max(0, dist_to_center - body.radius);
+
+        // Build global shadow caster list in unscaled camera-relative space
+        if (body.mass > 1e22) {
+          const hasAtmosphere = !!(body.terrain && body.terrain.atmosphere);
+          const ATMOSPHERE_RADIUS_SCALE = 1.025;
+          let shadowRadius = body.terrain ? body.terrain.radius : body.radius;
+          if (hasAtmosphere) {
+            shadowRadius *= ATMOSPHERE_RADIUS_SCALE;
+          }
+          shadowCasters.push({
+            ...body,
+            position: [dx, dy, dz] as [number, number, number],
+            radius: shadowRadius,
+          });
+        }
 
         if (dist_to_surface < NEAR_TIER_CUTOFF) {
           const newBody: Body = {
@@ -250,6 +266,8 @@ export class App {
       this.cameraManager.updateLookAt(camera, { keys: this.input.keys, relativeBodies: bodiesToRender, playerShip });
       // Upload tier data to GPU buffers for ship-relative rendering
       this.scene.updateTiers(nearRenderables, midRenderables, farRenderables);
+      // Upload global shadow casters (unscaled camera-relative positions)
+      this.scene.updateShadowCasters(shadowCasters);
       // Determine dominant light by emissive energy
       let dominantLight = systemState.bodies[0];
       let maxEmissiveEnergy = 0.0;

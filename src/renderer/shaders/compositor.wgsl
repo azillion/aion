@@ -25,32 +25,29 @@ fn fragmentMain(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f3
     let mid_d = textureLoad(midDepth, coords_i, 0).r;
     let far_d = textureLoad(farDepth, coords_i, 0).r;
 
-    // 2. Find the minimum (closest) depth value.
-    let min_depth = min(min(near_d, mid_d), far_d);
-    
-    // 3. Select the color from the tier that contains the closest object.
-    var final_color = vec4<f32>(0.0);
-    if (min_depth < 1.0e9) { // Check if we hit any solid object at all
-        // Use textureSampleLevel for the filterable color textures.
-        if (near_d <= min_depth + 0.001) { // Add a small epsilon for float comparison
-            final_color = textureSampleLevel(nearColor, s, uv, 0.0);
-        } else if (mid_d <= min_depth + 0.001) {
-            final_color = textureSampleLevel(midColor, s, uv, 0.0);
-        } else {
-            final_color = textureSampleLevel(farColor, s, uv, 0.0);
-        }
-    } else {
-        // 4. If no solid object was hit, composite the skies (alpha blend back-to-front).
-        let far_c = textureSampleLevel(farColor, s, uv, 0.0);
-        let mid_c = textureSampleLevel(midColor, s, uv, 0.0);
-        let near_c = textureSampleLevel(nearColor, s, uv, 0.0);
+    // Sample colors from all tiers
+    let near_c = textureSampleLevel(nearColor, s, uv, 0.0);
+    let mid_c = textureSampleLevel(midColor, s, uv, 0.0);
+    let far_c = textureSampleLevel(farColor, s, uv, 0.0);
 
-        // Blend far sky -> mid sky -> near sky
-        final_color = far_c;
+    // Start with the far tier as the base layer
+    var final_color = far_c;
+
+    // Mid tier compositing: occlude if closer than far, otherwise blend its sky
+    if (mid_d < far_d) {
+        final_color = mid_c;
+    } else {
         final_color = mix(final_color, mid_c, mid_c.a);
+    }
+
+    // Near tier compositing: occlude if closest, otherwise blend its sky
+    let current_closest_d = min(mid_d, far_d);
+    if (near_d < current_closest_d) {
+        final_color = near_c;
+    } else {
         final_color = mix(final_color, near_c, near_c.a);
     }
-    
+
     return vec4<f32>(final_color.rgb, 1.0);
 }
 

@@ -42,11 +42,15 @@ fn get_sky_color(
     ray: Ray,
     planet_radius_local: f32,
     physical_radius_world: f32,
+    planet_center_tier: vec3<f32>,
     light_dir: vec3<f32>, light_color: vec3<f32>,
-    scene: SceneUniforms, max_dist_local: f32
+    scene: SceneUniforms, max_dist_local: f32, //
+    shadow_casters_in: ptr<storage, array<Sphere>, read>,
+    shadow_params_in: ShadowParams,
+    ignore_pos_world: vec3<f32>
 ) -> AtmosphereOutput {
     let params = get_earth_atmosphere();
-    let tier_scale = scene.tier_scale_and_pad.x;
+    let tier_scale = scene.tier_scale_and_pad.x; // scale from local tier units to world km
     let atmosphere_radius_local = planet_radius_local * ATMOSPHERE_RADIUS_SCALE;
 
     let r0 = ray.origin;
@@ -86,29 +90,41 @@ fn get_sky_color(
             let density_m = exp(-h / params.h_mie);
             let scattering_coeffs = params.beta_rayleigh * density_r + params.beta_mie * density_m;
 
-            // --- 4a. Sun visibility and out-scattering along the sun ray ---
-            // Compute transmittance only if the sun ray does NOT intersect the planet.
+            // --- 4a. Sun visibility (transmittance to this sample point) ---
             var sun_transmittance = vec3<f32>(0.0);
-            let t_to_planet_surface = ray_sphere_intersect(p_sample, light_dir, planet_radius_local).x;
-            if (t_to_planet_surface < 0.0 || t_to_planet_surface > 1.0e4) {
-                let t_sun_atmos = ray_sphere_intersect(p_sample, light_dir, atmosphere_radius_local).y;
-                var optical_depth_sun = vec3<f32>(0.0);
-					if (t_sun_atmos > 0.0) {
-						let sun_step_size = t_sun_atmos / f32(num_out_scatter_samples);
-						for (var j = 0; j < num_out_scatter_samples; j = j + 1) {
-                        let p_sun_sample = p_sample + light_dir * (f32(j) + 0.5) * sun_step_size;
-                        // Stable altitude for sun-ray samples as well
-                        let p_sun_world_sq = dot(p_sun_sample, p_sun_sample) * tier_scale * tier_scale;
-                        let h_sun = (p_sun_world_sq - physical_radius_world*physical_radius_world) / (2.0 * physical_radius_world);
-							if (h_sun > 0.0) {
-								optical_depth_sun += (
-									params.beta_rayleigh * exp(-h_sun / params.h_rayleigh) +
-									params.beta_mie * exp(-h_sun / params.h_mie)
-								) * sun_step_size * tier_scale;
-							}
-						}
-					}
-                sun_transmittance = exp(-optical_depth_sun);
+            
+            // I. Check for global occlusion (eclipses) first.
+            // Reconstruct the sample's position in camera-relative tier space, then scale to world space.
+            let p_sample_tier = p_sample + planet_center_tier;
+            let p_world = p_sample_tier * tier_scale;
+            let eclipse_shadow_ray = Ray(p_world + light_dir * 0.2, light_dir);
+            let eclipse_rec = hit_spheres(eclipse_shadow_ray, createInterval(0.001, INFINITY), shadow_casters_in, shadow_params_in.count, ignore_pos_world);
+
+            // Only if NOT in a global shadow, do we calculate atmospheric scattering.
+            if (!eclipse_rec.hit || dot(eclipse_rec.emissive, eclipse_rec.emissive) > 0.1) {
+                // II. Not eclipsed. Now check for self-shadowing and calculate out-scattering.
+                // Compute transmittance only if the sun ray does NOT intersect the planet.
+                let t_to_planet_surface = ray_sphere_intersect(p_sample, light_dir, planet_radius_local).x;
+                if (t_to_planet_surface < 0.0 || t_to_planet_surface > 1.0e4) {
+                    let t_sun_atmos = ray_sphere_intersect(p_sample, light_dir, atmosphere_radius_local).y;
+                    var optical_depth_sun = vec3<f32>(0.0);
+                    if (t_sun_atmos > 0.0) {
+                        let sun_step_size = t_sun_atmos / f32(num_out_scatter_samples);
+                        for (var j = 0; j < num_out_scatter_samples; j = j + 1) {
+                            let p_sun_sample = p_sample + light_dir * (f32(j) + 0.5) * sun_step_size;
+                            // Stable altitude for sun-ray samples as well
+                            let p_sun_world_sq = dot(p_sun_sample, p_sun_sample) * tier_scale * tier_scale;
+                            let h_sun = (p_sun_world_sq - physical_radius_world*physical_radius_world) / (2.0 * physical_radius_world);
+                            if (h_sun > 0.0) {
+                                optical_depth_sun += (
+                                    params.beta_rayleigh * exp(-h_sun / params.h_rayleigh) +
+                                    params.beta_mie * exp(-h_sun / params.h_mie)
+                                ) * sun_step_size * tier_scale;
+                            }
+                        }
+                    }
+                    sun_transmittance = exp(-optical_depth_sun);
+                }
             }
 
             // --- 4b. Accumulate in-scattered light ---

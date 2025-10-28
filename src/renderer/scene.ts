@@ -40,6 +40,8 @@ export class Scene {
   public midTierBuffer!: GPUBuffer;
   public farTierBuffer!: GPUBuffer;
   public mapSpheresBuffer!: GPUBuffer;
+  public shadowCasterBuffer!: GPUBuffer;
+  public shadowCasterCountBuffer!: GPUBuffer;
   public starBuffer!: GPUBuffer;
 
   // A SINGLE, shared buffer for all camera data.
@@ -62,6 +64,17 @@ export class Scene {
     this.sharedCameraUniformBuffer = this.device.createBuffer({
       label: 'Shared Camera Uniform Buffer',
       size: 320,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.shadowCasterBuffer = this.device.createBuffer({
+      label: 'Shadow Caster Buffer',
+      // Allocate room for up to 32 casters
+      size: 32 * FLOATS_PER_SPHERE * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.shadowCasterCountBuffer = this.device.createBuffer({
+      label: 'Shadow Caster Count Buffer',
+      size: 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
   }
@@ -115,6 +128,16 @@ export class Scene {
       this.farZeroPadded.set(data);
       this.device.queue.writeBuffer(this.farTierBuffer, 0, this.farZeroPadded.buffer, 0, this.farZeroPadded.byteLength);
     }
+  }
+
+  public updateShadowCasters(casters: Body[]) {
+    const data = this.serializeSystemState(casters);
+    const capacityFloats = this.shadowCasterBuffer.size / 4;
+    const scratch = new Float32Array(capacityFloats);
+    scratch.fill(0);
+    scratch.set(data);
+    this.device.queue.writeBuffer(this.shadowCasterBuffer, 0, scratch.buffer, 0, scratch.byteLength);
+    this.device.queue.writeBuffer(this.shadowCasterCountBuffer, 0, new Uint32Array([casters.length]));
   }
 
   public initializeTierBuffers(initialBodyCount: number) {
