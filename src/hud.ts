@@ -31,22 +31,12 @@ export class HUDManager {
     this.context.textBaseline = 'top';
     this.context.fillStyle = 'rgba(255,255,255,0.9)';
     this.context.strokeStyle = 'rgba(255,255,255,0.9)';
-
-    // Do not draw any HUD elements in galactic map
-    if (cameraMode === CameraMode.GALACTIC_MAP) {
-      return;
-    }
-
-    // const centerX = viewport.width * 0.5;
-    // const centerY = viewport.height * 0.5;
-
-    // --- New Ship Relative HUD Logic ---
+    
     if (cameraMode === CameraMode.SHIP_RELATIVE) {
       this.drawShipHUD(frameData);
       // We return here because drawShipHUD handles its own body indicators
       return;
     }
-    // --- End New Logic ---
 
     for (const body of bodiesToRender) {
       const p = projectWorldToScreen(body.position as Vec3, camera, viewport);

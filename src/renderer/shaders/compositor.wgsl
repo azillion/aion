@@ -1,5 +1,3 @@
-//#include support for Scene uniforms
-#include "sceneUniforms.wgsl"
 @group(0) @binding(0) var nearColor: texture_2d<f32>;
 @group(0) @binding(1) var midColor: texture_2d<f32>;
 @group(0) @binding(2) var farColor: texture_2d<f32>;
@@ -7,7 +5,6 @@
 @group(0) @binding(4) var midDepth: texture_2d<f32>;
 @group(0) @binding(5) var farDepth: texture_2d<f32>;
 @group(0) @binding(6) var s: sampler;
-@group(0) @binding(7) var<uniform> scene: SceneUniforms;
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {

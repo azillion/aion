@@ -6,7 +6,6 @@ export enum ReferenceFrame {
 export enum CameraMode {
   SHIP_RELATIVE,
   SYSTEM_MAP,
-  GALACTIC_MAP,
 }
 
 export class AppState {

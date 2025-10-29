@@ -1,7 +1,7 @@
 #include "camera.wgsl"
 #include "sceneUniforms.wgsl"
 #include "noise.wgsl"
-#include "planetSdf.wgsl"
+
 
 const INFINITY: f32 = 1e38;
 const PI: f32 = 3.1415926535;
@@ -113,10 +113,10 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
     //     }
     // }
 
-        // --- DEBUG: Simplified shading for a smooth sphere to isolate atmosphere issues ---
-        let surface_albedo = sphere.albedo_and_atmos_flag.xyz;
-        let surface_normal = rec.normal;
-        let is_ocean = sphere.terrain_params.y > 0.0; // Simple ocean check based on sea level
+    // --- DEBUG: Simplified shading for a smooth sphere to isolate atmosphere issues ---
+    let surface_albedo = sphere.albedo_and_atmos_flag.xyz;
+    let surface_normal = rec.normal;
+    let is_ocean = sphere.terrain_params.y > 0.0; // Simple ocean check based on sea level
 
     let light_dir_to_source = -normalize(scene.dominant_light_direction.xyz);
     let light_color = scene.dominant_light_color_and_debug.xyz;
@@ -201,31 +201,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 	// --- NEW, HIGH-PERFORMANCE RENDER LOOP ---
 
 	// 1. BROAD PHASE: Find the closest analytical sphere hit. This is very fast.
-var rec = hit_spheres(ray, createInterval(0.001, INFINITY), &spheres, params.bodyCount, vec3<f32>(1e30));
-
-	// 2. NARROW PHASE (CONDITIONAL): If the closest hit was a terrain planet,
-	//    refine the intersection with the expensive ray march.
-	// if (rec.hit) {
-	// 	let hit_sphere = spheres[rec.object_index];
-	// 	if (hit_sphere.emissive_and_terrain_flag.w > 0.5 && atmosphereEnabled) {
-	// 		// This is a terrain planet, so we must refine the hit.
-	// 		let initial_hit_index = rec.object_index;
-	// 		let terrain_params = TerrainUniforms(hit_sphere.terrain_params.x, hit_sphere.terrain_params.y, hit_sphere.terrain_params.z, hit_sphere.terrain_params.w);
-			
-	// 		// We use the analytical hit distance as a hint for the max distance to march.
-	// 		let max_march_dist = rec.t + hit_sphere.pos_and_radius.w * 2.0;
-	// 		let terrain_rec = ray_march(ray, max_march_dist, hit_sphere.pos_and_radius.xyz, terrain_params, camera, scene, rec.t);
-
-	// 		if (terrain_rec.hit) {
-	// 			rec = terrain_rec;
-	// 			rec.object_index = initial_hit_index; // Restore the object index!
-	// 		} else {
-	// 			// The ray hit the bounding sphere but missed the terrain (e.g., grazed the edge).
-	// 			// Treat it as a miss.
-	// 			rec.hit = false;
-	// 		}
-	// 	}
-	// }
+    var rec = hit_spheres(ray, createInterval(0.001, INFINITY), &spheres, params.bodyCount, vec3<f32>(1e30));
 
 	var final_pixel_color = vec3<f32>(0.0);
 	var final_alpha = 0.0;

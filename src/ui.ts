@@ -7,6 +7,15 @@ import { G } from './shared/constants';
 import type { Authority } from './authority/authority';
 import { CameraManager } from './camera/manager';
 
+const warpLevels = [
+    { label: 'Warp x1', scale: 1 },
+    { label: 'Warp x100', scale: 100 },
+    { label: 'Warp x1k', scale: 1000 },
+    { label: 'Warp x10k', scale: 10000 },
+    { label: 'Warp x100k', scale: 100000 },
+    { label: 'Warp x1M', scale: 1000000 },
+];
+
 export class UI {
     private renderer: Renderer;
     private state: AppState;
@@ -15,7 +24,7 @@ export class UI {
     private focusController: dat.GUIController | null = null;
     private cameraManager: CameraManager;
     private timeFolder: GUI;
-    private settings = {
+    private settings: Record<string, any> = {
         'Focus': 'Sun',
         'Theme': 'white',
         'Sensor': 'Full Color',
@@ -38,12 +47,6 @@ export class UI {
             }
         },
         'Add Asteroid': () => this.addAsteroid(),
-        'Warp x1': () => this.setWarp(1),
-        'Warp x100': () => this.setWarp(100),
-        'Warp x1k': () => this.setWarp(1000),
-        'Warp x10k': () => this.setWarp(10000),
-        'Warp x100k': () => this.setWarp(100000),
-        'Warp x1M': () => this.setWarp(1000000),
         'Time Scale': 1.0, // We keep the slider for variable control
         'Current Warp': 'x1',
         'Toggle View': () => {
@@ -65,12 +68,10 @@ export class UI {
         this.gui = new GUI();
 
         this.timeFolder = this.gui.addFolder('Time Control');
-        this.timeFolder.add(this.settings, 'Warp x1');
-        this.timeFolder.add(this.settings, 'Warp x100');
-        this.timeFolder.add(this.settings, 'Warp x1k');
-        this.timeFolder.add(this.settings, 'Warp x10k');
-        this.timeFolder.add(this.settings, 'Warp x100k');
-        this.timeFolder.add(this.settings, 'Warp x1M');
+        warpLevels.forEach(level => {
+            (this.settings as any)[level.label] = () => this.setWarp(level.scale);
+            this.timeFolder.add(this.settings, level.label);
+        });
         this.timeFolder.add(this.settings, 'Current Warp').listen();
         this.timeFolder
             .add(this.settings, 'Time Scale', 0, 10000)

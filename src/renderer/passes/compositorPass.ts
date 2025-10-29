@@ -2,7 +2,6 @@ import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
 import compositorWGSL from '../shaders/compositor.wgsl?raw';
-import sceneUniformsWGSL from '../shaders/sceneUniforms.wgsl?raw';
 import { createShaderModule } from '../shaderUtils';
 
 export class CompositorPass implements IRenderPass {
@@ -11,9 +10,7 @@ export class CompositorPass implements IRenderPass {
   private bindGroupLayout!: GPUBindGroupLayout;
 
   public async initialize(core: WebGPUCore, _scene: Scene): Promise<void> {
-    const module = await createShaderModule(core.device, 'Compositor Shader Module', compositorWGSL, {
-      'sceneUniforms.wgsl': sceneUniformsWGSL,
-    });
+    const module = await createShaderModule(core.device, 'Compositor Shader Module', compositorWGSL, {});
     this.bindGroupLayout = core.device.createBindGroupLayout({
       label: 'Compositor Bind Group Layout',
       entries: [
@@ -24,7 +21,6 @@ export class CompositorPass implements IRenderPass {
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
         { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
         { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
-        { binding: 7, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       ]
     });
     const layout = core.device.createPipelineLayout({ bindGroupLayouts: [this.bindGroupLayout] });
@@ -59,7 +55,6 @@ export class CompositorPass implements IRenderPass {
         { binding: 4, resource: midDepth.createView() },
         { binding: 5, resource: farDepth.createView() },
         { binding: 6, resource: this.sampler },
-        { binding: 7, resource: { buffer: context.sceneUniformBuffer! } },
       ]
     });
 

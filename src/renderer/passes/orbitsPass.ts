@@ -30,9 +30,19 @@ export class OrbitsPass implements IRenderPass {
         orbitsShaderWGSL,
         { 'camera.wgsl': cameraWGSL }
     );
+    const bindGroupLayout = core.device.createBindGroupLayout({
+      label: 'Orbits Bind Group Layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', hasDynamicOffset: true } },
+        { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+      ],
+    });
     this.pipeline = core.device.createRenderPipeline({
       label: 'Orbits Pipeline',
-      layout: 'auto',
+      layout: core.device.createPipelineLayout({
+        bindGroupLayouts: [bindGroupLayout],
+      }),
       vertex: { module, entryPoint: 'vertexMain' },
       fragment: {
         module, entryPoint: 'fragmentMain',
@@ -47,11 +57,6 @@ export class OrbitsPass implements IRenderPass {
       primitive: { topology: 'triangle-strip' },
     });
 
-    this.uniformBuffer = core.device.createBuffer({
-      size: 48,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
     this.resizeOrbitBuffers(core.device, scene.lastKnownBodyCount);
   }
 
@@ -61,6 +66,11 @@ export class OrbitsPass implements IRenderPass {
         size: ORBIT_MAX_POINTS * 4 * 4,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     }));
+    if (this.uniformBuffer) this.uniformBuffer.destroy();
+    this.uniformBuffer = device.createBuffer({
+        size: count * 256,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     this.orbitalElements = Array.from({ length: count }, () => null);
   }
 
@@ -130,29 +140,45 @@ export class OrbitsPass implements IRenderPass {
     });
     pass.setPipeline(this.pipeline);
 
+    const allUniformData = new Float32Array(this.orbitalElements.length * 64);
+    const visibleOrbits: { index: number, elements: OrbitalElements }[] = [];
+
     for (let i = 0; i < this.orbitalElements.length; i++) {
       const elements = this.orbitalElements[i];
       if (!elements || elements.pointCount < 2) continue;
 
-      const uniformData = new Float32Array(12);
-      uniformData.set(theme.accent, 0);
-      uniformData[3] = elements.pointCount;
-      uniformData[4] = elements.a * context.systemScale;
-      uniformData[5] = elements.e;
-      uniformData[6] = elements.currentTrueAnomaly;
-      context.core.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
+      // Add to list of visible orbits to draw later
+      visibleOrbits.push({ index: i, elements });
+      
+      // Write this orbit's data into the large CPU-side buffer at the correct offset
+      const offset = visibleOrbits.length - 1;
+      const base = offset * 64;
+      allUniformData.set(theme.accent, base);
+      allUniformData[base + 3] = elements.pointCount;
+      allUniformData[base + 4] = elements.a * context.systemScale;
+      allUniformData[base + 5] = elements.e;
+      allUniformData[base + 6] = elements.currentTrueAnomaly;
+    }
+
+    if (visibleOrbits.length > 0) {
+      context.core.device.queue.writeBuffer(this.uniformBuffer, 0, allUniformData);
+    }
+
+    for (let i = 0; i < visibleOrbits.length; i++) {
+      const { index, elements } = visibleOrbits[i];
 
       const bindGroup = context.core.device.createBindGroup({
-        label: `Orbits Bind Group ${i}`,
+        label: `Orbits Bind Group ${index}`,
         layout: this.pipeline.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: context.scene.sharedCameraUniformBuffer } },
-            { binding: 1, resource: { buffer: this.uniformBuffer } },
-            { binding: 2, resource: { buffer: this.orbitVertexBuffers[i] } }
+            { binding: 1, resource: { buffer: this.uniformBuffer, size: 32 } },
+            { binding: 2, resource: { buffer: this.orbitVertexBuffers[index] } }
         ],
       });
 
-      pass.setBindGroup(0, bindGroup);
+      const dynamicOffset = i * 256;
+      pass.setBindGroup(0, bindGroup, [dynamicOffset]);
       pass.draw(elements.pointCount * 2);
     }
     pass.end();

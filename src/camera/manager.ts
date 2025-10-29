@@ -27,10 +27,6 @@ export class CameraManager {
                 }
                 break;
             }
-            case CameraMode.GALACTIC_MAP: {
-                // No-op for now; galactic map uses renderer-built matrices
-                break;
-            }
             default: break;
         }
     }

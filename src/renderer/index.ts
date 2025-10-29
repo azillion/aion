@@ -1,7 +1,6 @@
 import type { Authority } from '../authority/authority';
 import { AppState, CameraMode } from '../state';
 import type { Camera } from '../camera';
-import { Galaxy } from '../galaxy';
 import { WebGPUCore } from './core';
 import { Scene } from './scene';
 import type { RenderContext } from './types';
@@ -9,7 +8,6 @@ import { vec3 } from 'gl-matrix';
 import type { UI } from '../ui';
 import { TierPass } from './passes/tierPass';
 import { CompositorPass } from './passes/compositorPass';
-import { GalaxyPass } from './passes/galaxyPass';
 import { OrbitsPass } from './passes/orbitsPass';
 import { PostFXPass } from './passes/postfxPass';
 import { MapPass } from './passes/mapPass';
@@ -19,8 +17,10 @@ import { themes } from '../theme';
 import { spectralResponses } from '../spectral';
 import type { Theme, FrameData } from '../shared/types';
 import { HUDManager } from '../hud';
-import { FAR_TIER_SCALE, MID_TIER_SCALE } from '../shared/constants';
 import type { SystemState } from '../shared/types';
+import type { IRenderPipeline } from './pipelines/base';
+import { ShipRelativePipeline } from './pipelines/shipRelativePipeline';
+import { SystemMapPipeline } from './pipelines/systemMapPipeline';
 
 export class Renderer {
   private readonly canvas: HTMLCanvasElement;
@@ -30,13 +30,11 @@ export class Renderer {
   
   private core!: WebGPUCore;
   private scene!: Scene;
-  private galaxy: Galaxy;
   
   private nearTierPass!: TierPass;
   private midTierPass!: TierPass;
   private farTierPass!: TierPass;
   private compositorPass!: CompositorPass;
-  private galaxyPass!: GalaxyPass;
   private orbitsPass!: OrbitsPass;
   private postfxPass!: PostFXPass;
   private mapPass!: MapPass;
@@ -62,6 +60,7 @@ export class Renderer {
   private nearSceneUniformBuffer!: GPUBuffer;
   private midSceneUniformBuffer!: GPUBuffer;
   private farSceneUniformBuffer!: GPUBuffer;
+  private pipelines!: Record<CameraMode, IRenderPipeline>;
   private currentThemeName: string = 'white';
   private currentResponseName: string = 'Full Color';
   private lastDeltaTime: number = 1 / 60;
@@ -74,7 +73,6 @@ export class Renderer {
     this.canvas = canvas;
     this.state = state;
     this.hud = hud;
-    this.galaxy = new Galaxy(1337, 20000, 200);
   }
 
   public async initialize(authority: Authority): Promise<void> {
@@ -83,7 +81,7 @@ export class Renderer {
 
     const initialSystemState = await authority.query();
     this.lastSystemState = initialSystemState;
-    this.scene.initialize(initialSystemState, this.galaxy.stars);
+    this.scene.initialize(initialSystemState, []);
     
     this.themeUniformBuffer = this.core.device.createBuffer({
       size: 80,
@@ -112,7 +110,6 @@ export class Renderer {
     this.midTierPass = new TierPass(this.scene.midTierBuffer);
     this.farTierPass = new TierPass(this.scene.farTierBuffer);
     this.compositorPass = new CompositorPass();
-    this.galaxyPass = new GalaxyPass();
     this.orbitsPass = new OrbitsPass();
     this.postfxPass = new PostFXPass();
     this.mapPass = new MapPass();
@@ -123,13 +120,23 @@ export class Renderer {
     await this.midTierPass.initialize(this.core, this.scene);
     await this.farTierPass.initialize(this.core, this.scene);
     await this.compositorPass.initialize(this.core, this.scene);
-    await this.galaxyPass.initialize(this.core, this.scene);
     await this.orbitsPass.initialize(this.core, this.scene);
     await this.postfxPass.initialize(this.core, this.scene);
     await this.mapPass.initialize(this.core, this.scene);
     await this.glyphsPass.initialize(this.core, this.scene);
     await this.soiPass.initialize(this.core, this.scene);
     
+    this.pipelines = {
+      [CameraMode.SHIP_RELATIVE]: new ShipRelativePipeline(this),
+      [CameraMode.SYSTEM_MAP]: new SystemMapPipeline(
+        this.orbitsPass,
+        this.mapPass,
+        this.soiPass,
+        this.glyphsPass,
+        this.state,
+      ),
+    };
+
     this.handleResize();
     
     new ResizeObserver(this.handleResize).observe(this.canvas);
@@ -172,7 +179,7 @@ export class Renderer {
     
     PostFXPass.clearTexture(this.core.device, this.postFxTextureA);
     PostFXPass.clearTexture(this.core.device, this.postFxTextureB);
-    this.galaxyPass.onResize(this.textureSize, this.core);
+    
   }
 
   
@@ -220,103 +227,7 @@ export class Renderer {
 
     const encoder = this.core.device.createCommandEncoder();
 
-    if (this.state.cameraMode === CameraMode.GALACTIC_MAP) {
-        this.galaxyPass.run(encoder, context, this.galaxy.stars.length);
-    } else if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
-        if (this.state.showOrbits) {
-            this.orbitsPass.run(encoder, context, theme);
-        }
-        this.mapPass.run(encoder, context, theme, this.state.showOrbits);
-        if (this.state.showOrbits) {
-          this.soiPass.run(encoder, context);
-          this.glyphsPass.run(encoder, context);
-        }
-    } else { // This is now the Ops View (SHIP_RELATIVE)
-        // Clear tier color textures at the start of the frame to avoid uninitialized memory artifacts
-        const clearBlack = { r: 0, g: 0, b: 0, a: 1 };
-        encoder.beginRenderPass({
-          colorAttachments: [{ view: this.nearColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
-        }).end();
-        encoder.beginRenderPass({
-          colorAttachments: [{ view: this.midColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
-        }).end();
-        encoder.beginRenderPass({
-          colorAttachments: [{ view: this.farColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
-        }).end();
-        // Run tier passes into their respective textures
-        this.nearTierPass.setOutputTexture(this.nearColorTexture);
-        this.nearTierPass.setDepthTexture(this.nearDepthTexture);
-        this.midTierPass.setOutputTexture(this.midColorTexture);
-        this.midTierPass.setDepthTexture(this.midDepthTexture);
-        this.farTierPass.setOutputTexture(this.farColorTexture);
-        this.farTierPass.setDepthTexture(this.farDepthTexture);
-        this.nearTierPass.setTierBuffer(this.scene.nearTierBuffer);
-        this.midTierPass.setTierBuffer(this.scene.midTierBuffer);
-        this.farTierPass.setTierBuffer(this.scene.farTierBuffer);
-
-        if (frameData.dominantLight && frameData.worldCameraEye) {
-          const light = frameData.dominantLight;
-          // For debugging: override the sun's natural color with pure white
-          const emissive: [number, number, number] = [1.0, 1.0, 1.0];
-          // Boosted intensity to make atmosphere and highlights clearly visible
-          const LIGHT_INTENSITY = 15.0;
-
-          // Compute a stable light direction relative to a reference body near the camera
-          let referenceBody = frameData.rawState.bodies.find(b => b.id === 'sol');
-          let closestDistSq = Number.POSITIVE_INFINITY;
-          for (const b of frameData.rawState.bodies) {
-            if (typeof b.mass === 'number' && b.mass >= 1e22) {
-              const dx = b.position[0] - frameData.worldCameraEye[0];
-              const dy = b.position[1] - frameData.worldCameraEye[1];
-              const dz = b.position[2] - frameData.worldCameraEye[2];
-              const d2 = dx*dx + dy*dy + dz*dz;
-              if (d2 < closestDistSq) { closestDistSq = d2; referenceBody = b; }
-            }
-          }
-          const refPos = referenceBody ? referenceBody.position : ([0,0,0] as [number, number, number]);
-          // Direction FROM sun TO reference frame origin (light travel direction)
-          const lightDir: [number, number, number] = [
-            refPos[0] - light.position[0],
-            refPos[1] - light.position[1],
-            refPos[2] - light.position[2],
-          ];
-          const dirLen = Math.hypot(lightDir[0], lightDir[1], lightDir[2]);
-          if (dirLen > 0) { lightDir[0] /= dirLen; lightDir[1] /= dirLen; lightDir[2] /= dirLen; }
-
-          // Update per-tier lighting with tier scale awareness (using dedicated buffers)
-          this.updateTierLightingUniforms(this.farSceneUniformBuffer, lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, FAR_TIER_SCALE);
-          this.farTierPass.run(encoder, context, this.scene.farCount, this.farSceneUniformBuffer);
-          this.updateTierLightingUniforms(this.midSceneUniformBuffer, lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, MID_TIER_SCALE);
-          this.midTierPass.run(encoder, context, this.scene.midCount, this.midSceneUniformBuffer);
-          this.updateTierLightingUniforms(this.nearSceneUniformBuffer, lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, 1.0);
-          this.nearTierPass.run(encoder, context, this.scene.nearCount, this.nearSceneUniformBuffer);
-        } else {
-          // No light available; still set tier scale so shader LOD works
-          this.updateTierLightingUniforms(this.farSceneUniformBuffer, [0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, FAR_TIER_SCALE);
-          this.farTierPass.run(encoder, context, this.scene.farCount, this.farSceneUniformBuffer);
-          this.updateTierLightingUniforms(this.midSceneUniformBuffer, [0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, MID_TIER_SCALE);
-          this.midTierPass.run(encoder, context, this.scene.midCount, this.midSceneUniformBuffer);
-          this.updateTierLightingUniforms(this.nearSceneUniformBuffer, [0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, 1.0);
-          this.nearTierPass.run(encoder, context, this.scene.nearCount, this.nearSceneUniformBuffer);
-        }
-
-        // Composite tiers into mainSceneTexture (reuse sourceTexture as intermediate)
-        this.compositorPass.run(
-          encoder,
-          context,
-          this.nearColorTexture,
-          this.midColorTexture,
-          this.farColorTexture,
-          this.nearDepthTexture,
-          this.midDepthTexture,
-          this.farDepthTexture,
-          context.mainSceneTexture,
-        );
-
-        // Present the composited result via PostFX
-        PostFXPass.clearTexture(this.core.device, this.orbitsTexture);
-        this.postfxPass.run(encoder, context, theme, frameData.rawState.bodies ?? []);
-    }
+    this.pipelines[frameData.cameraMode]?.render(encoder, context, frameData, theme);
 
     this.core.device.queue.submit([encoder.finish()]);
     this.frameCount++;

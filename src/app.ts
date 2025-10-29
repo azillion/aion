@@ -7,8 +7,10 @@ import type { HUDManager } from './hud';
 import { Scene } from './renderer/scene';
 import { CameraManager } from './camera/manager';
 import type { Body, FrameData, Ship } from './shared/types';
-import { NEAR_TIER_CUTOFF, MID_TIER_CUTOFF, MID_TIER_SCALE, FAR_TIER_SCALE, PLANETARY_SOI_RADIUS_MULTIPLIER } from './shared/constants';
-import { CameraMode, ReferenceFrame } from './state';
+import { PLANETARY_SOI_RADIUS_MULTIPLIER } from './shared/constants';
+import { TierManager } from './renderer/tierManager';
+import { SystemMapManager } from './renderer/systemMapManager';
+import { CameraMode } from './state';
 import { projectWorldToScreen } from './renderer/projection';
 import { type OrbitGlyphData } from './renderer/passes/orbitsPass';
 import Stats from 'stats.js';
@@ -22,6 +24,8 @@ export class App {
   private readonly hud: HUDManager;
   private scene!: Scene;
   private cameraManager: CameraManager;
+  private tierManager: TierManager;
+  private systemMapManager: SystemMapManager;
   private lastFrameTime: number = 0;
   private fpsAccumulator = 0;
   private fpsFrameCount = 0;
@@ -46,6 +50,8 @@ export class App {
     this.ui = ui;
     this.hud = hud;
     this.cameraManager = cameraManager;
+    this.tierManager = new TierManager();
+    this.systemMapManager = new SystemMapManager();
   }
 
   public async start(): Promise<void> {
@@ -116,124 +122,29 @@ export class App {
     let camera = this.cameraManager.getCamera();
 
     if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
-      let bodiesForMap = systemState.bodies;
-      // --- Reference Frame Transformation ---
-      const focusBodyForFrame = systemState.bodies.find(b => b.id === camera.focusBodyId);
-      if (this.state.referenceFrame === ReferenceFrame.FOCUSED_BODY && focusBodyForFrame) {
-        bodiesForMap = systemState.bodies.map(body => ({
-          ...body,
-          position: [
-            body.position[0] - focusBodyForFrame.position[0],
-            body.position[1] - focusBodyForFrame.position[1],
-            body.position[2] - focusBodyForFrame.position[2],
-          ] as [number, number, number],
-        }));
-      }
-
-      renderScale = Scene.calculateRenderScale(bodiesForMap, camera.focusBodyId);
-      this.cameraManager.update(this.state.cameraMode, { bodies: bodiesForMap, scale: renderScale, viewport: this.renderer.getTextureSize(), vfov: 25.0, referenceFrame: this.state.referenceFrame });
-      bodiesToRender = bodiesForMap.map(b => ({
-        ...b,
-        position: [
-          b.position[0] * renderScale,
-          b.position[1] * renderScale,
-          b.position[2] * renderScale,
-        ] as [number, number, number],
-      }));
+      const mapData = this.systemMapManager.prepare(systemState, this.state.referenceFrame, camera);
+      bodiesToRender = mapData.bodiesToRender;
+      renderScale = mapData.renderScale;
+      this.cameraManager.update(this.state.cameraMode, { bodies: mapData.unscaledBodiesForMap, scale: mapData.renderScale, viewport: this.renderer.getTextureSize(), vfov: 25.0, referenceFrame: this.state.referenceFrame });
       if (this.state.showOrbits) {
         // Recompute orbit geometry at correct scale
-        const glyphData: OrbitGlyphData = this.renderer.getOrbitsPass().update(bodiesForMap, this.scene, this.renderer.getCore(), renderScale);
+        const glyphData: OrbitGlyphData = this.renderer.getOrbitsPass().update(mapData.unscaledBodiesForMap, this.scene, this.renderer.getCore(), mapData.renderScale);
         this.renderer.getGlyphsPass().update(
           glyphData.periapsisPoints,
           glyphData.apoapsisPoints,
           glyphData.ascendingNodePoints,
           glyphData.descendingNodePoints
         );
-        this.renderer.getSoiPass().update(bodiesForMap, this.scene, renderScale);
+        this.renderer.getSoiPass().update(mapData.unscaledBodiesForMap, this.scene, mapData.renderScale);
       }
     } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
-      renderScale = 1.0; // This is now fixed for this mode.
+      renderScale = 1.0;
       const playerShip = systemState.bodies.find(b => b.id === this.state.playerShipId) as Ship | undefined;
 
       // 1) Update world-space camera from controller FIRST.
       this.cameraManager.update(this.state.cameraMode, { playerShip, keys: this.input.keys });
       const shipCameraEyeWorld = [...camera.eye]; // Capture true f64 (JS number) camera position.
-
-      // 2) Initialize lists for tiered renderables and global shadow casters.
-      const nearRenderables: Body[] = [];
-      const midRenderables: Body[] = [];
-      const farRenderables: Body[] = [];
-      const shadowCasters: Body[] = [];
-
-      // 3) Sort all bodies from the authoritative state into tiers.
-      systemState.bodies.forEach(body => {
-        // Do not render the player ship itself in the ship-relative view to avoid
-        // the camera starting inside the ship's geometry and occluding the scene.
-        if (body.id === this.state.playerShipId) {
-          return;
-        }
-        // Use f64 math for distance calculation
-        const dx = body.position[0] - shipCameraEyeWorld[0];
-        const dy = body.position[1] - shipCameraEyeWorld[1];
-        const dz = body.position[2] - shipCameraEyeWorld[2];
-        const dist_to_center = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        // Use distance to surface for tier sorting (altitude), not center distance
-        const dist_to_surface = Math.max(0, dist_to_center - body.radius);
-
-        // Build global shadow caster list in unscaled camera-relative space
-        if (body.mass > 1e22) {
-          const hasAtmosphere = body.terrain?.atmosphere !== undefined;
-          const ATMOSPHERE_RADIUS_SCALE = 1.025;
-          let shadowRadius = body.terrain ? body.terrain.radius : body.radius;
-          if (hasAtmosphere) {
-            shadowRadius *= ATMOSPHERE_RADIUS_SCALE;
-          }
-          shadowCasters.push({
-            ...body,
-            position: [dx, dy, dz] as [number, number, number],
-            radius: shadowRadius,
-          });
-        }
-
-        if (dist_to_surface < NEAR_TIER_CUTOFF) {
-          const newBody: Body = {
-            ...body,
-            position: [dx, dy, dz] as [number, number, number],
-            radius: body.radius,
-          };
-          nearRenderables.push(newBody);
-        } else if (dist_to_surface >= NEAR_TIER_CUTOFF && dist_to_surface < MID_TIER_CUTOFF) {
-          const newBody: Body = {
-            ...body,
-            position: [dx / MID_TIER_SCALE, dy / MID_TIER_SCALE, dz / MID_TIER_SCALE] as [number, number, number],
-            // Scale geometric radius into mid-tier local space
-            radius: body.radius / MID_TIER_SCALE,
-            terrain: body.terrain ? {
-              ...body.terrain,
-              // Keep physical terrain parameters in world units; shaders handle tier scaling
-              radius: body.terrain.radius,
-              seaLevel: body.terrain.seaLevel,
-              maxHeight: body.terrain.maxHeight,
-            } : undefined,
-          };
-          midRenderables.push(newBody);
-        } else { // dist_to_surface >= MID_TIER_CUTOFF
-          const newBody: Body = {
-            ...body,
-            position: [dx / FAR_TIER_SCALE, dy / FAR_TIER_SCALE, dz / FAR_TIER_SCALE] as [number, number, number],
-            // Scale geometric radius into far-tier local space
-            radius: body.radius / FAR_TIER_SCALE,
-            terrain: body.terrain ? {
-              ...body.terrain,
-              // Keep physical terrain parameters in world units; shaders handle tier scaling
-              radius: body.terrain.radius,
-              seaLevel: body.terrain.seaLevel,
-              maxHeight: body.terrain.maxHeight,
-            } : undefined,
-          };
-          farRenderables.push(newBody);
-        }
-      });
+      const tieredScene = this.tierManager.build(systemState, shipCameraEyeWorld as [number, number, number], this.state.playerShipId);
 
       // 4) HUD/selection should use unscaled, camera-relative positions.
       // Provide a separate list for HUD logic while renderer uses tier buffers directly.
@@ -265,9 +176,9 @@ export class App {
       // We pass the combined list here, as the controller might need to find a target.
       this.cameraManager.updateLookAt(camera, { keys: this.input.keys, relativeBodies: bodiesToRender, playerShip });
       // Upload tier data to GPU buffers for ship-relative rendering
-      this.scene.updateTiers(nearRenderables, midRenderables, farRenderables);
+      this.scene.updateTiers(tieredScene.near, tieredScene.mid, tieredScene.far);
       // Upload global shadow casters (unscaled camera-relative positions)
-      this.scene.updateShadowCasters(shadowCasters);
+      this.scene.updateShadowCasters(tieredScene.shadowCasters);
       // Determine dominant light by emissive energy
       let dominantLight = systemState.bodies[0];
       let maxEmissiveEnergy = 0.0;

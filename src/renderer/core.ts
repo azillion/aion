@@ -1,4 +1,3 @@
-// src/renderer/core.ts
 export class WebGPUCore {
   public readonly device: GPUDevice;
   public readonly context: GPUCanvasContext;
