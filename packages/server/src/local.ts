@@ -409,7 +409,7 @@ export class LocalAuthority implements Authority {
 		}
 	}
 
-	public autoLand(targetBodyId: string | null): void {
+    public async autoLand(targetBodyId: string | null): Promise<void> {
 		if (!targetBodyId) return;
 		const target = this.state.bodies.find(b => b.id === targetBodyId);
 		const ship = this.state.bodies.find(b => b.id === 'player-ship') as Ship | undefined;
@@ -418,7 +418,7 @@ export class LocalAuthority implements Authority {
 		this.autoLanding.targetId = targetBodyId;
 	}
 
-	public teleportToSurface(targetBodyId: string | null): void {
+    public async teleportToSurface(targetBodyId: string | null): Promise<void> {
 		if (!targetBodyId) return;
 		const target = this.state.bodies.find(b => b.id === targetBodyId);
 		const ship = this.state.bodies.find(b => b.id === 'player-ship') as Ship | undefined;
@@ -500,11 +500,11 @@ export class LocalAuthority implements Authority {
 		ship.orientation = [q[0], q[1], q[2], q[3]];
 	}
 
-	public setTimeScale(scale: number): void {
+    public async setTimeScale(scale: number): Promise<void> {
 		this.timeScalar = Math.max(0, scale); // Ensure time doesn't go backwards
 	}
 
-	public addBody(body: Omit<Body, 'id'>): void {
+    public async addBody(body: Omit<Body, 'id'>): Promise<void> {
 		const uniqueId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 		const fullBody: Body = { id: uniqueId, ...body };
 		this.state.bodies.push(fullBody);

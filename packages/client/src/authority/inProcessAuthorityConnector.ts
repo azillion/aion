@@ -1,15 +1,16 @@
 import type { LocalAuthority } from '@server/local';
 import type { IAuthorityConnection } from './clientAuthority';
+import type { ClientToServerMessage, ServerToClientMessage } from '@shared/messages';
 
 export class InProcessAuthorityConnector implements IAuthorityConnection {
     private server: LocalAuthority;
-    public onMessage: ((message: any) => void) | null = null;
+    public onMessage: ((message: ServerToClientMessage) => void) | null = null;
 
     constructor(server: LocalAuthority) {
         this.server = server;
     }
 
-    async postMessage(message: any): Promise<void> {
+    async postMessage(message: ClientToServerMessage): Promise<void> {
         // Simulate the async nature of a network call
         await Promise.resolve();
 
@@ -23,16 +24,16 @@ export class InProcessAuthorityConnector implements IAuthorityConnection {
                 await this.server.tick(message.deltaTime, message.input);
                 break;
             case 'setTimeScale':
-                this.server.setTimeScale(message.scale);
+                await this.server.setTimeScale(message.scale);
                 break;
             case 'addBody':
-                this.server.addBody(message.body);
+                await this.server.addBody(message.body);
                 break;
             case 'autoLand':
-                this.server.autoLand(message.targetBodyId);
+                await this.server.autoLand(message.targetBodyId);
                 break;
             case 'teleportToSurface':
-                this.server.teleportToSurface(message.targetBodyId);
+                await this.server.teleportToSurface(message.targetBodyId);
                 break;
         }
     }

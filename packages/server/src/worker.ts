@@ -1,31 +1,31 @@
 import { LocalAuthority } from './local';
+import type { ClientToServerMessage, QueryResultMessage } from '@shared/messages';
 
 const server = new LocalAuthority();
 
-self.onmessage = async (e: MessageEvent) => {
+self.onmessage = async (e: MessageEvent<ClientToServerMessage>) => {
   const message = e.data;
   switch (message.type) {
     case 'query': {
       const state = await server.query();
-      self.postMessage({ type: 'queryResult', queryId: message.queryId, state });
+      const response: QueryResultMessage = { type: 'queryResult', queryId: message.queryId, state };
+      self.postMessage(response);
       break;
     }
     case 'tick':
       await server.tick(message.deltaTime, message.input);
       break;
     case 'setTimeScale':
-      server.setTimeScale(message.scale);
+      await server.setTimeScale(message.scale);
       break;
     case 'addBody':
-      server.addBody(message.body);
+      await server.addBody(message.body);
       break;
     case 'autoLand':
-      server.autoLand(message.targetBodyId);
+      await server.autoLand(message.targetBodyId);
       break;
     case 'teleportToSurface':
-      server.teleportToSurface(message.targetBodyId);
+      await server.teleportToSurface(message.targetBodyId);
       break;
   }
 };
-
-

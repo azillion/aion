@@ -34,14 +34,14 @@ export class UI {
             const cam = this.cameraManager.getCamera();
             const targetId = cam.focusBodyId;
             if (targetId && targetId !== 'player-ship') {
-                this.authority.autoLand(targetId);
+                await this.authority.autoLand(targetId);
             }
         },
         'Teleport to Surface': async () => {
             const cam = this.cameraManager.getCamera();
             const targetId = cam.focusBodyId;
             if (targetId && targetId !== 'player-ship') {
-                this.authority.teleportToSurface(targetId);
+                await this.authority.teleportToSurface(targetId);
                 this.state.cameraMode = CameraMode.SHIP_RELATIVE;
                 cam.pendingFrame = true;
             }
@@ -128,8 +128,8 @@ export class UI {
         }
     }
 
-    private setWarp(scale: number) {
-        this.authority.setTimeScale(scale);
+    private async setWarp(scale: number) {
+        await this.authority.setTimeScale(scale);
         this.settings['Time Scale'] = scale;
         const scaleNames: {[key: number]: string} = {1: 'x1', 100: 'x100', 1000: 'x1k', 10000: 'x10k', 100000: 'x100k', 1000000: 'x1M'};
         this.settings['Current Warp'] = scaleNames[scale] || `${scale.toPrecision(2)}x`;
@@ -199,7 +199,7 @@ export class UI {
         const mass = 1e15;
         const albedo: [number, number, number] = [0.6, 0.6, 0.6];
 
-        this.authority.addBody({ name, position, velocity, radius, mass, albedo });
+        await this.authority.addBody({ name, position, velocity, radius, mass, albedo });
 
         setTimeout(() => this._createSceneControls(), 100);
     }
