@@ -10,6 +10,7 @@
     "dev": "bunx --bun vite",
     "prod": "bunx --bun vite --prod",
     "build": "tsc -b && vite build",
+    "build:sim": "cd packages/game-sim && zig 0.15.2 build",
     "preview": "vite preview"
   },
   "devDependencies": {

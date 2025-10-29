@@ -14,7 +14,27 @@ import { ShipRelativePipeline } from '@client/renderer/pipelines/shipRelativePip
 import { SystemMapPipeline } from '@client/renderer/pipelines/systemMapPipeline';
 import type { IRenderPipeline } from '@client/renderer/pipelines/base';
 
+// --- Phase 0: WASM Test ---
+async function testWasm() {
+    try {
+        const response = await fetch('/packages/game-sim/zig-out/bin/game-sim.wasm');
+        const wasmBytes = await response.arrayBuffer();
+        const { instance } = await WebAssembly.instantiate(wasmBytes);
+        const { add } = instance.exports as { add: (a: number, b: number) => number };
+        const result = add(2, 3);
+        console.log(`[SUCCESS] WASM test passed: 2 + 3 = ${result}`);
+        if (result !== 5) {
+            throw new Error("WASM add function returned incorrect result!");
+        }
+    } catch (err) {
+        console.error(`[FAILURE] WASM test failed:`, err);
+        alert("Failed to load or execute the Zig WASM module. Check the console for errors. You may need to run 'npm run build:sim' first.");
+    }
+}
+// --- End WASM Test ---
+
 async function main() {
+    await testWasm(); // Run the test before starting the app
     const canvas = document.getElementById("webgpu-canvas") as HTMLCanvasElement;
     const hudCanvas = document.getElementById("hud-canvas") as HTMLCanvasElement;
 

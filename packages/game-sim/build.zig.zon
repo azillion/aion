@@ -1,0 +1,7 @@
+.{
+    .fingerprint = 0x3590d1d51b2ab7a9,
+    .name = .game_sim,
+    .version = "0.0.0",
+    .dependencies = .{},
+    .paths = .{""},
+}

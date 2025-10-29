@@ -1,1 +1,4 @@
 node_modules/
+**/deps/*
+**/.zig-cache/*
+**/zig-out/*
