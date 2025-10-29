@@ -13,6 +13,7 @@ import type { Theme, FrameData } from '@shared/types';
 import { HUDManager } from '../hud';
 import type { SystemState } from '@shared/types';
 import type { IRenderPipeline } from './pipelines/base';
+import { ShipRelativePipeline } from './pipelines/shipRelativePipeline';
 
 export class Renderer {
   private readonly canvas: HTMLCanvasElement;
@@ -139,7 +140,7 @@ export class Renderer {
     pipeline?.prepare(frameData, this);
   }
 
-  public render(frameData: FrameData) {
+  public render(frameData: FrameData, golTextureView?: GPUTextureView) {
     if (!this.core.device || !this.textureSize) return;
     const { camera, systemScale, deltaTime } = frameData;
     this.lastDeltaTime = deltaTime;
@@ -167,7 +168,11 @@ export class Renderer {
     const encoder = this.core.device.createCommandEncoder();
 
     const pipeline = this.pipelines[frameData.cameraMode as unknown as keyof typeof this.pipelines];
-    pipeline?.render(encoder, context, frameData, theme);
+    if (frameData.cameraMode === CameraMode.SHIP_RELATIVE && golTextureView && pipeline instanceof ShipRelativePipeline) {
+      (pipeline as ShipRelativePipeline).render(encoder, context, frameData, theme, golTextureView);
+    } else {
+      pipeline?.render(encoder, context, frameData, theme);
+    }
 
     this.core.device.queue.submit([encoder.finish()]);
     this.frameCount++;

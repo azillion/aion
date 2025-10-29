@@ -8,6 +8,15 @@ const PI: f32 = 3.1415926535;
 
 fn degreesToRadians(degrees: f32) -> f32 { return degrees * PI / 180.0; }
 
+// Converts a normalized 3D position on a sphere to 2D equirectangular UV coordinates.
+fn worldPosToUV(p_norm: vec3<f32>) -> vec2<f32> {
+    let phi = atan2(p_norm.y, p_norm.x);
+    let theta = acos(clamp(p_norm.z, -1.0, 1.0));
+    let u = (phi + PI) / (2.0 * PI);
+    let v = theta / PI;
+    return vec2<f32>(u, v);
+}
+
 struct Interval { minI: f32, maxI: f32 };
 fn createInterval(min: f32, max: f32) -> Interval { return Interval(min, max); }
 fn intervalSurrounds(i: Interval, x: f32) -> bool { return i.minI < x && x < i.maxI; }
@@ -182,6 +191,7 @@ struct ComputeParams { bodyCount: u32 };
 @group(0) @binding(3) var<uniform> camera: CameraUniforms;
 @group(0) @binding(4) var depthOut: texture_storage_2d<r32float, write>;
 @group(0) @binding(5) var<uniform> scene: SceneUniforms;
+@group(0) @binding(8) var gol_texture: texture_2d<u32>;
 
 
 @compute @workgroup_size(8, 8)
@@ -271,6 +281,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 		}
 		
 		final_pixel_color = surface_color * total_transmittance + total_in_scattering;
+
+		// City lights from GOL texture (emissive, not attenuated)
+		if (hit_sphere.emissive_and_terrain_flag.w > 0.5) {
+			let p_on_sphere_normalized = normalize(rec.p - hit_sphere.pos_and_radius.xyz);
+			let uv = clamp(worldPosToUV(p_on_sphere_normalized), vec2<f32>(0.0), vec2<f32>(1.0));
+			let dims = vec2<f32>(textureDimensions(gol_texture));
+			let coords = vec2<u32>(uv * dims);
+			let cell_state = textureLoad(gol_texture, coords, 0).r;
+			if (cell_state == 1u) {
+				let city_color = vec3<f32>(1.0, 0.85, 0.6);
+				let city_intensity = 1.5;
+				final_pixel_color += city_color * city_intensity;
+			}
+		}
 		final_alpha = 1.0;
 	} else {
 		final_pixel_color = total_in_scattering;

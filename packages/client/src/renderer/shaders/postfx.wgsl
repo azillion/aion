@@ -22,6 +22,7 @@ struct OrbitMask {
 };
 @group(0) @binding(5) var<uniform> targetInfo: OrbitMask;
 
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,

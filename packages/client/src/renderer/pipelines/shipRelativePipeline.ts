@@ -70,7 +70,7 @@ export class ShipRelativePipeline implements IRenderPipeline {
     this.farDepthTexture = core.device.createTexture({ size, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
   }
 
-  render(encoder: GPUCommandEncoder, context: RenderContext, frameData: FrameData, theme: Theme): void {
+  render(encoder: GPUCommandEncoder, context: RenderContext, frameData: FrameData, theme: Theme, golTextureView?: GPUTextureView): void {
     const clearBlack = { r: 0, g: 0, b: 0, a: 1 };
     encoder.beginRenderPass({
       colorAttachments: [{ view: this.nearColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
@@ -91,6 +91,12 @@ export class ShipRelativePipeline implements IRenderPipeline {
     this.nearTierPass.setTierBuffer(context.scene.nearTierBuffer);
     this.midTierPass.setTierBuffer(context.scene.midTierBuffer);
     this.farTierPass.setTierBuffer(context.scene.farTierBuffer);
+
+    if (golTextureView) {
+      this.nearTierPass.setGolTexture(golTextureView);
+      this.midTierPass.setGolTexture(golTextureView);
+      this.farTierPass.setGolTexture(golTextureView);
+    }
 
     if (frameData.dominantLight && frameData.worldCameraEye) {
       const light = frameData.dominantLight;

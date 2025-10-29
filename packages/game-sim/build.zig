@@ -4,13 +4,14 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     //============================================================================
-    // Configuration (wgpu-native via env vars)
+    // Configuration (wgpu-native via env vars or bundled deps)
     //============================================================================
     const wgpu_include_dir = std.process.getEnvVarOwned(b.allocator, "WGPU_NATIVE_INCLUDE_DIR") catch null;
     const wgpu_lib_dir = std.process.getEnvVarOwned(b.allocator, "WGPU_NATIVE_LIB_DIR") catch null;
     const wgpu_lib_name = std.process.getEnvVarOwned(b.allocator, "WGPU_NATIVE_LIB_NAME") catch "wgpu_native";
 
     var enable_headers: bool = false;
+    var use_local_includes: bool = false;
     if (wgpu_include_dir) |dir| {
         if (std.fs.path.join(b.allocator, &.{ dir, "webgpu", "wgpu.h" }) catch null) |p| {
             if (std.fs.cwd().openFile(p, .{})) |f| {
@@ -28,6 +29,14 @@ pub fn build(b: *std.Build) void {
                 b.allocator.free(p2);
             }
         }
+    }
+    // Fallback to bundled headers in deps/
+    if (!enable_headers) {
+        if (std.fs.cwd().openFile("deps/wgpu-native/include/webgpu/wgpu.h", .{})) |f| {
+            f.close();
+            enable_headers = true;
+            use_local_includes = true;
+        } else |_| {}
     }
 
     const build_opts = b.addOptions();
@@ -52,9 +61,14 @@ pub fn build(b: *std.Build) void {
     });
     // Pass options to the module (0.15 API)
     wasm_lib.root_module.addOptions("build_options", build_opts);
-    // Export the 'add' symbol for JavaScript to call
 
-    if (enable_headers) if (wgpu_include_dir) |dir| wasm_lib.root_module.addIncludePath(b.path(dir));
+    if (enable_headers) {
+        if (wgpu_include_dir) |dir| {
+            wasm_lib.root_module.addIncludePath(b.path(dir));
+        } else if (use_local_includes) {
+            wasm_lib.root_module.addIncludePath(b.path("deps/wgpu-native/include"));
+        }
+    }
 
     b.installArtifact(wasm_lib);
 
@@ -75,12 +89,20 @@ pub fn build(b: *std.Build) void {
     // Pass options to the module (0.15 API)
     native_lib.root_module.addOptions("build_options", build_opts);
 
-    if (enable_headers) if (wgpu_include_dir) |dir| native_lib.root_module.addIncludePath(b.path(dir));
+    if (enable_headers) {
+        if (wgpu_include_dir) |dir| {
+            native_lib.root_module.addIncludePath(b.path(dir));
+        } else if (use_local_includes) {
+            native_lib.root_module.addIncludePath(b.path("deps/wgpu-native/include"));
+        }
+    }
 
     if (wgpu_lib_dir) |libdir| {
         native_lib.addLibraryPath(b.path(libdir));
-        native_lib.linkSystemLibrary(wgpu_lib_name);
+    } else {
+        native_lib.addLibraryPath(b.path("deps/wgpu-native/lib"));
     }
+    native_lib.linkSystemLibrary(wgpu_lib_name);
 
     b.installArtifact(native_lib);
 }

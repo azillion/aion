@@ -13,6 +13,7 @@ export class PostFXPass implements IRenderPass {
   private targetInfoScratch!: ArrayBuffer;
   private bindGroupLayoutPost!: GPUBindGroupLayout;
   private bindGroupLayoutPresent!: GPUBindGroupLayout;
+  
 
   public initialize(core: WebGPUCore, _scene: Scene): void {
     const module = core.device.createShaderModule({ code: postfxShaderWGSL });
@@ -106,7 +107,7 @@ export class PostFXPass implements IRenderPass {
     postPass.draw(6);
     postPass.end();
 
-    // Pass 2: Present the destination texture to the canvas
+    // Pass 2: Present to the canvas
     const presentBindGroup = core.device.createBindGroup({
       label: 'Present Bind Group',
       layout: this.bindGroupLayoutPresent,

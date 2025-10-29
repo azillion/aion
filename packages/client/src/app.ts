@@ -5,6 +5,8 @@ import type { AppState } from './state';
 import type { UI } from './ui';
 import type { HUDManager } from './hud';
 import { Scene } from './renderer/scene';
+import type { ISimulationHost } from '@shared/simulation';
+import { GpuSimHost } from './simulation/gpuSimHost';
 import { CameraManager } from './camera/manager';
 import type { Body, FrameData, Ship } from '@shared/types';
 import { PLANETARY_SOI_RADIUS_MULTIPLIER } from '@shared/constants';
@@ -31,6 +33,7 @@ export class App {
   private fpsFrameCount = 0;
   private fpsLastReport = 0;
   private stats: Stats | null = null;
+  private simHost: ISimulationHost;
 
   
 
@@ -52,10 +55,17 @@ export class App {
     this.cameraManager = cameraManager;
     this.tierManager = new TierManager();
     this.systemMapManager = new SystemMapManager();
+    this.simHost = new GpuSimHost();
   }
 
   public async start(): Promise<void> {
     await this.renderer.initialize(this.authority);
+    try {
+      const core = this.renderer.getCore();
+      await this.simHost.initialize(core.device, core.device.queue);
+    } catch (err) {
+      console.error('Failed to initialize GpuSimHost', err);
+    }
     this.scene = this.renderer.getScene();
     // Initialize Stats.js overlay (FPS panel)
     this.stats = new Stats();
@@ -86,6 +96,10 @@ export class App {
 
     const clampedDeltaTime = Math.min(deltaTime, 1 / 20.0);
     await this.authority.tick(clampedDeltaTime, { deltaX: this.input.deltaX, deltaY: this.input.deltaY, keys: this.input.keys } as any);
+
+    // Tick GPU simulation and prepare debug texture view
+    this.simHost.tick();
+    const golTextureView = this.simHost.getOutputTextureView();
     
     const systemState = await this.authority.query();
 
@@ -283,7 +297,10 @@ export class App {
     if (frameData) {
       this.renderer.prepare(frameData);
     }
-    this.renderer.render(frameData ?? { rawState: systemState, bodiesToRender, camera, systemScale: renderScale, viewport: { width: 0, height: 0 }, deltaTime, cameraMode: this.state.cameraMode, playerShipId: this.state.playerShipId, showOrbits: this.state.showOrbits, showAtmosphere: this.state.showAtmosphere });
+    this.renderer.render(
+      frameData ?? { rawState: systemState, bodiesToRender, camera, systemScale: renderScale, viewport: { width: 0, height: 0 }, deltaTime, cameraMode: this.state.cameraMode, playerShipId: this.state.playerShipId, showOrbits: this.state.showOrbits, showAtmosphere: this.state.showAtmosphere },
+      golTextureView
+    );
 
     if (frameData && this.hud) {
       if (this.state.showHUD) {
