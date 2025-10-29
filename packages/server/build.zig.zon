@@ -1,0 +1,11 @@
+.{
+    .fingerprint = 0x5a6dd5f67c24e8a2,
+    .name = .server,
+    .version = "0.0.0",
+    .dependencies = .{
+        .game_sim = .{
+            .path = "../game-sim",
+        },
+    },
+    .paths = .{"../game-sim"},
+}
