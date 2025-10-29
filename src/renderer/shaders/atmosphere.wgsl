@@ -149,28 +149,24 @@ fn get_sky_color(
             // Reconstruct the sample's position in camera-relative tier space, then scale to world space.
             let p_sample_tier = p_sample + planet_center_tier;
             let p_world = p_sample_tier * tier_scale;
-            let eclipse_shadow_ray = Ray(p_world + light_dir * 0.2, light_dir);
+            let up_dir = normalize(p_sample);
+            let eclipse_shadow_ray = Ray(p_world + up_dir * 0.2, light_dir);
             let eclipse_rec = hit_spheres(eclipse_shadow_ray, createInterval(0.001, INFINITY), shadow_casters_in, shadow_params_in.count, ignore_pos_world);
 
-            // Only if NOT in a global shadow, do we calculate atmospheric scattering.
-            if (!eclipse_rec.hit || dot(eclipse_rec.emissive, eclipse_rec.emissive) > 0.1) {
-                // Phase 3: Integrate the analytic function.
-                // Replace the expensive inner ray-marching loop for sun transmittance
-                // with a single call to our new, fast analytic function.
-                let optical_lengths = calculate_optical_length_to_space(
-                    p_sample, light_dir, 
-                    planet_radius_local,
-                    atmosphere_radius_local,
-                    params.h_rayleigh, params.h_mie,
-                    tier_scale
-                );
-                
-                // Check for occlusion (indicated by a large optical length).
-                if (optical_lengths.x < 1e9) {
-                    let optical_depth_sun = params.beta_rayleigh * optical_lengths.x + params.beta_mie * optical_lengths.y;
-                    // The path length is in tier units, so we must scale by tier_scale to get world optical depth.
-                    sun_transmittance = exp(-optical_depth_sun * tier_scale);
-                }
+            // If eclipsed by a non-emissive body, skip this sample entirely.
+            if (eclipse_rec.hit && dot(eclipse_rec.emissive, eclipse_rec.emissive) < 0.1) { continue; }
+
+            // Sun is visible: compute its attenuation to this point.
+            let optical_lengths = calculate_optical_length_to_space(
+                p_sample, light_dir, 
+                planet_radius_local,
+                atmosphere_radius_local,
+                params.h_rayleigh, params.h_mie,
+                tier_scale
+            );
+            if (optical_lengths.x < 1e9) {
+                let optical_depth_sun = params.beta_rayleigh * optical_lengths.x + params.beta_mie * optical_lengths.y;
+                sun_transmittance = exp(-optical_depth_sun * tier_scale);
             }
 
             // --- 4b. Accumulate in-scattered light ---

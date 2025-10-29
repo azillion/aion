@@ -34,27 +34,40 @@ struct ShadowParams { count: u32 };
 
 fn rayAt(ray: Ray, t: f32) -> vec3<f32> { return ray.origin + ray.direction * t; }
 
-fn hit_sphere(sphere: Sphere, r: Ray, ray_t: Interval, index: u32) -> HitRecord {
+fn hit_sphere(sphere: Sphere, oc: vec3<f32>, r: Ray, ray_t: Interval, index: u32) -> HitRecord {
     var rec: HitRecord; rec.hit = false;
-    let center = sphere.pos_and_radius.xyz; let radius = sphere.pos_and_radius.w;
-    let oc = center - r.origin; let a = dot(r.direction, r.direction); let h = dot(r.direction, oc); let c = dot(oc, oc) - radius * radius;
+    let radius = sphere.pos_and_radius.w;
+    let a = dot(r.direction, r.direction); let h = dot(r.direction, oc); let c = dot(oc, oc) - radius * radius;
     let discriminant = h * h - a * c; if (discriminant < 0.0) { return rec; }
     let sqrtd = sqrt(discriminant);
     var root = (h - sqrtd) / a; if (!intervalSurrounds(ray_t, root)) { root = (h + sqrtd) / a; if (!intervalSurrounds(ray_t, root)) { return rec; } }
     rec.t = root; rec.p = rayAt(r, rec.t);
-    let outward_normal = (rec.p - center) / radius;
+    let outward_normal = (rec.p - sphere.pos_and_radius.xyz) / radius;
     rec.front_face = dot(r.direction, outward_normal) < 0.0;
     rec.normal = outward_normal;
     rec.albedo = sphere.albedo_and_atmos_flag.xyz; rec.emissive = sphere.emissive_and_terrain_flag.xyz; rec.object_index = index; rec.hit = true; return rec;
 }
 
+// Performs a numerically stable check against a list of spheres and returns the closest hit.
 fn hit_spheres(r: Ray, ray_t: Interval, spheres_in: ptr<storage, array<Sphere>, read>, sphere_count: u32, ignore_pos: vec3<f32>) -> HitRecord {
-    var closest_so_far = ray_t.maxI; var rec: HitRecord; rec.hit = false;
+    var closest_so_far = ray_t.maxI;
+    var rec: HitRecord;
+    rec.hit = false;
     for (var i = 0u; i < sphere_count; i++) {
+        let sphere = (*spheres_in)[i];
         // Ignore if the sphere center is very close to the position we want to ignore (e.g., self-shadowing).
-        if (distance((*spheres_in)[i].pos_and_radius.xyz, ignore_pos) < 0.1) { continue; }
-        let sphere_rec = hit_sphere((*spheres_in)[i], r, Interval(ray_t.minI, closest_so_far), i);
-        if (sphere_rec.hit) { closest_so_far = sphere_rec.t; rec = sphere_rec; }
+        if (distance(sphere.pos_and_radius.xyz, ignore_pos) < 0.1) { continue; }
+
+        // CRITICAL FIX: The subtraction of two large world-space vectors (sphere center and ray origin)
+        // is numerically unstable with f32. By performing it here once and passing the result (`oc`)
+        // to the intersection function, we perform the sensitive operation in the calling context
+        // and keep the core intersection logic stable and reusable.
+        let oc = sphere.pos_and_radius.xyz - r.origin;
+        let sphere_rec = hit_sphere(sphere, oc, r, Interval(ray_t.minI, closest_so_far), i);
+        if (sphere_rec.hit) {
+            closest_so_far = sphere_rec.t;
+            rec = sphere_rec;
+        }
     }
     return rec;
 }
@@ -108,16 +121,13 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
     let light_dir_to_source = -normalize(scene.dominant_light_direction.xyz);
     let light_color = scene.dominant_light_color_and_debug.xyz;
     let view_dir = normalize(ray.origin - rec.p);
-    var shadow_multiplier = 1.0;
     let tier_scale = scene.tier_scale_and_pad.x;
     let p_world = rec.p * tier_scale;
 	// The normal in world space is unchanged under uniform scale; using rec.normal directly is correct.
-	// The previous normalize(rec.normal * tier_scale) was a no-op and unnecessary.
-	let shadow_ray = Ray(p_world + rec.normal * 0.2, light_dir_to_source);
-	// Ignore the planet this surface belongs to when checking for inter-body shadows.
 	let self_pos_world = sphere.pos_and_radius.xyz * tier_scale;
+	let shadow_ray = Ray(p_world + surface_normal * 0.2, light_dir_to_source);
 	let inter_body_shadow_rec = hit_spheres(shadow_ray, createInterval(0.001, INFINITY), &shadow_casters, shadowParams.count, self_pos_world);
-    if (inter_body_shadow_rec.hit && dot(inter_body_shadow_rec.emissive, inter_body_shadow_rec.emissive) < 0.1) { shadow_multiplier = 0.01; }
+	let is_eclipsed = inter_body_shadow_rec.hit && dot(inter_body_shadow_rec.emissive, inter_body_shadow_rec.emissive) < 0.1;
 
 	// Sunlight transmittance through atmosphere to the surface point
 	var sun_color = light_color;
@@ -138,7 +148,7 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUn
 
 		// The surface is ADDITIONALLY lit by the sun if it's above the horizon.
 		let dot_nl = dot(surface_normal, light_dir_to_source);
-		if (dot_nl > 0.0 && shadow_multiplier > 0.01) {
+		if (dot_nl > 0.0 && !is_eclipsed) {
 			// Calculate transmittance for the direct sunbeam
 			 let params = get_earth_atmosphere();
 			 let tier_scale = scene.tier_scale_and_pad.x;
