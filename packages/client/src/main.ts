@@ -1,31 +1,48 @@
-import "./style.css";
-import { Renderer } from "./renderer/index";
-import { LocalAuthority } from "@server/local";
-import { UI } from "./ui";
-import { AppState } from "./state";
-import { InputManager } from "./input";
-import { App } from "./app";
-import { HUDManager } from "./hud";
-import { CameraManager } from "./camera/manager";
+import "@client/style.css";
+import { Renderer } from "@client/renderer/index";
+import { UI } from "@client/ui";
+import { AppState, CameraMode } from "@client/state";
+import { InputManager } from "@client/input";
+import { App } from "@client/app";
+import { HUDManager } from "@client/hud";
+import { CameraManager } from "@client/camera/manager";
+import { ClientAuthority } from "@client/authority/clientAuthority";
+import { WorkerAuthorityConnector } from "@client/authority/workerAuthorityConnector";
+
+// Import all passes and pipelines
+import { ShipRelativePipeline } from '@client/renderer/pipelines/shipRelativePipeline';
+import { SystemMapPipeline } from '@client/renderer/pipelines/systemMapPipeline';
+import type { IRenderPipeline } from '@client/renderer/pipelines/base';
 
 async function main() {
     const canvas = document.getElementById("webgpu-canvas") as HTMLCanvasElement;
     const hudCanvas = document.getElementById("hud-canvas") as HTMLCanvasElement;
 
-    // Instantiate all modules
-    const authority = new LocalAuthority();
+    // --- Authority Setup ---
+    const connector = new WorkerAuthorityConnector();
+    const authority = new ClientAuthority(connector);
+
+    // --- Application State ---
     const state = new AppState();
     state.playerShipId = 'player-ship';
+
+    // --- Composition Root ---
+    
+    // 1. Instantiate all rendering pipelines
+    const pipelines: Record<CameraMode, IRenderPipeline> = {
+      [CameraMode.SHIP_RELATIVE]: new ShipRelativePipeline(),
+      [CameraMode.SYSTEM_MAP]: new SystemMapPipeline(),
+    };
+
+    // 3. Instantiate core modules, injecting dependencies
     const input = new InputManager(canvas);
     const hud = new HUDManager(hudCanvas);
-    const renderer = new Renderer(canvas, state, hud);
+    const renderer = new Renderer(canvas, state, hud, pipelines);
     const cameraManager = new CameraManager(canvas);
     const ui = new UI(renderer, state, authority, cameraManager);
     
-    // The renderer needs a reference to the UI for now
     renderer.ui = ui;
 
-    // Create and start the main App
     const app = new App(renderer, authority, state, input, ui, hud, cameraManager);
     await app.start();
 }

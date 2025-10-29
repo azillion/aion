@@ -1,6 +1,3 @@
-import type { CameraMode } from '../state';
-import type { Camera } from '../camera';
-
 export type Vec3 = [number, number, number];
 
 // Atmospheric gas composition by fraction (should sum to ~1.0)
@@ -69,13 +66,16 @@ export interface Orbit {
 export interface FrameData {
 	rawState: SystemState;
 	bodiesToRender: Body[];
-	camera: Camera;
+	camera: any;
 	systemScale: number;
 	viewport: { width: number, height: number };
 	deltaTime: number;
-	cameraMode: CameraMode;
+	cameraMode: number;
 	playerShipId: string | null;
   	dominantLight?: Body;
   	worldCameraEye?: Vec3;
     debugTierView?: number;
+    showOrbits: boolean;
+    showAtmosphere: boolean;
+    unscaledBodiesForMap?: Body[];
 }

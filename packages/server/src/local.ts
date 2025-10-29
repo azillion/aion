@@ -1,4 +1,4 @@
-import type { Authority, InputState } from '@client/authority';
+import type { Authority, InputState } from '@shared/authority';
 import { quat, vec3 } from 'gl-matrix';
 import type { Body, SystemState, Vec3, Ship, TerrainParams } from '@shared/types';
 import { G } from '@shared/constants';

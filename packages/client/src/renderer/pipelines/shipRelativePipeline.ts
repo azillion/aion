@@ -3,31 +3,94 @@ import type { RenderContext } from '../types';
 import type { IRenderPipeline } from './base';
 import { FAR_TIER_SCALE, MID_TIER_SCALE } from '@shared/constants';
 import { PostFXPass } from '../passes/postfxPass';
+import { TierPass } from '../passes/tierPass';
+import { CompositorPass } from '../passes/compositorPass';
+import type { WebGPUCore } from '../core';
+import type { Scene } from '../scene';
 
 export class ShipRelativePipeline implements IRenderPipeline {
-  constructor(private renderer: any) {}
+  private nearTierPass: TierPass;
+  private midTierPass: TierPass;
+  private farTierPass: TierPass;
+  private compositorPass: CompositorPass;
+  private postfxPass: PostFXPass;
+
+  constructor() {
+    this.nearTierPass = new TierPass();
+    this.midTierPass = new TierPass();
+    this.farTierPass = new TierPass();
+    this.compositorPass = new CompositorPass();
+    this.postfxPass = new PostFXPass();
+  }
+
+  private nearColorTexture!: GPUTexture;
+  private nearDepthTexture!: GPUTexture;
+  private midColorTexture!: GPUTexture;
+  private midDepthTexture!: GPUTexture;
+  private farColorTexture!: GPUTexture;
+  private farDepthTexture!: GPUTexture;
+  private nearSceneUniformBuffer!: GPUBuffer;
+  private midSceneUniformBuffer!: GPUBuffer;
+  private farSceneUniformBuffer!: GPUBuffer;
+
+  public async initialize(core: WebGPUCore, scene: Scene): Promise<void> {
+    const sceneUniformBufferSize = 48; // three vec4<f32>
+    this.nearSceneUniformBuffer = core.device.createBuffer({
+      size: sceneUniformBufferSize,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.midSceneUniformBuffer = core.device.createBuffer({
+      size: sceneUniformBufferSize,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.farSceneUniformBuffer = core.device.createBuffer({
+      size: sceneUniformBufferSize,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    await this.nearTierPass.initialize(core, scene);
+    await this.midTierPass.initialize(core, scene);
+    await this.farTierPass.initialize(core, scene);
+    await this.compositorPass.initialize(core, scene);
+    await this.postfxPass.initialize(core, scene);
+  }
+
+  public onResize(size: { width: number; height: number }, core: WebGPUCore): void {
+    [
+      this.nearColorTexture, this.nearDepthTexture,
+      this.midColorTexture, this.midDepthTexture,
+      this.farColorTexture, this.farDepthTexture
+    ].forEach(tex => tex?.destroy());
+
+    const colorUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING;
+    this.nearColorTexture = core.device.createTexture({ size, format: 'rgba16float', usage: colorUsage });
+    this.nearDepthTexture = core.device.createTexture({ size, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+    this.midColorTexture = core.device.createTexture({ size, format: 'rgba16float', usage: colorUsage });
+    this.midDepthTexture = core.device.createTexture({ size, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+    this.farColorTexture = core.device.createTexture({ size, format: 'rgba16float', usage: colorUsage });
+    this.farDepthTexture = core.device.createTexture({ size, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+  }
 
   render(encoder: GPUCommandEncoder, context: RenderContext, frameData: FrameData, theme: Theme): void {
     const clearBlack = { r: 0, g: 0, b: 0, a: 1 };
     encoder.beginRenderPass({
-      colorAttachments: [{ view: this.renderer.nearColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
+      colorAttachments: [{ view: this.nearColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
     }).end();
     encoder.beginRenderPass({
-      colorAttachments: [{ view: this.renderer.midColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
+      colorAttachments: [{ view: this.midColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
     }).end();
     encoder.beginRenderPass({
-      colorAttachments: [{ view: this.renderer.farColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
+      colorAttachments: [{ view: this.farColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
     }).end();
 
-    this.renderer.nearTierPass.setOutputTexture(this.renderer.nearColorTexture);
-    this.renderer.nearTierPass.setDepthTexture(this.renderer.nearDepthTexture);
-    this.renderer.midTierPass.setOutputTexture(this.renderer.midColorTexture);
-    this.renderer.midTierPass.setDepthTexture(this.renderer.midDepthTexture);
-    this.renderer.farTierPass.setOutputTexture(this.renderer.farColorTexture);
-    this.renderer.farTierPass.setDepthTexture(this.renderer.farDepthTexture);
-    this.renderer.nearTierPass.setTierBuffer(this.renderer.scene.nearTierBuffer);
-    this.renderer.midTierPass.setTierBuffer(this.renderer.scene.midTierBuffer);
-    this.renderer.farTierPass.setTierBuffer(this.renderer.scene.farTierBuffer);
+    this.nearTierPass.setOutputTexture(this.nearColorTexture);
+    this.nearTierPass.setDepthTexture(this.nearDepthTexture);
+    this.midTierPass.setOutputTexture(this.midColorTexture);
+    this.midTierPass.setDepthTexture(this.midDepthTexture);
+    this.farTierPass.setOutputTexture(this.farColorTexture);
+    this.farTierPass.setDepthTexture(this.farDepthTexture);
+    this.nearTierPass.setTierBuffer(context.scene.nearTierBuffer);
+    this.midTierPass.setTierBuffer(context.scene.midTierBuffer);
+    this.farTierPass.setTierBuffer(context.scene.farTierBuffer);
 
     if (frameData.dominantLight && frameData.worldCameraEye) {
       const light = frameData.dominantLight;
@@ -54,35 +117,69 @@ export class ShipRelativePipeline implements IRenderPipeline {
       const dirLen = Math.hypot(lightDir[0], lightDir[1], lightDir[2]);
       if (dirLen > 0) { lightDir[0] /= dirLen; lightDir[1] /= dirLen; lightDir[2] /= dirLen; }
 
-      this.renderer.updateTierLightingUniforms(this.renderer.farSceneUniformBuffer, lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, FAR_TIER_SCALE);
-      this.renderer.farTierPass.run(encoder, context, this.renderer.scene.farCount, this.renderer.farSceneUniformBuffer);
-      this.renderer.updateTierLightingUniforms(this.renderer.midSceneUniformBuffer, lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, MID_TIER_SCALE);
-      this.renderer.midTierPass.run(encoder, context, this.renderer.scene.midCount, this.renderer.midSceneUniformBuffer);
-      this.renderer.updateTierLightingUniforms(this.renderer.nearSceneUniformBuffer, lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, 1.0);
-      this.renderer.nearTierPass.run(encoder, context, this.renderer.scene.nearCount, this.renderer.nearSceneUniformBuffer);
+      this.updateTierLightingUniforms(context.core, frameData, this.farSceneUniformBuffer, lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, FAR_TIER_SCALE);
+      this.farTierPass.run(encoder, context, context.scene.farCount, this.farSceneUniformBuffer);
+      this.updateTierLightingUniforms(context.core, frameData, this.midSceneUniformBuffer, lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, MID_TIER_SCALE);
+      this.midTierPass.run(encoder, context, context.scene.midCount, this.midSceneUniformBuffer);
+      this.updateTierLightingUniforms(context.core, frameData, this.nearSceneUniformBuffer, lightDir, emissive, LIGHT_INTENSITY, frameData.debugTierView ?? -1, 1.0);
+      this.nearTierPass.run(encoder, context, context.scene.nearCount, this.nearSceneUniformBuffer);
     } else {
-      this.renderer.updateTierLightingUniforms(this.renderer.farSceneUniformBuffer, [0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, FAR_TIER_SCALE);
-      this.renderer.farTierPass.run(encoder, context, this.renderer.scene.farCount, this.renderer.farSceneUniformBuffer);
-      this.renderer.updateTierLightingUniforms(this.renderer.midSceneUniformBuffer, [0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, MID_TIER_SCALE);
-      this.renderer.midTierPass.run(encoder, context, this.renderer.scene.midCount, this.renderer.midSceneUniformBuffer);
-      this.renderer.updateTierLightingUniforms(this.renderer.nearSceneUniformBuffer, [0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, 1.0);
-      this.renderer.nearTierPass.run(encoder, context, this.renderer.scene.nearCount, this.renderer.nearSceneUniformBuffer);
+      this.updateTierLightingUniforms(context.core, frameData, this.farSceneUniformBuffer, [0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, FAR_TIER_SCALE);
+      this.farTierPass.run(encoder, context, context.scene.farCount, this.farSceneUniformBuffer);
+      this.updateTierLightingUniforms(context.core, frameData, this.midSceneUniformBuffer, [0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, MID_TIER_SCALE);
+      this.midTierPass.run(encoder, context, context.scene.midCount, this.midSceneUniformBuffer);
+      this.updateTierLightingUniforms(context.core, frameData, this.nearSceneUniformBuffer, [0,0,-1], [0,0,0], 0, frameData.debugTierView ?? -1, 1.0);
+      this.nearTierPass.run(encoder, context, context.scene.nearCount, this.nearSceneUniformBuffer);
     }
 
-    this.renderer.compositorPass.run(
+    this.compositorPass.run(
       encoder,
       context,
-      this.renderer.nearColorTexture,
-      this.renderer.midColorTexture,
-      this.renderer.farColorTexture,
-      this.renderer.nearDepthTexture,
-      this.renderer.midDepthTexture,
-      this.renderer.farDepthTexture,
+      this.nearColorTexture,
+      this.midColorTexture,
+      this.farColorTexture,
+      this.nearDepthTexture,
+      this.midDepthTexture,
+      this.farDepthTexture,
       context.mainSceneTexture,
     );
 
-    PostFXPass.clearTexture(this.renderer.core.device, this.renderer.orbitsTexture);
-    this.renderer.postfxPass.run(encoder, context, theme, frameData.rawState.bodies ?? []);
+    PostFXPass.clearTexture(context.core.device, context.orbitsTexture);
+    this.postfxPass.run(encoder, context, theme, frameData.rawState.bodies ?? []);
+  }
+
+  private updateTierLightingUniforms(
+    core: WebGPUCore,
+    frameData: FrameData,
+    targetBuffer: GPUBuffer,
+    lightDirection: [number, number, number],
+    emissive: [number, number, number],
+    intensity: number,
+    debugTierView: number,
+    tierScale: number
+  ) {
+    const len = Math.hypot(emissive[0], emissive[1], emissive[2]);
+    const finalLightColor: [number, number, number] = len > 0
+      ? [
+          (emissive[0] / len) * intensity,
+          (emissive[1] / len) * intensity,
+          (emissive[2] / len) * intensity,
+        ]
+      : [0, 0, 0];
+    const bufferData = new Float32Array(12);
+    bufferData.set(lightDirection, 0);
+    bufferData[3] = 0.0;
+    bufferData.set(finalLightColor, 4);
+    bufferData[7] = debugTierView;
+    bufferData[8] = tierScale;
+    bufferData[9] = frameData.showAtmosphere ? 1.0 : 0.0;
+    bufferData[10] = 0.0;
+    bufferData[11] = 0.0;
+    core.device.queue.writeBuffer(targetBuffer, 0, bufferData);
+  }
+
+  public prepare(_frameData: FrameData, _renderer: any): void {
+    // No-op for this pipeline
   }
 }
 

@@ -12,7 +12,7 @@ import { TierManager } from './renderer/tierManager';
 import { SystemMapManager } from './renderer/systemMapManager';
 import { CameraMode } from './state';
 import { projectWorldToScreen } from './renderer/projection';
-import { type OrbitGlyphData } from './renderer/passes/orbitsPass';
+ 
 import Stats from 'stats.js';
 
 export class App {
@@ -85,7 +85,7 @@ export class App {
     }
 
     const clampedDeltaTime = Math.min(deltaTime, 1 / 20.0);
-    await this.authority.tick(clampedDeltaTime, { deltaX: this.input.deltaX, deltaY: this.input.deltaY, keys: this.input.keys });
+    await this.authority.tick(clampedDeltaTime, { deltaX: this.input.deltaX, deltaY: this.input.deltaY, keys: this.input.keys } as any);
     
     const systemState = await this.authority.query();
 
@@ -121,22 +121,14 @@ export class App {
     let renderScale: number;
     let camera = this.cameraManager.getCamera();
 
+    let unscaledBodiesForMap: Body[] | undefined;
     if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
       const mapData = this.systemMapManager.prepare(systemState, this.state.referenceFrame, camera);
       bodiesToRender = mapData.bodiesToRender;
       renderScale = mapData.renderScale;
       this.cameraManager.update(this.state.cameraMode, { bodies: mapData.unscaledBodiesForMap, scale: mapData.renderScale, viewport: this.renderer.getTextureSize(), vfov: 25.0, referenceFrame: this.state.referenceFrame });
-      if (this.state.showOrbits) {
-        // Recompute orbit geometry at correct scale
-        const glyphData: OrbitGlyphData = this.renderer.getOrbitsPass().update(mapData.unscaledBodiesForMap, this.scene, this.renderer.getCore(), mapData.renderScale);
-        this.renderer.getGlyphsPass().update(
-          glyphData.periapsisPoints,
-          glyphData.apoapsisPoints,
-          glyphData.ascendingNodePoints,
-          glyphData.descendingNodePoints
-        );
-        this.renderer.getSoiPass().update(mapData.unscaledBodiesForMap, this.scene, mapData.renderScale);
-      }
+      unscaledBodiesForMap = mapData.unscaledBodiesForMap;
+      // SystemMapPipeline will prepare its passes using unscaledBodiesForMap during renderer.prepare(...)
     } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
       renderScale = 1.0;
       const playerShip = systemState.bodies.find(b => b.id === this.state.playerShipId) as Ship | undefined;
@@ -227,6 +219,9 @@ export class App {
       dominantLight: (camera as any).dominantLight,
       worldCameraEye: (shipWorldCameraEye ?? worldCameraEye) as [number, number, number],
       debugTierView: this.state.debugTierView,
+      showOrbits: this.state.showOrbits,
+      showAtmosphere: this.state.showAtmosphere,
+      unscaledBodiesForMap,
     } : null;
 
     // --- Handle Ship-Relative Targeting Keys ---
@@ -285,7 +280,10 @@ export class App {
       }
     }
 
-    this.renderer.render(frameData ?? { rawState: systemState, bodiesToRender, camera, systemScale: renderScale, viewport: { width: 0, height: 0 }, deltaTime, cameraMode: this.state.cameraMode, playerShipId: this.state.playerShipId });
+    if (frameData) {
+      this.renderer.prepare(frameData);
+    }
+    this.renderer.render(frameData ?? { rawState: systemState, bodiesToRender, camera, systemScale: renderScale, viewport: { width: 0, height: 0 }, deltaTime, cameraMode: this.state.cameraMode, playerShipId: this.state.playerShipId, showOrbits: this.state.showOrbits, showAtmosphere: this.state.showAtmosphere });
 
     if (frameData && this.hud) {
       if (this.state.showHUD) {

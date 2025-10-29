@@ -6,21 +6,13 @@ import { Scene } from './scene';
 import type { RenderContext } from './types';
 import { vec3 } from 'gl-matrix';
 import type { UI } from '../ui';
-import { TierPass } from './passes/tierPass';
-import { CompositorPass } from './passes/compositorPass';
-import { OrbitsPass } from './passes/orbitsPass';
 import { PostFXPass } from './passes/postfxPass';
-import { MapPass } from './passes/mapPass';
-import { GlyphsPass } from './passes/glyphsPass';
-import { SOIPass } from './passes/soiPass';
 import { themes } from '../theme';
 import { spectralResponses } from '../spectral';
 import type { Theme, FrameData } from '@shared/types';
 import { HUDManager } from '../hud';
 import type { SystemState } from '@shared/types';
 import type { IRenderPipeline } from './pipelines/base';
-import { ShipRelativePipeline } from './pipelines/shipRelativePipeline';
-import { SystemMapPipeline } from './pipelines/systemMapPipeline';
 
 export class Renderer {
   private readonly canvas: HTMLCanvasElement;
@@ -31,15 +23,6 @@ export class Renderer {
   private core!: WebGPUCore;
   private scene!: Scene;
   
-  private nearTierPass!: TierPass;
-  private midTierPass!: TierPass;
-  private farTierPass!: TierPass;
-  private compositorPass!: CompositorPass;
-  private orbitsPass!: OrbitsPass;
-  private postfxPass!: PostFXPass;
-  private mapPass!: MapPass;
-  private glyphsPass!: GlyphsPass;
-  private soiPass!: SOIPass;
 
   private textureSize!: { width: number, height: number };
   private mainSceneTexture!: GPUTexture;
@@ -47,19 +30,8 @@ export class Renderer {
   private postFxTextureB!: GPUTexture;
   private orbitsTexture!: GPUTexture;
 
-  // Per-tier render targets
-  private nearColorTexture!: GPUTexture;
-  private nearDepthTexture!: GPUTexture;
-  private midColorTexture!: GPUTexture;
-  private midDepthTexture!: GPUTexture;
-  private farColorTexture!: GPUTexture;
-  private farDepthTexture!: GPUTexture;
-  
   private themeUniformBuffer!: GPUBuffer;
   private sceneUniformBuffer!: GPUBuffer;
-  private nearSceneUniformBuffer!: GPUBuffer;
-  private midSceneUniformBuffer!: GPUBuffer;
-  private farSceneUniformBuffer!: GPUBuffer;
   private pipelines!: Record<CameraMode, IRenderPipeline>;
   private currentThemeName: string = 'white';
   private currentResponseName: string = 'Full Color';
@@ -69,10 +41,16 @@ export class Renderer {
   
   private lastSystemState?: SystemState; // TODO: consider removing if unused
 
-  constructor(canvas: HTMLCanvasElement, state: AppState, hud: HUDManager) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    state: AppState,
+    hud: HUDManager,
+    pipelines: Record<CameraMode, IRenderPipeline>
+  ) {
     this.canvas = canvas;
     this.state = state;
     this.hud = hud;
+    this.pipelines = pipelines;
   }
 
   public async initialize(authority: Authority): Promise<void> {
@@ -91,51 +69,10 @@ export class Renderer {
       size: 48, // three vec4<f32> (added tier_scale_and_pad)
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    // Per-tier scene uniforms to avoid CPU/GPU timeline hazards across dispatches
-    const sceneUniformBufferSize = 48;
-    this.nearSceneUniformBuffer = this.core.device.createBuffer({
-      size: sceneUniformBufferSize,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.midSceneUniformBuffer = this.core.device.createBuffer({
-      size: sceneUniformBufferSize,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.farSceneUniformBuffer = this.core.device.createBuffer({
-      size: sceneUniformBufferSize,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
 
-    this.nearTierPass = new TierPass(this.scene.nearTierBuffer);
-    this.midTierPass = new TierPass(this.scene.midTierBuffer);
-    this.farTierPass = new TierPass(this.scene.farTierBuffer);
-    this.compositorPass = new CompositorPass();
-    this.orbitsPass = new OrbitsPass();
-    this.postfxPass = new PostFXPass();
-    this.mapPass = new MapPass();
-    this.glyphsPass = new GlyphsPass();
-    this.soiPass = new SOIPass();
-    
-    await this.nearTierPass.initialize(this.core, this.scene);
-    await this.midTierPass.initialize(this.core, this.scene);
-    await this.farTierPass.initialize(this.core, this.scene);
-    await this.compositorPass.initialize(this.core, this.scene);
-    await this.orbitsPass.initialize(this.core, this.scene);
-    await this.postfxPass.initialize(this.core, this.scene);
-    await this.mapPass.initialize(this.core, this.scene);
-    await this.glyphsPass.initialize(this.core, this.scene);
-    await this.soiPass.initialize(this.core, this.scene);
-    
-    this.pipelines = {
-      [CameraMode.SHIP_RELATIVE]: new ShipRelativePipeline(this),
-      [CameraMode.SYSTEM_MAP]: new SystemMapPipeline(
-        this.orbitsPass,
-        this.mapPass,
-        this.soiPass,
-        this.glyphsPass,
-        this.state,
-      ),
-    };
+    for (const pipeline of Object.values(this.pipelines)) {
+      await pipeline.initialize(this.core, this.scene);
+    }
 
     this.handleResize();
     
@@ -157,9 +94,7 @@ export class Renderer {
     this.textureSize = { width, height };
     this.core.context.configure({ device: this.core.device, format: this.core.presentationFormat });
 
-    [this.mainSceneTexture, this.postFxTextureA, this.postFxTextureB, this.orbitsTexture,
-     this.nearColorTexture, this.nearDepthTexture, this.midColorTexture, this.midDepthTexture,
-     this.farColorTexture, this.farDepthTexture]
+    [this.mainSceneTexture, this.postFxTextureA, this.postFxTextureB, this.orbitsTexture]
         .forEach(tex => tex?.destroy());
 
     this.mainSceneTexture = this.core.device.createTexture({ size: this.textureSize, format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT });
@@ -167,19 +102,12 @@ export class Renderer {
     this.postFxTextureB = this.core.device.createTexture({ size: this.textureSize, format: 'rgba16float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
     this.orbitsTexture = this.core.device.createTexture({ size: this.textureSize, format: this.core.presentationFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
 
-    // Tier textures
-    const size = this.textureSize;
-    const colorUsage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING;
-    this.nearColorTexture = this.core.device.createTexture({ size, format: 'rgba16float', usage: colorUsage });
-    this.nearDepthTexture = this.core.device.createTexture({ size, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
-    this.midColorTexture = this.core.device.createTexture({ size, format: 'rgba16float', usage: colorUsage });
-    this.midDepthTexture = this.core.device.createTexture({ size, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
-    this.farColorTexture = this.core.device.createTexture({ size, format: 'rgba16float', usage: colorUsage });
-    this.farDepthTexture = this.core.device.createTexture({ size, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
-    
     PostFXPass.clearTexture(this.core.device, this.postFxTextureA);
     PostFXPass.clearTexture(this.core.device, this.postFxTextureB);
     
+    for (const pipeline of Object.values(this.pipelines)) {
+      pipeline.onResize(this.textureSize, this.core);
+    }
   }
 
   
@@ -204,10 +132,12 @@ export class Renderer {
   public getCore(): WebGPUCore { return this.core; }
   public getScene(): Scene { return this.scene; }
   public getTextureSize(): { width: number, height: number } { return this.textureSize; }
-  public getOrbitsPass(): OrbitsPass { return this.orbitsPass; }
-  public getGlyphsPass(): GlyphsPass { return this.glyphsPass; }
-  public getSoiPass(): SOIPass { return this.soiPass; }
   public getCanvas(): HTMLCanvasElement { return this.canvas; }
+
+  public prepare(frameData: FrameData) {
+    const pipeline = this.pipelines[frameData.cameraMode as unknown as keyof typeof this.pipelines];
+    pipeline?.prepare(frameData, this);
+  }
 
   public render(frameData: FrameData) {
     if (!this.core.device || !this.textureSize) return;
@@ -220,14 +150,24 @@ export class Renderer {
     const destTex = this.frameCount % 2 === 0 ? this.postFxTextureA : this.postFxTextureB;
 
     const context: RenderContext = {
-      core: this.core, scene: this.scene, camera: camera, systemScale, textureSize: this.textureSize,
-      sourceTexture: sourceTex, destinationTexture: destTex, mainSceneTexture: this.mainSceneTexture,
-      orbitsTexture: this.orbitsTexture, themeUniformBuffer: this.themeUniformBuffer, sceneUniformBuffer: this.sceneUniformBuffer, lastDeltaTime: deltaTime,
+      core: this.core,
+      scene: this.scene,
+      camera: camera,
+      systemScale,
+      textureSize: this.textureSize,
+      sourceTexture: sourceTex,
+      destinationTexture: destTex,
+      mainSceneTexture: this.mainSceneTexture,
+      orbitsTexture: this.orbitsTexture,
+      themeUniformBuffer: this.themeUniformBuffer,
+      sceneUniformBuffer: this.sceneUniformBuffer,
+      lastDeltaTime: deltaTime,
     };
 
     const encoder = this.core.device.createCommandEncoder();
 
-    this.pipelines[frameData.cameraMode]?.render(encoder, context, frameData, theme);
+    const pipeline = this.pipelines[frameData.cameraMode as unknown as keyof typeof this.pipelines];
+    pipeline?.render(encoder, context, frameData, theme);
 
     this.core.device.queue.submit([encoder.finish()]);
     this.frameCount++;
@@ -249,28 +189,8 @@ export class Renderer {
     return theme;
   }
 
-  public updateTierLightingUniforms(targetBuffer: GPUBuffer, lightDirection: [number, number, number], emissive: [number, number, number], intensity: number, debugTierView: number, tierScale: number) {
-    const len = Math.hypot(emissive[0], emissive[1], emissive[2]);
-    const finalLightColor: [number, number, number] = len > 0
-      ? [
-          (emissive[0] / len) * intensity,
-          (emissive[1] / len) * intensity,
-          (emissive[2] / len) * intensity,
-        ]
-      : [0, 0, 0];
-    const bufferData = new Float32Array(12);
-    bufferData.set(lightDirection, 0);
-    bufferData[3] = 0.0;
-    bufferData.set(finalLightColor, 4);
-    bufferData[7] = debugTierView;
-    bufferData[8] = tierScale;
-    bufferData[9] = this.state.showAtmosphere ? 1.0 : 0.0;
-    bufferData[10] = 0.0;
-    bufferData[11] = 0.0;
-    this.core.device.queue.writeBuffer(targetBuffer, 0, bufferData);
-  }
-
   public clearOrbitHistory(): void {
-    this.orbitsPass.clearAll();
+    const systemMap = this.pipelines[CameraMode.SYSTEM_MAP as unknown as keyof typeof this.pipelines] as any;
+    systemMap?.clearOrbitHistory?.();
   }
 }

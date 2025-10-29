@@ -16,14 +16,11 @@ export class TierPass implements IRenderPass {
   private paramsUniformBuffer!: GPUBuffer;
   private core!: WebGPUCore;
   private bindGroupLayout!: GPUBindGroupLayout;
-  private tierBuffer: GPUBuffer;
+  private tierBuffer!: GPUBuffer;
   private outputTexture!: GPUTexture;
   private depthTexture!: GPUTexture;
 
-  constructor(tierBuffer: GPUBuffer, outputTexture?: GPUTexture) {
-    this.tierBuffer = tierBuffer;
-    if (outputTexture) this.outputTexture = outputTexture;
-  }
+  constructor() {}
 
   public async initialize(core: WebGPUCore, _scene: Scene): Promise<void> {
     this.core = core;
