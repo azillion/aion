@@ -7,7 +7,7 @@ import { App } from "@client/app";
 import { HUDManager } from "@client/hud";
 import { CameraManager } from "@client/camera/manager";
 import { ClientAuthority } from "@client/authority/clientAuthority";
-import { WorkerAuthorityConnector } from "@client/authority/workerAuthorityConnector";
+import { WebWorkerAuthorityProvider, type IAuthorityProvider } from "@client/authority/provider";
 
 // Import all passes and pipelines
 import { ShipRelativePipeline } from '@client/renderer/pipelines/shipRelativePipeline';
@@ -18,9 +18,11 @@ async function main() {
     const canvas = document.getElementById("webgpu-canvas") as HTMLCanvasElement;
     const hudCanvas = document.getElementById("hud-canvas") as HTMLCanvasElement;
 
-    // --- Authority Setup ---
-    const connector = new WorkerAuthorityConnector();
+    // --- Environment-Agnostic Authority Setup ---
+    const authorityProvider: IAuthorityProvider = new WebWorkerAuthorityProvider();
+    const connector = await authorityProvider.createConnection();
     const authority = new ClientAuthority(connector);
+    // --- END ---
 
     // --- Application State ---
     const state = new AppState();
