@@ -5,7 +5,8 @@
     "outDir": "dist",
     "noEmit": false,
     "declaration": true,
-    "emitDeclarationOnly": true
+    "emitDeclarationOnly": true,
+    "types": ["bun-types"]
   },
   "include": ["src"],
   "references": [{ "path": "../shared" }]

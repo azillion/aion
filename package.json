@@ -1,5 +1,5 @@
 {
-  "name": "raytracing-in-one-weekend",
+  "name": "aion",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -13,7 +13,7 @@
     "preview": "vite preview",
     "build:sim": "cd packages/game-sim && zig 0.15.2 build",
     "build:server": "cd packages/server && zig 0.15.2 build",
-    "run:server": "cd packages/server && zig 0.15.2 build run",
+    "run:server": "cd packages/server && bun run src/main.ts",
     "build": "pnpm build:sim && pnpm build:server && pnpm build:client"
   }
 }
