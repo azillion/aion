@@ -140,7 +140,7 @@ export class Renderer {
     pipeline?.prepare(frameData, this);
   }
 
-  public render(frameData: FrameData, golTextureView?: GPUTextureView) {
+  public render(frameData: FrameData) {
     if (!this.core.device || !this.textureSize) return;
     const { camera, systemScale, deltaTime } = frameData;
     this.lastDeltaTime = deltaTime;
@@ -168,11 +168,7 @@ export class Renderer {
     const encoder = this.core.device.createCommandEncoder();
 
     const pipeline = this.pipelines[frameData.cameraMode as unknown as keyof typeof this.pipelines];
-    if (frameData.cameraMode === CameraMode.SHIP_RELATIVE && golTextureView && pipeline instanceof ShipRelativePipeline) {
-      (pipeline as ShipRelativePipeline).render(encoder, context, frameData, theme, golTextureView);
-    } else {
-      pipeline?.render(encoder, context, frameData, theme);
-    }
+    pipeline?.render(encoder, context, frameData, theme);
 
     this.core.device.queue.submit([encoder.finish()]);
     this.frameCount++;

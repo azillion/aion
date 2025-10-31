@@ -1,9 +1,5 @@
-import type { IAuthorityConnection } from './clientAuthority';
+import type { IAuthorityConnection, IAuthorityProvider } from './provider';
 import { WasmAuthorityConnector } from './wasmAuthorityConnector';
-
-export interface IAuthorityProvider {
-    createConnection(): Promise<IAuthorityConnection>;
-}
 
 export class WasmAuthorityProvider implements IAuthorityProvider {
     async createConnection(): Promise<IAuthorityConnection> {

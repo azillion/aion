@@ -16,11 +16,14 @@ export interface OrbitGlyphData {
   descendingNodePoints: (Vec3 | null)[];
 }
 
+const MAX_ORBITS = 256;
+
 export class OrbitsPass implements IRenderPass {
   private pipeline!: GPURenderPipeline;
-  private uniformBuffer!: GPUBuffer;
-
-  private orbitVertexBuffers: GPUBuffer[] = [];
+  private bindGroup!: GPUBindGroup;
+  private allOrbitsVertexBuffer!: GPUBuffer; // storage buffer for all orbit points
+  private instanceDataBuffer!: GPUBuffer;    // storage buffer for per-instance orbit data
+  private visibleInstanceCount = 0;
   private orbitalElements: (OrbitalElements | null)[] = [];
   
   public async initialize(core: WebGPUCore, scene: Scene): Promise<void> {
@@ -34,8 +37,8 @@ export class OrbitsPass implements IRenderPass {
       label: 'Orbits Bind Group Layout',
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
-        { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', hasDynamicOffset: true } },
-        { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } }, // all points
+        { binding: 2, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } }, // per-instance data
       ],
     });
     this.pipeline = core.device.createRenderPipeline({
@@ -57,22 +60,37 @@ export class OrbitsPass implements IRenderPass {
       primitive: { topology: 'triangle-strip' },
     });
 
-    this.resizeOrbitBuffers(core.device, scene.lastKnownBodyCount);
+    // Allocate large shared buffers
+    const pointsPerOrbit = ORBIT_MAX_POINTS;
+    const bytesPerPoint = 4 * 4; // vec4<f32>
+    const totalPoints = MAX_ORBITS * pointsPerOrbit;
+    this.allOrbitsVertexBuffer = core.device.createBuffer({
+      size: totalPoints * bytesPerPoint,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    // Instance data: 8 floats (color vec3 + pointCount + a + e + currentTrueAnomaly) + 2 u32 (offset, reserved)
+    const bytesPerInstance = 16 * 4; // pad to 64 bytes for alignment
+    this.instanceDataBuffer = core.device.createBuffer({
+      size: MAX_ORBITS * bytesPerInstance,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    this.bindGroup = core.device.createBindGroup({
+      label: 'Orbits Bind Group',
+      layout: bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: scene.sharedCameraUniformBuffer } },
+        { binding: 1, resource: { buffer: this.allOrbitsVertexBuffer } },
+        { binding: 2, resource: { buffer: this.instanceDataBuffer } },
+      ],
+    });
+
+    this.orbitalElements = Array.from({ length: MAX_ORBITS }, () => null);
   }
 
-  private resizeOrbitBuffers(device: GPUDevice, count: number) {
-    this.orbitVertexBuffers.forEach(b => b.destroy());
-    this.orbitVertexBuffers = Array.from({ length: count }, () => device.createBuffer({
-        size: ORBIT_MAX_POINTS * 4 * 4,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    }));
-    if (this.uniformBuffer) this.uniformBuffer.destroy();
-    this.uniformBuffer = device.createBuffer({
-        size: count * 256,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.orbitalElements = Array.from({ length: count }, () => null);
-  }
+  // Deprecated but kept as no-op to preserve call sites if any
+  private resizeOrbitBuffers(_device: GPUDevice, _count: number) {}
 
   public _calculateBarycenter(bodies: Body[]): { position: Vec3, velocity: Vec3, totalMass: number } {
     let totalMass = 0;
@@ -99,9 +117,6 @@ export class OrbitsPass implements IRenderPass {
   }
 
   public update(bodies: Body[], _scene: Scene, core: WebGPUCore, systemScale: number): OrbitGlyphData {
-    if (bodies.length !== this.orbitVertexBuffers.length) {
-        this.resizeOrbitBuffers(core.device, bodies.length);
-    }
     
     const barycenter = this._calculateBarycenter(bodies);
     if (barycenter.totalMass === 0) {
@@ -113,7 +128,14 @@ export class OrbitsPass implements IRenderPass {
     const ascendingNodePoints: (Vec3 | null)[] = Array(bodies.length).fill(null);
     const descendingNodePoints: (Vec3 | null)[] = Array(bodies.length).fill(null);
 
-    for (let i = 0; i < bodies.length; i++) {
+    const pointsPerOrbit = ORBIT_MAX_POINTS;
+    const bytesPerPoint = 4 * 4;
+    const cpuPoints = new Float32Array(MAX_ORBITS * pointsPerOrbit * 4);
+    const instanceStrideFloats = 16; // 64 bytes
+    const cpuInstance = new Float32Array(MAX_ORBITS * instanceStrideFloats);
+
+    let visibleIndex = 0;
+    for (let i = 0; i < Math.min(bodies.length, MAX_ORBITS); i++) {
       const body = bodies[i];
       const r_vec = vec3.subtract(vec3.create(), body.position, barycenter.position) as Vec3;
       const v_vec = vec3.subtract(vec3.create(), body.velocity, barycenter.velocity) as Vec3;
@@ -121,13 +143,35 @@ export class OrbitsPass implements IRenderPass {
       this.orbitalElements[i] = elements;
 
       if (elements) {
-        core.device.queue.writeBuffer(this.orbitVertexBuffers[i], 0, elements.points.buffer, 0, elements.points.byteLength);
+        // copy points into the large CPU buffer at the correct offset
+        const pointBase = visibleIndex * pointsPerOrbit * 4;
+        cpuPoints.set(elements.points, pointBase);
+
+        // write instance data
+        const instBase = visibleIndex * instanceStrideFloats;
+        // color (use theme accent in run, but we can set placeholder; will be overridden if needed)
+        // store as neutral white; shaders can colorize
+        cpuInstance[instBase + 0] = 1.0; // r
+        cpuInstance[instBase + 1] = 1.0; // g
+        cpuInstance[instBase + 2] = 1.0; // b
+        cpuInstance[instBase + 3] = elements.pointCount;
+        cpuInstance[instBase + 4] = elements.a * systemScale;
+        cpuInstance[instBase + 5] = elements.e;
+        cpuInstance[instBase + 6] = elements.currentTrueAnomaly;
+        // pack offset (as float for alignment; shader reads as u32 via bitcast or we place into separate u32 slot)
+        cpuInstance[instBase + 7] = pointBase; // offset into points array (in vec4 units)
+
         periapsisPoints[i] = elements.periapsis;
         apoapsisPoints[i] = elements.apoapsis;
         ascendingNodePoints[i] = elements.ascendingNode;
         descendingNodePoints[i] = elements.descendingNode;
+        visibleIndex++;
       }
     }
+    // upload to GPU
+    core.device.queue.writeBuffer(this.allOrbitsVertexBuffer, 0, cpuPoints);
+    core.device.queue.writeBuffer(this.instanceDataBuffer, 0, cpuInstance);
+    this.visibleInstanceCount = visibleIndex;
     return { periapsisPoints, apoapsisPoints, ascendingNodePoints, descendingNodePoints };
   }
 
@@ -139,47 +183,10 @@ export class OrbitsPass implements IRenderPass {
       }]
     });
     pass.setPipeline(this.pipeline);
-
-    const allUniformData = new Float32Array(this.orbitalElements.length * 64);
-    const visibleOrbits: { index: number, elements: OrbitalElements }[] = [];
-
-    for (let i = 0; i < this.orbitalElements.length; i++) {
-      const elements = this.orbitalElements[i];
-      if (!elements || elements.pointCount < 2) continue;
-
-      // Add to list of visible orbits to draw later
-      visibleOrbits.push({ index: i, elements });
-      
-      // Write this orbit's data into the large CPU-side buffer at the correct offset
-      const offset = visibleOrbits.length - 1;
-      const base = offset * 64;
-      allUniformData.set(theme.accent, base);
-      allUniformData[base + 3] = elements.pointCount;
-      allUniformData[base + 4] = elements.a * context.systemScale;
-      allUniformData[base + 5] = elements.e;
-      allUniformData[base + 6] = elements.currentTrueAnomaly;
-    }
-
-    if (visibleOrbits.length > 0) {
-      context.core.device.queue.writeBuffer(this.uniformBuffer, 0, allUniformData);
-    }
-
-    for (let i = 0; i < visibleOrbits.length; i++) {
-      const { index, elements } = visibleOrbits[i];
-
-      const bindGroup = context.core.device.createBindGroup({
-        label: `Orbits Bind Group ${index}`,
-        layout: this.pipeline.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: context.scene.sharedCameraUniformBuffer } },
-            { binding: 1, resource: { buffer: this.uniformBuffer, size: 32 } },
-            { binding: 2, resource: { buffer: this.orbitVertexBuffers[index] } }
-        ],
-      });
-
-      const dynamicOffset = i * 256;
-      pass.setBindGroup(0, bindGroup, [dynamicOffset]);
-      pass.draw(elements.pointCount * 2);
+    // persistent bind group set once
+    pass.setBindGroup(0, this.bindGroup);
+    if (this.visibleInstanceCount > 0) {
+      pass.draw(ORBIT_MAX_POINTS * 2, this.visibleInstanceCount, 0, 0);
     }
     pass.end();
   }

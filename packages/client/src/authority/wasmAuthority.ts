@@ -3,46 +3,68 @@ import type { SystemState } from '@shared/types';
 
 type WasmExports = {
     memory: WebAssembly.Memory;
+    get_input_buffer: () => number;
     create_simulator: (ptr: number, len: number) => number;
-    tick_simulator: (simPtr: number, dt: number, inputPtr: number) => void;
-    query_simulator_state: (simPtr: number) => bigint;
+    tick_simulator: (simPtr: number, dt: number) => void;
+    // Out-param variant to avoid ABI ambiguity
+    query_simulator_state_out: (simPtr: number, outPtr: number) => void;
     free_result_buffer: (addr: number, len: number) => void;
     destroy_simulator: (simPtr: number) => void;
+    // Scratch pointer provider from Zig (8 bytes for [ptr,len])
+    get_query_scratch_ptr: () => number;
 };
 
 export class WasmAuthority implements Authority {
     private instance: WebAssembly.Instance | null = null;
     private exports!: WasmExports;
     private simPtr: number = 0;
+    private scratchPtr: number = 0;
 
     constructor() {}
 
     async initialize(initialState: SystemState): Promise<void> {
-        const response = await fetch('/packages/game-sim/zig-out/lib/game-sim.wasm');
+        const response = await fetch('/packages/game-sim/zig-out/bin/game-sim.wasm');
         const bytes = await response.arrayBuffer();
-        const { instance } = await WebAssembly.instantiate(bytes, {});
+        const importObject = {
+            env: {
+                log_error: (ptr: number, len: number) => {
+                    if (!this.instance) return;
+                    const mem = (this.instance.exports as any).memory as WebAssembly.Memory;
+                    const view = new Uint8Array(mem.buffer, ptr, len);
+                    const msg = new TextDecoder().decode(view);
+                    console.error(`[Zig WASM Error]: ${msg}`);
+                },
+            },
+        } as any;
+        const { instance } = await WebAssembly.instantiate(bytes, importObject);
         this.instance = instance;
         const e = instance.exports as unknown as WasmExports;
         this.exports = e;
+        this.scratchPtr = e.get_query_scratch_ptr();
 
         const json = JSON.stringify(initialState);
-        const enc = new TextEncoder();
-        const encoded = enc.encode(json);
-        const mem = new Uint8Array(e.memory.buffer);
-        const base = 100000; // temporary fixed offset; replace with proper allocator later
-        mem.set(encoded, base);
+        console.log(json);
+        const encoded = new TextEncoder().encode(json);
+        // Write at a fixed offset in linear memory for initialization
+        const base = 100000; // temporary fixed offset for init JSON
+        new Uint8Array(e.memory.buffer).set(encoded, base);
+
         this.simPtr = e.create_simulator(base, encoded.length);
         if (!this.simPtr) throw new Error('Failed to create simulator');
     }
 
     async query(): Promise<SystemState> {
         if (!this.instance) throw new Error('WASM not initialized');
-        const packed = this.exports.query_simulator_state(this.simPtr);
-        const addr = Number((packed >> 32n) & 0xffffffffn);
-        const len = Number(packed & 0xffffffffn);
-        const mem = new Uint8Array(this.exports.memory.buffer, addr, len);
-        const json = new TextDecoder().decode(mem);
-        this.exports.free_result_buffer(addr, len);
+        this.exports.query_simulator_state_out(this.simPtr, this.scratchPtr);
+        const dv = new DataView(this.exports.memory.buffer);
+        const ptr = dv.getUint32(this.scratchPtr + 0, true);
+        const len = dv.getUint32(this.scratchPtr + 4, true);
+        if (!ptr || !len) throw new Error('query_simulator_state returned empty buffer');
+        const mem = new Uint8Array(this.exports.memory.buffer, ptr, len);
+        const copy = new Uint8Array(len);
+        copy.set(mem);
+        this.exports.free_result_buffer(ptr, len);
+        const json = new TextDecoder().decode(copy);
         return JSON.parse(json) as SystemState;
     }
 
@@ -68,10 +90,9 @@ export class WasmAuthority implements Authority {
         if (set.has('KeyX')) bit(13);
         if (set.has('Backquote')) bit(14);
 
-        const base = 120000; // temporary input struct location
-        const mem = new DataView(this.exports.memory.buffer);
-        mem.setUint32(base, mask >>> 0, true);
-        this.exports.tick_simulator(this.simPtr, deltaTime, base);
+        const inputPtr = this.exports.get_input_buffer();
+        new DataView(this.exports.memory.buffer).setUint32(inputPtr, mask >>> 0, true);
+        this.exports.tick_simulator(this.simPtr, deltaTime);
     }
 
     async setTimeScale(_scale: number): Promise<void> {}

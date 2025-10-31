@@ -7,7 +7,8 @@ import { App } from "@client/app";
 import { HUDManager } from "@client/hud";
 import { CameraManager } from "@client/camera/manager";
 import { ClientAuthority } from "@client/authority/clientAuthority";
-import { WasmAuthorityProvider, type IAuthorityProvider } from "@client/authority/wasmProvider";
+import { WasmAuthorityProvider } from "@client/authority/wasmProvider";
+import type { IAuthorityProvider } from "@client/authority/provider";
 
 // Import all passes and pipelines
 import { ShipRelativePipeline } from '@client/renderer/pipelines/shipRelativePipeline';

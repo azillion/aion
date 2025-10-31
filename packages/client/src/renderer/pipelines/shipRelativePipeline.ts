@@ -32,6 +32,7 @@ export class ShipRelativePipeline implements IRenderPipeline {
   private nearSceneUniformBuffer!: GPUBuffer;
   private midSceneUniformBuffer!: GPUBuffer;
   private farSceneUniformBuffer!: GPUBuffer;
+  private dummyGolTexture!: GPUTexture;
 
   public async initialize(core: WebGPUCore, scene: Scene): Promise<void> {
     const sceneUniformBufferSize = 48; // three vec4<f32>
@@ -52,6 +53,13 @@ export class ShipRelativePipeline implements IRenderPipeline {
     await this.farTierPass.initialize(core, scene);
     await this.compositorPass.initialize(core, scene);
     await this.postfxPass.initialize(core, scene);
+
+    // Create a 1x1 dummy texture to satisfy bindings where a GOL texture was expected
+    this.dummyGolTexture = core.device.createTexture({
+      size: { width: 1, height: 1 },
+      format: 'r32uint',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
   }
 
   public onResize(size: { width: number; height: number }, core: WebGPUCore): void {
@@ -70,7 +78,7 @@ export class ShipRelativePipeline implements IRenderPipeline {
     this.farDepthTexture = core.device.createTexture({ size, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
   }
 
-  render(encoder: GPUCommandEncoder, context: RenderContext, frameData: FrameData, theme: Theme, golTextureView?: GPUTextureView): void {
+  render(encoder: GPUCommandEncoder, context: RenderContext, frameData: FrameData, theme: Theme): void {
     const clearBlack = { r: 0, g: 0, b: 0, a: 1 };
     encoder.beginRenderPass({
       colorAttachments: [{ view: this.nearColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
@@ -92,11 +100,10 @@ export class ShipRelativePipeline implements IRenderPipeline {
     this.midTierPass.setTierBuffer(context.scene.midTierBuffer);
     this.farTierPass.setTierBuffer(context.scene.farTierBuffer);
 
-    if (golTextureView) {
-      this.nearTierPass.setGolTexture(golTextureView);
-      this.midTierPass.setGolTexture(golTextureView);
-      this.farTierPass.setGolTexture(golTextureView);
-    }
+    const dummyView = this.dummyGolTexture.createView();
+    this.nearTierPass.setGolTexture(dummyView);
+    this.midTierPass.setGolTexture(dummyView);
+    this.farTierPass.setGolTexture(dummyView);
 
     if (frameData.dominantLight && frameData.worldCameraEye) {
       const light = frameData.dominantLight;

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { viteStaticCopy } from 'vite-plugin-static-copy';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,6 +21,16 @@ export default defineConfig({
       allow: ['..'],
     },
   },
+  plugins: [
+    viteStaticCopy({
+      targets: [
+        {
+          src: 'packages/game-sim/zig-out/bin/game-sim.wasm',
+          dest: 'packages/game-sim/zig-out/bin',
+        },
+      ],
+    }),
+  ],
 });
 
 

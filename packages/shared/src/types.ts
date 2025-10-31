@@ -21,7 +21,7 @@ export interface Body {
 	radius: number;
 	mass: number;
 	albedo: Vec3;
-	emissive?: Vec3;
+	emissive?: Vec3 | null;
     terrain?: TerrainParams;
 }
 
@@ -34,6 +34,7 @@ export interface Ship extends Body {
 export interface SystemState {
 	timestamp: number;
 	bodies: Body[];
+	ships: Ship[];
 	flags?: { precision?: boolean; killRotation?: boolean };
 }
 

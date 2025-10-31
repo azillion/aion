@@ -1,21 +1,22 @@
 #include "camera.wgsl"
 // CameraUniforms is provided by a shared include (camera.wgsl)
-struct OrbitsUniforms {
+struct InstanceData {
     color: vec3<f32>,
     pointCount: f32,
     semiMajorAxis: f32,
     eccentricity: f32,
     currentTrueAnomaly: f32,
-    _pad1: f32,
+    offsetVec4: u32,
+    _pad0: u32,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
-@group(0) @binding(1) var<uniform> uniforms: OrbitsUniforms;
 struct OrbitPointsBuffer {
     // 16-byte alignment for storage buffers
     points: array<vec4<f32>>,
 };
-@group(0) @binding(2) var<storage, read> orbit_points: OrbitPointsBuffer;
+@group(0) @binding(1) var<storage, read> orbit_points: OrbitPointsBuffer;
+@group(0) @binding(2) var<storage, read> instance_data: array<InstanceData>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -23,17 +24,19 @@ struct VertexOutput {
 };
 
 @vertex
-fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) instIndex: u32) -> VertexOutput {
     let point_index = vertexIndex / 2u;
     let is_right_side = (vertexIndex % 2u) == 1u;
-    let count = u32(uniforms.pointCount);
+    let inst = instance_data[instIndex];
+    let count = u32(inst.pointCount);
 
     let i0 = select(point_index, point_index - 1u, point_index > 0u);
     let i2 = select(point_index + 1u, count - 1u, point_index + 1u >= count);
 
-    let p_prev = orbit_points.points[i0].xyz;
-    let p_curr = orbit_points.points[point_index].xyz;
-    let p_next = orbit_points.points[i2].xyz;
+    let base = inst.offsetVec4;
+    let p_prev = orbit_points.points[base + i0].xyz;
+    let p_curr = orbit_points.points[base + point_index].xyz;
+    let p_next = orbit_points.points[base + i2].xyz;
 
     // Project to clip space
     let prev_clip = camera.viewProjection * vec4<f32>(p_prev, 1.0);
@@ -55,8 +58,8 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
     let normal = vec2<f32>(-dir.y, dir.x);
     // Calculate variable ribbon width
-    let a = uniforms.semiMajorAxis;
-    let e = uniforms.eccentricity;
+    let a = inst.semiMajorAxis;
+    let e = inst.eccentricity;
     let r_p = a * (1.0 - e); // Periapsis distance
     let r_a = a * (1.0 + e); // Apoapsis distance
     let r_curr = length(p_curr); // Current distance from barycenter
@@ -79,11 +82,12 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 @fragment
 fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
-    let total_points = uniforms.pointCount;
+    // Note: without passing instance index to fragment, use a representative instance (0)
+    let total_points = instance_data[0].pointCount;
     let current_point_angle = (in.point_index / total_points) * 2.0 * 3.14159;
 
     // Normalize angles to be in 0..2PI range for comparison
-    var current_nu_normalized = uniforms.currentTrueAnomaly % (2.0 * 3.14159);
+    var current_nu_normalized = instance_data[0].currentTrueAnomaly % (2.0 * 3.14159);
     if (current_nu_normalized < 0.0) {
         current_nu_normalized += 2.0 * 3.14159;
     }
@@ -97,5 +101,5 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    return vec4<f32>(uniforms.color, 1.0);
+    return vec4<f32>(instance_data[0].color, 1.0);
 }

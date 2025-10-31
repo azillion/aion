@@ -12,6 +12,7 @@ pub const Body = struct {
     radius: f64,
     mass: f64,
     albedo: Vec3,
+    emissive: ?Vec3 = null,
 };
 
 pub const Ship = struct {
@@ -24,6 +25,7 @@ pub const Ship = struct {
     radius: f64,
     mass: f64,
     albedo: Vec3,
+    emissive: ?Vec3 = null,
 
     // Ship-specific fields
     orientation: Quat,
@@ -34,7 +36,8 @@ pub const Ship = struct {
 pub const SystemState = struct {
     const Self = @This();
     timestamp: f64,
-    bodies: std.ArrayList(Ship),
+    bodies: []Body,
+    ships: []Ship,
 };
 
 pub const InputState = struct {

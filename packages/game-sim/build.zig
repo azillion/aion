@@ -8,9 +8,8 @@ pub fn build(b: *std.Build) void {
         .os_tag = .freestanding,
     });
 
-    const wasm_lib = b.addLibrary(.{
+    const wasm_exe = b.addExecutable(.{
         .name = "game-sim",
-        .linkage = .static,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = wasm_target,
@@ -18,5 +17,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    b.installArtifact(wasm_lib);
+    wasm_exe.entry = .disabled;
+
+    // Ensure required FFI symbols are exported and not stripped
+    wasm_exe.rdynamic = true;
+
+    b.installArtifact(wasm_exe);
 }

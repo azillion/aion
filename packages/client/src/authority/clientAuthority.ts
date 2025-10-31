@@ -1,13 +1,9 @@
 import type { Authority, InputState } from '@shared/authority';
 import type { Body, SystemState } from '@shared/types';
 import type { ClientToServerMessage, ServerToClientMessage } from '@shared/messages';
+import type { IAuthorityConnection } from './provider';
 import type { QueryMessage } from '@shared/messages';
 
-// This interface defines the contract for any transport layer (in-memory, websocket, etc.)
-export interface IAuthorityConnection {
-    postMessage(message: ClientToServerMessage): Promise<void>;
-    onMessage: ((message: ServerToClientMessage) => void) | null;
-}
 
 export class ClientAuthority implements Authority {
     private connection: IAuthorityConnection;

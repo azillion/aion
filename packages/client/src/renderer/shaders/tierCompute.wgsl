@@ -263,7 +263,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 				scene, rec.t, &shadow_casters, shadowParams, self_pos_world
 			);
 
-			// 3. Combine them: Surface color is attenuated by the view ray, then in-scattered light is added.
+    // 3. Combine them: Surface color is attenuated by the view ray, then in-scattered light is added.
 			surface_color = ground_color * view_atmos.transmittance + view_atmos.in_scattering;
 		} else { // Moon or other simple sphere
 			let light_dir_to_source = -normalize(scene.dominant_light_direction.xyz);
@@ -282,19 +282,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 		
 		final_pixel_color = surface_color * total_transmittance + total_in_scattering;
 
-		// City lights from GOL texture (emissive, not attenuated)
-		if (hit_sphere.emissive_and_terrain_flag.w > 0.5) {
-			let p_on_sphere_normalized = normalize(rec.p - hit_sphere.pos_and_radius.xyz);
-			let uv = clamp(worldPosToUV(p_on_sphere_normalized), vec2<f32>(0.0), vec2<f32>(1.0));
-			let dims = vec2<f32>(textureDimensions(gol_texture));
-			let coords = vec2<u32>(uv * dims);
-			let cell_state = textureLoad(gol_texture, coords, 0).r;
-			if (cell_state == 1u) {
-				let city_color = vec3<f32>(1.0, 0.85, 0.6);
-				let city_intensity = 1.5;
-				final_pixel_color += city_color * city_intensity;
-			}
-		}
 		final_alpha = 1.0;
 	} else {
 		final_pixel_color = total_in_scattering;
