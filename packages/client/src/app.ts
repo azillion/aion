@@ -6,7 +6,7 @@ import type { UI } from './ui';
 import type { HUDManager } from './hud';
 import { Scene } from './renderer/scene';
 import { CameraManager } from './camera/manager';
-import type { Body, FrameData, Ship } from '@shared/types';
+import type { Body, FrameData } from '@shared/types';
 import { PLANETARY_SOI_RADIUS_MULTIPLIER } from '@shared/constants';
 import { TierManager } from './renderer/tierManager';
 import { SystemMapManager } from './renderer/systemMapManager';
@@ -131,10 +131,10 @@ export class App {
       // SystemMapPipeline will prepare its passes using unscaledBodiesForMap during renderer.prepare(...)
     } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
       renderScale = 1.0;
-      const playerShip = systemState.bodies.find(b => b.id === this.state.playerShipId) as Ship | undefined;
+      const playerShip = systemState.ships.find(s => s.id === this.state.playerShipId);
 
       // 1) Update world-space camera from controller FIRST.
-      this.cameraManager.update(this.state.cameraMode, { playerShip, keys: this.input.keys });
+      this.cameraManager.update(this.state.cameraMode, { playerShip, keys: this.input.keys, viewport: this.renderer.getTextureSize() });
       const shipCameraEyeWorld = [...camera.eye]; // Capture true f64 (JS number) camera position.
       const tieredScene = this.tierManager.build(systemState, shipCameraEyeWorld as [number, number, number], this.state.playerShipId);
 
@@ -228,7 +228,7 @@ export class App {
     if (frameData && this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
       // KeyN: Target nearest body (camera-relative)
       if (this.input.wasPressed('KeyN')) {
-        const playerShip = systemState.bodies.find(b => b.id === this.state.playerShipId);
+        const playerShip = systemState.ships.find(s => s.id === this.state.playerShipId);
         if (playerShip) {
           let closestBodyId: string | null = null;
           let closestDistSq = Infinity;

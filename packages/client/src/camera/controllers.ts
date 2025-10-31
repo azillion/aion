@@ -18,6 +18,7 @@ export interface ShipRelativeControllerContext {
   playerShip: Ship | undefined | null;
   targetBody?: Body;
   keys: Set<string>;
+  viewport: { width: number; height: number };
 }
 
 export interface ShipRelativeLookAtContext {
@@ -49,6 +50,9 @@ export class SystemMapController implements ICameraController {
 
 export class ShipRelativeController implements ICameraController {
     public update(camera: Camera, context: ShipRelativeControllerContext): void {
+        camera.isOrthographic = false;
+        const aspect = context.viewport.width / Math.max(1, context.viewport.height);
+        mat4.perspective(camera.projectionMatrix, camera.vfov * (Math.PI / 180.0), aspect, 0.001, 1e10);
         const ship = context.playerShip;
         if (!ship) return;
         camera.eye = ship.position;
