@@ -5,9 +5,6 @@ import type { AppState } from './state';
 import type { UI } from './ui';
 import type { HUDManager } from './hud';
 import { Scene } from './renderer/scene';
-import type { ISimulationHost } from '@shared/simulation';
-import { GpuSimHost } from './simulation/gpuSimHost';
-import { NetworkClient } from './simulation/networkClient';
 import { CameraManager } from './camera/manager';
 import type { Body, FrameData, Ship } from '@shared/types';
 import { PLANETARY_SOI_RADIUS_MULTIPLIER } from '@shared/constants';
@@ -34,13 +31,8 @@ export class App {
   private fpsFrameCount = 0;
   private fpsLastReport = 0;
   private stats: Stats | null = null;
-  private simHost: ISimulationHost | null = null;
-  private networkClient: NetworkClient | null = null;
-  private onlineSimTexture: GPUTexture | null = null;
 
-  
-
-  constructor(
+    constructor(
     renderer: Renderer,
     authority: Authority,
     state: AppState,
@@ -62,48 +54,7 @@ export class App {
 
   public async start(): Promise<void> {
     await this.renderer.initialize(this.authority);
-    const core = this.renderer.getCore();
-    const USE_NETWORKED_SIMULATION = false;
-    const SERVER_URL = 'ws://localhost:9001';
-
-    if (USE_NETWORKED_SIMULATION) {
-      this.networkClient = new NetworkClient();
-      this.onlineSimTexture = core.device.createTexture({
-        size: { width: 2048, height: 2048 },
-        format: 'r32uint',
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-      });
-
-      this.networkClient.onData = (data: ArrayBuffer) => {
-        if (!this.onlineSimTexture) return;
-        const view = new Uint8Array(data);
-        const expected = 2048 * 2048 * 4;
-        if (view.byteLength !== expected) {
-          console.warn(`[NetworkClient] Unexpected frame size ${view.byteLength}, expected ${expected}`);
-          return;
-        }
-        core.device.queue.writeTexture(
-          { texture: this.onlineSimTexture },
-          view,
-          { bytesPerRow: 2048 * 4, rowsPerImage: 2048 },
-          { width: 2048, height: 2048 }
-        );
-      };
-
-      try {
-        await this.networkClient.connect(SERVER_URL);
-      } catch (e) {
-        alert(`Could not connect to the simulation server at ${SERVER_URL}. Is it running?`);
-        console.error(e);
-      }
-    } else {
-      this.simHost = new GpuSimHost();
-      try {
-        await this.simHost.initialize(core.device, core.device.queue);
-      } catch (err) {
-        console.error('Failed to initialize GpuSimHost', err);
-      }
-    }
+    
     this.scene = this.renderer.getScene();
     // Initialize Stats.js overlay (FPS panel)
     this.stats = new Stats();
@@ -135,14 +86,6 @@ export class App {
     const clampedDeltaTime = Math.min(deltaTime, 1 / 20.0);
     await this.authority.tick(clampedDeltaTime, { deltaX: this.input.deltaX, deltaY: this.input.deltaY, keys: this.input.keys } as any);
 
-    // Tick GPU simulation (local mode) or use the network texture view (online mode)
-    let golTextureView: GPUTextureView | null = null;
-    if (this.networkClient && this.onlineSimTexture) {
-      golTextureView = this.onlineSimTexture.createView();
-    } else if (this.simHost) {
-      this.simHost.tick();
-      golTextureView = this.simHost.getOutputTextureView();
-    }
     
     const systemState = await this.authority.query();
 
@@ -341,8 +284,7 @@ export class App {
       this.renderer.prepare(frameData);
     }
     this.renderer.render(
-      frameData ?? { rawState: systemState, bodiesToRender, camera, systemScale: renderScale, viewport: { width: 0, height: 0 }, deltaTime, cameraMode: this.state.cameraMode, playerShipId: this.state.playerShipId, showOrbits: this.state.showOrbits, showAtmosphere: this.state.showAtmosphere },
-      golTextureView ?? undefined
+      frameData ?? { rawState: systemState, bodiesToRender, camera, systemScale: renderScale, viewport: { width: 0, height: 0 }, deltaTime, cameraMode: this.state.cameraMode, playerShipId: this.state.playerShipId, showOrbits: this.state.showOrbits, showAtmosphere: this.state.showAtmosphere }
     );
 
     if (frameData && this.hud) {
