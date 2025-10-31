@@ -4,6 +4,7 @@ import type { SystemState } from '@shared/types';
 type WasmExports = {
     memory: WebAssembly.Memory;
     get_input_buffer: () => number;
+    get_scratch_buffer_ptr: () => number;
     create_simulator: (ptr: number, len: number) => number;
     tick_simulator: (simPtr: number, dt: number) => void;
     // Out-param variant to avoid ABI ambiguity
@@ -12,6 +13,11 @@ type WasmExports = {
     destroy_simulator: (simPtr: number) => void;
     // Scratch pointer provider from Zig (8 bytes for [ptr,len])
     get_query_scratch_ptr: () => number;
+    // Control and actions
+    set_time_scale: (simPtr: number, scale: number) => void;
+    add_body: (simPtr: number, jsonPtr: number, jsonLen: number) => void;
+    teleport_to_surface: (simPtr: number, idPtr: number, idLen: number) => void;
+    auto_land: (simPtr: number, idPtr: number, idLen: number) => void;
 };
 
 export class WasmAuthority implements Authority {
@@ -19,6 +25,7 @@ export class WasmAuthority implements Authority {
     private exports!: WasmExports;
     private simPtr: number = 0;
     private scratchPtr: number = 0;
+    private scratchBufPtr: number = 0;
 
     constructor() {}
 
@@ -41,6 +48,7 @@ export class WasmAuthority implements Authority {
         const e = instance.exports as unknown as WasmExports;
         this.exports = e;
         this.scratchPtr = e.get_query_scratch_ptr();
+        this.scratchBufPtr = e.get_scratch_buffer_ptr();
 
         const json = JSON.stringify(initialState);
         console.log(json);
@@ -89,16 +97,41 @@ export class WasmAuthority implements Authority {
         if (set.has('KeyE')) bit(12);
         if (set.has('KeyX')) bit(13);
         if (set.has('Backquote')) bit(14);
+        if (set.has('KeyB')) bit(15);
 
         const inputPtr = this.exports.get_input_buffer();
         new DataView(this.exports.memory.buffer).setUint32(inputPtr, mask >>> 0, true);
         this.exports.tick_simulator(this.simPtr, deltaTime);
     }
 
-    async setTimeScale(_scale: number): Promise<void> {}
-    async addBody(_body: Omit<SystemState['bodies'][number], 'id'>): Promise<void> {}
-    async autoLand(_targetBodyId: string | null): Promise<void> {}
-    async teleportToSurface(_targetBodyId: string | null): Promise<void> {}
+    async setTimeScale(scale: number): Promise<void> {
+        if (!this.instance) throw new Error('WASM not initialized');
+        this.exports.set_time_scale(this.simPtr, scale);
+    }
+
+    async addBody(body: Omit<SystemState['bodies'][number], 'id'>): Promise<void> {
+        if (!this.instance) throw new Error('WASM not initialized');
+        const json = JSON.stringify(body);
+        const encoded = new TextEncoder().encode(json);
+        new Uint8Array(this.exports.memory.buffer, this.scratchBufPtr, encoded.length).set(encoded);
+        this.exports.add_body(this.simPtr, this.scratchBufPtr, encoded.length);
+    }
+
+    async autoLand(targetBodyId: string | null): Promise<void> {
+        if (!this.instance || !targetBodyId) return;
+        const encoded = new TextEncoder().encode(targetBodyId);
+        new Uint8Array(this.exports.memory.buffer, this.scratchBufPtr, encoded.length).set(encoded);
+        new Uint8Array(this.exports.memory.buffer, this.scratchBufPtr + encoded.length, Math.max(0, 4096 - encoded.length)).fill(0);
+        this.exports.auto_land(this.simPtr, this.scratchBufPtr, encoded.length);
+    }
+
+    async teleportToSurface(targetBodyId: string | null): Promise<void> {
+        if (!this.instance || !targetBodyId) return;
+        const encoded = new TextEncoder().encode(targetBodyId);
+        new Uint8Array(this.exports.memory.buffer, this.scratchBufPtr, encoded.length).set(encoded);
+        new Uint8Array(this.exports.memory.buffer, this.scratchBufPtr + encoded.length, Math.max(0, 4096 - encoded.length)).fill(0);
+        this.exports.teleport_to_surface(this.simPtr, this.scratchBufPtr, encoded.length);
+    }
 }
 
 

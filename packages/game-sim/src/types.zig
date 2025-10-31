@@ -2,6 +2,14 @@ const std = @import("std");
 
 pub const Vec3 = [3]f64;
 pub const Quat = [4]f64;
+pub const Atmosphere = struct {};
+pub const TerrainParams = struct {
+    radius: f64,
+    seaLevel: f64,
+    maxHeight: f64,
+    noiseSeed: f64,
+    atmosphere: ?Atmosphere = null,
+};
 
 pub const Body = struct {
     const Self = @This();
@@ -13,6 +21,7 @@ pub const Body = struct {
     mass: f64,
     albedo: Vec3,
     emissive: ?Vec3 = null,
+    terrain: ?TerrainParams = null,
 };
 
 pub const Ship = struct {

@@ -12,14 +12,39 @@ async function main(): Promise<void> {
   const earth_dist = 149.6e6;
   const earth_vel = Math.sqrt(G * sun.mass / earth_dist);
   const earth: Body = {
-    id: 'earth', name: 'Earth', position: [0, earth_dist, 0], velocity: [-earth_vel, 0, 0], radius: 6371, mass: 5.972e24, albedo: [0.2, 0.3, 0.8],
-    emissive: null
+    id: 'earth',
+    name: 'Earth',
+    position: [0, earth_dist, 0],
+    velocity: [-earth_vel, 0, 0],
+    radius: 6371,
+    mass: 5.972e24,
+    albedo: [0.2, 0.3, 0.8],
+    emissive: null,
+    terrain: {
+      radius: 6371,
+      seaLevel: 0.1,
+      maxHeight: 0.001,
+      noiseSeed: 42.0,
+      atmosphere: { N2: 0.78, O2: 0.21 },
+    },
   };
   const moon_dist = 384400;
   const moon_vel = Math.sqrt(G * earth.mass / moon_dist);
   const moon: Body = {
-    id: 'moon', name: 'Moon', position: [0, earth_dist - moon_dist, 0], velocity: [-earth_vel + moon_vel, 0, 0], radius: 1737, mass: 7.347e22, albedo: [0.5, 0.5, 0.5],
-    emissive: null
+    id: 'moon',
+    name: 'Moon',
+    position: [0, earth_dist - moon_dist, 0],
+    velocity: [-earth_vel + moon_vel, 0, 0],
+    radius: 1737,
+    mass: 7.347e22,
+    albedo: [0.5, 0.5, 0.5],
+    emissive: null,
+    terrain: {
+      radius: 1737,
+      seaLevel: 0.0,
+      maxHeight: 0.005,
+      noiseSeed: 1337.0,
+    },
   };
   const playerShip: Ship = {
     id: 'player-ship', name: 'AION-1',

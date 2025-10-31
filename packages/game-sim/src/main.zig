@@ -10,13 +10,26 @@ const G: f64 = 6.67430e-20; // km^3 / (kg * s^2)
 // C-compatible slice return for WASM FFI
 pub const SliceU8 = extern struct { ptr: u32, len: u32 };
 
+// Temporary schema for adding a body from JSON (no id)
+const JsonBody = struct {
+    name: []const u8,
+    position: types.Vec3,
+    velocity: types.Vec3,
+    radius: f64,
+    mass: f64,
+    albedo: types.Vec3,
+    emissive: ?types.Vec3 = null,
+};
+
 pub const Simulator = struct {
     allocator: std.mem.Allocator,
     state: types.SystemState,
+    time_scale: f64 = 1.0,
+    next_body_id: u64 = 0,
 
     pub fn create(allocator: std.mem.Allocator, initial_state: types.SystemState) !*Simulator {
         const sim = try allocator.create(Simulator);
-        sim.* = .{ .allocator = allocator, .state = initial_state };
+        sim.* = .{ .allocator = allocator, .state = initial_state, .time_scale = 1.0, .next_body_id = 0 };
         return sim;
     }
 
@@ -54,6 +67,12 @@ pub export fn get_query_scratch_ptr() callconv(.c) u32 {
     return @intCast(@intFromPtr(&query_scratch));
 }
 
+// General purpose scratch buffer for string/JSON inputs from host
+var scratch_buffer: [4096]u8 = undefined;
+pub export fn get_scratch_buffer_ptr() callconv(.c) u32 {
+    return @intCast(@intFromPtr(&scratch_buffer));
+}
+
 pub export fn get_input_buffer() callconv(.c) u32 {
     return @intCast(@intFromPtr(&input_buffer));
 }
@@ -62,7 +81,7 @@ pub export fn create_simulator(initial_state_ptr: u32, initial_state_len: u32) c
     const allocator = wasmAllocator();
     const ptr: [*]const u8 = @ptrFromInt(initial_state_ptr);
     const input_slice = ptr[0..initial_state_len];
-    var parsed = json.parseFromSlice(types.SystemState, allocator, input_slice, .{}) catch |err| {
+    var parsed = json.parseFromSlice(types.SystemState, allocator, input_slice, .{ .ignore_unknown_fields = true }) catch |err| {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "JSON parse error: {s}", .{@errorName(err)}) catch {
             const lit = "JSON parse error";
@@ -110,6 +129,28 @@ fn quatFromAxisAngle(axis: types.Vec3, angle: f64) types.Quat {
     return types.Quat{ axis[0] * s, axis[1] * s, axis[2] * s, c };
 }
 
+// Creates a quaternion that rotates vector `a` to vector `b` along the shortest arc
+fn quatFromTwoVectors(a: types.Vec3, b: types.Vec3) types.Quat {
+    const len_a = vec3Len(a);
+    const len_b = vec3Len(b);
+    const norm_a = if (len_a > 1e-9) vec3Scale(a, 1.0 / len_a) else .{ 0.0, 0.0, -1.0 };
+    const norm_b = if (len_b > 1e-9) vec3Scale(b, 1.0 / len_b) else .{ 0.0, 0.0, -1.0 };
+
+    const dot_prod = norm_a[0] * norm_b[0] + norm_a[1] * norm_b[1] + norm_a[2] * norm_b[2];
+    // Anti-parallel: rotate 180 degrees around any axis orthogonal to a
+    if (dot_prod < -0.999999) {
+        var axis: types.Vec3 = .{ 1.0, 0.0, 0.0 };
+        if (@abs(norm_a[0]) > 0.9) axis = .{ 0.0, 1.0, 0.0 };
+        const ortho = vec3Cross(axis, norm_a);
+        return quatFromAxisAngle(ortho, std.math.pi);
+    }
+
+    const cross = vec3Cross(norm_a, norm_b);
+    const s = @sqrt((1.0 + dot_prod) * 2.0);
+    const invs = 1.0 / @max(s, 1e-9);
+    return types.Quat{ cross[0] * invs, cross[1] * invs, cross[2] * invs, s * 0.5 };
+}
+
 fn rotateVecByQuat(v: types.Vec3, q: types.Quat) types.Vec3 {
     // v' = v + 2*cross(q.xyz, cross(q.xyz, v) + q.w*v)
     const ux = q[0];
@@ -138,7 +179,21 @@ fn vec3Add(a: [3]f64, b: [3]f64) [3]f64 {
     return .{ a[0] + b[0], a[1] + b[1], a[2] + b[2] };
 }
 
-pub export fn tick_simulator(sim: *Simulator, dt: f64) callconv(.c) void {
+fn vec3Sub(a: [3]f64, b: [3]f64) [3]f64 {
+    return .{ a[0] - b[0], a[1] - b[1], a[2] - b[2] };
+}
+
+fn vec3Cross(a: [3]f64, b: [3]f64) [3]f64 {
+    return .{
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    };
+}
+
+pub export fn tick_simulator(sim: *Simulator, dt_unscaled: f64) callconv(.c) void {
+    const dt = dt_unscaled * sim.time_scale;
+    if (dt == 0.0) return;
     const bodies = sim.state.bodies;
     const ships = sim.state.ships;
     const num_bodies = bodies.len;
@@ -233,7 +288,25 @@ pub export fn tick_simulator(sim: *Simulator, dt: f64) callconv(.c) void {
         if (isSet.f(mask, 5)) total_force = vec3Add(total_force, vec3Scale(ship_up, -MANEUVER_FORCE));
 
         var ang_vel: [3]f64 = ship.angularVelocity;
-        if (isSet.f(mask, 6)) {
+        // Flight assist (debug): KeyB on bit 15 instantly snaps orientation to face Sun
+        if (isSet.f(mask, 15)) {
+            const sun_id = "sol";
+            var sun: ?*const types.Body = null;
+            var bi: usize = 0;
+            while (bi < sim.state.bodies.len) : (bi += 1) {
+                const b = &sim.state.bodies[bi];
+                if (std.mem.eql(u8, b.id, sun_id)) {
+                    sun = b;
+                    break;
+                }
+            }
+            if (sun) |s| {
+                const target_vec = vec3Sub(s.position, ship.position);
+                ship.orientation = quatFromTwoVectors(base_forward, target_vec);
+                quatNormalize(&ship.orientation);
+                ang_vel = .{ 0.0, 0.0, 0.0 };
+            }
+        } else if (isSet.f(mask, 6)) {
             const DAMP = 0.95;
             ang_vel = vec3Scale(ang_vel, DAMP);
             if (vec3Len(ang_vel) < 0.001) ang_vel = .{ 0, 0, 0 };
@@ -346,6 +419,100 @@ pub export fn query_simulator_state_out(sim: *Simulator, out_ptr: u32) callconv(
     const out: [*]u32 = @ptrFromInt(out_ptr);
     out[0] = @intCast(@intFromPtr(buf.ptr));
     out[1] = @intCast(buf.len);
+}
+
+// --- Control and action functions ---
+pub export fn set_time_scale(sim: *Simulator, scale: f64) callconv(.c) void {
+    sim.time_scale = if (scale < 0.0) 0.0 else scale;
+}
+
+pub export fn add_body(sim: *Simulator, body_json_ptr: u32, body_json_len: u32) callconv(.c) void {
+    const allocator = sim.allocator;
+    const ptr: [*]const u8 = @ptrFromInt(body_json_ptr);
+    const json_slice = ptr[0..body_json_len];
+
+    var parsed = json.parseFromSlice(JsonBody, allocator, json_slice, .{ .ignore_unknown_fields = true }) catch {
+        return;
+    };
+    defer parsed.deinit();
+
+    const name_dup = allocator.dupe(u8, parsed.value.name) catch {
+        return;
+    };
+    const id_str = std.fmt.allocPrint(allocator, "body-{d}", .{sim.next_body_id}) catch {
+        allocator.free(name_dup);
+        return;
+    };
+    sim.next_body_id += 1;
+
+    const new_body = types.Body{
+        .id = id_str,
+        .name = name_dup,
+        .position = parsed.value.position,
+        .velocity = parsed.value.velocity,
+        .radius = parsed.value.radius,
+        .mass = parsed.value.mass,
+        .albedo = parsed.value.albedo,
+        .emissive = parsed.value.emissive,
+        .terrain = null,
+    };
+
+    const old_len = sim.state.bodies.len;
+    const new_slice = allocator.realloc(sim.state.bodies, old_len + 1) catch {
+        allocator.free(id_str);
+        allocator.free(name_dup);
+        return;
+    };
+    new_slice[old_len] = new_body;
+    sim.state.bodies = new_slice;
+}
+
+pub export fn teleport_to_surface(sim: *Simulator, target_id_ptr: u32, target_id_len: u32) callconv(.c) void {
+    const id_ptr: [*]const u8 = @ptrFromInt(target_id_ptr);
+    const target_id = id_ptr[0..target_id_len];
+    const player_id = "player-ship";
+
+    var target_body: ?*const types.Body = null;
+    var i: usize = 0;
+    while (i < sim.state.bodies.len) : (i += 1) {
+        const b = &sim.state.bodies[i];
+        if (std.mem.eql(u8, b.id, target_id)) {
+            target_body = b;
+            break;
+        }
+    }
+
+    var player_ship: ?*types.Ship = null;
+    i = 0;
+    while (i < sim.state.ships.len) : (i += 1) {
+        const s = &sim.state.ships[i];
+        if (std.mem.eql(u8, s.id, player_id)) {
+            player_ship = s;
+            break;
+        }
+    }
+
+    if (target_body) |t| {
+        if (player_ship) |ship| {
+            var dir = [3]f64{ ship.position[0] - t.position[0], ship.position[1] - t.position[1], ship.position[2] - t.position[2] };
+            const len = vec3Len(dir);
+            if (len < 1e-9) {
+                dir = .{ 1.0, 0.0, 0.0 };
+            } else {
+                dir = vec3Scale(dir, 1.0 / len);
+            }
+            const new_pos = vec3Add(t.position, vec3Scale(dir, t.radius + 1.0));
+            ship.position = new_pos;
+            ship.velocity = t.velocity;
+            ship.angularVelocity = .{ 0.0, 0.0, 0.0 };
+        }
+    }
+}
+
+pub export fn auto_land(sim: *Simulator, _target_id_ptr: u32, _target_id_len: u32) callconv(.c) void {
+    _ = sim;
+    _ = _target_id_ptr;
+    _ = _target_id_len;
 }
 
 pub export fn free_result_buffer(ptr_addr: u32, len: u32) callconv(.c) void {
