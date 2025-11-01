@@ -19,19 +19,25 @@ export class HUDManager {
   }
 
   public clear(): void {
+    this.context.save();
+    this.context.setTransform(1, 0, 0, 1, 0, 0);
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.context.restore();
   }
 
   public draw(frameData: FrameData): void {
     const { bodiesToRender, camera, viewport, cameraMode } = frameData;
-    this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.clear();
 
     // Style
-    this.context.font = '12px Inter, system-ui, Avenir, Helvetica, Arial, sans-serif';
+    this.context.font = '12px "Share Tech Mono", monospace';
     this.context.textAlign = 'left';
     this.context.textBaseline = 'top';
     this.context.fillStyle = 'rgba(255,255,255,0.9)';
     this.context.strokeStyle = 'rgba(255,255,255,0.9)';
+    this.context.lineWidth = 1.0;
+    this.context.lineCap = 'butt';
+    this.context.lineJoin = 'miter';
     
     if (cameraMode === CameraMode.SHIP_RELATIVE) {
       this.drawShipHUD(frameData);
@@ -68,9 +74,9 @@ export class HUDManager {
     const centerX = viewport.width / 2;
     const centerY = viewport.height / 2;
 
-    this.context.strokeStyle = 'rgba(148, 255, 179, 0.7)';
-    this.context.fillStyle = 'rgba(148, 255, 179, 0.7)';
-    this.context.lineWidth = 1.5;
+    this.context.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+    this.context.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    this.context.lineWidth = 1.0;
 
     // 1. Draw Boresight (where the nose is pointing)
     this.drawBoresight(centerX, centerY);
@@ -148,6 +154,16 @@ export class HUDManager {
     this.drawBodyIndicators(frameData);
   }
 
+  public resize(width: number, height: number, dpr: number = (globalThis as any).devicePixelRatio || 1): void {
+    // Set the canvas's internal pixel buffer to device pixels for crisp lines
+    this.canvas.width = Math.max(1, Math.floor(width * dpr));
+    this.canvas.height = Math.max(1, Math.floor(height * dpr));
+    // Ensure CSS size matches logical size (so drawing API uses CSS pixels)
+    this.canvas.style.width = `${width}px`;
+    this.canvas.style.height = `${height}px`;
+    // Scale drawing operations so coordinates remain in CSS pixels
+    this.context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
   private drawBoresight(x: number, y: number): void {
     const size = 10;
     this.context.beginPath();
@@ -214,7 +230,7 @@ export class HUDManager {
     this.context.lineTo(-size * 0.6, size * 0.5);
     this.context.lineTo(-size * 0.6, -size * 0.5);
     this.context.closePath();
-    this.context.fill();
+    this.context.stroke();
     this.context.restore();
   }
 

@@ -89,8 +89,8 @@ export class Renderer {
     this.canvas.width = width;
     this.canvas.height = height;
     if (this.hud) {
-      this.hud.getCanvas().width = width;
-      this.hud.getCanvas().height = height;
+      const dpr = (globalThis as any).devicePixelRatio || 1;
+      this.hud.resize(width, height, dpr);
     }
     this.textureSize = { width, height };
     this.core.context.configure({ device: this.core.device, format: this.core.presentationFormat });
