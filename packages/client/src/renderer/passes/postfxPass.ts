@@ -2,15 +2,12 @@ import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
 import postfxShaderWGSL from '../shaders/postfx.wgsl?raw';
-import type { Body, Theme, Vec3 } from '@shared/types';
-import { projectWorldToScreen } from '../projection';
+import type { Body, Theme } from '@shared/types';
 
 export class PostFXPass implements IRenderPass {
   private postfxPipeline!: GPURenderPipeline;
   private presentPipeline!: GPURenderPipeline;
   private sampler!: GPUSampler;
-  private targetInfoUniform!: GPUBuffer;
-  private targetInfoScratch!: ArrayBuffer;
   private bindGroupLayoutPost!: GPUBindGroupLayout;
   private bindGroupLayoutPresent!: GPUBindGroupLayout;
   
@@ -27,7 +24,6 @@ export class PostFXPass implements IRenderPass {
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
-        { binding: 5, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       ]
     });
     const postPipelineLayout = core.device.createPipelineLayout({ bindGroupLayouts: [this.bindGroupLayoutPost] });
@@ -56,15 +52,6 @@ export class PostFXPass implements IRenderPass {
     });
 
     this.sampler = core.device.createSampler({ magFilter: "linear", minFilter: "linear" });
-
-    this.targetInfoUniform = core.device.createBuffer({
-      label: 'Target Info Uniform',
-      size: 272, // Matches WGSL OrbitMask struct
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    // Reuse a single scratch ArrayBuffer instead of allocating every frame
-    this.targetInfoScratch = new ArrayBuffer(272);
   }
 
   public getPresentPipeline(): GPURenderPipeline {
@@ -75,10 +62,8 @@ export class PostFXPass implements IRenderPass {
     return this.sampler;
   }
 
-  public run(encoder: GPUCommandEncoder, context: RenderContext, _theme: Theme, bodies: Body[]): void {
+  public run(encoder: GPUCommandEncoder, context: RenderContext, _theme: Theme, _bodies: Body[]): void {
     const { core, destinationTexture, sourceTexture } = context;
-
-    this.updateTargetInfo(context, bodies);
 
     const postFxBindGroup = core.device.createBindGroup({
       label: 'PostFX Bind Group',
@@ -89,7 +74,6 @@ export class PostFXPass implements IRenderPass {
         { binding: 2, resource: { buffer: context.themeUniformBuffer } },
         { binding: 3, resource: sourceTexture.createView() },
         { binding: 4, resource: context.orbitsTexture.createView() },
-        { binding: 5, resource: { buffer: this.targetInfoUniform } },
       ]
     });
 
@@ -128,39 +112,6 @@ export class PostFXPass implements IRenderPass {
     presentPass.setBindGroup(0, presentBindGroup);
     presentPass.draw(6);
     presentPass.end();
-  }
-  
-  private updateTargetInfo(context: RenderContext, bodies: Body[]) {
-    const { core, camera, systemScale, textureSize } = context;
-    const buf = this.targetInfoScratch;
-    const u32 = new Uint32Array(buf);
-    const f32 = new Float32Array(buf);
-
-    const maxTargets = 16;
-    const clampedCount = Math.min(bodies.length, maxTargets);
-    u32[0] = clampedCount;
-    f32[1] = 20.0; // targetRadiusPx
-    f32[2] = textureSize.width;
-    f32[3] = textureSize.height;
-
-    for (let i = 0; i < clampedCount; i++) {
-        const b = bodies[i];
-        const worldPos: Vec3 = [
-            b.position[0] * systemScale,
-            b.position[1] * systemScale,
-            b.position[2] * systemScale
-        ];
-
-        const screenPos = projectWorldToScreen(worldPos, camera, textureSize);
-
-        if (screenPos) {
-            const base = 4 + i * 4;
-            f32[base + 0] = screenPos.x;
-            f32[base + 1] = screenPos.y;
-        }
-    }
-
-    core.device.queue.writeBuffer(this.targetInfoUniform, 0, buf);
   }
 
   public static clearTexture(device: GPUDevice, texture: GPUTexture, color = { r: 0, g: 0, b: 0, a: 1 }) {

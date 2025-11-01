@@ -1,7 +1,7 @@
 import type { Vec3 } from '@shared/types';
 import { CameraMode } from './state';
 import { projectWorldToScreen } from './renderer/projection';
-import type { RenderPayload, ShipRelativePayload } from './views/types';
+import type { RenderPayload } from './views/types';
 
 export class HUDManager {
   private canvas: HTMLCanvasElement;
@@ -25,8 +25,8 @@ export class HUDManager {
     this.context.restore();
   }
 
-  public draw(frameData: RenderPayload): void {
-    const { bodiesToRender, camera, viewport, cameraMode } = frameData;
+  public draw(payload: RenderPayload): void {
+    const { camera, viewport, cameraMode } = payload;
     this.clear();
 
     // Style
@@ -39,23 +39,25 @@ export class HUDManager {
     this.context.lineCap = 'butt';
     this.context.lineJoin = 'miter';
     
-    if (frameData.cameraMode === CameraMode.SHIP_RELATIVE) {
-      this.drawShipHUD(frameData);
+    if (payload.cameraMode === CameraMode.SHIP_RELATIVE) {
+      this.drawShipHUD(payload);
       // We return here because drawShipHUD handles its own body indicators
       return;
     }
 
-    for (const body of bodiesToRender) {
-      const p = projectWorldToScreen(body.position as Vec3, camera, viewport);
-      if (!p) continue;
+    if (cameraMode === CameraMode.SYSTEM_MAP) {
+      const bodies = payload.bodiesToRender ?? [];
+      for (const body of bodies) {
+        const p = projectWorldToScreen(body.position as Vec3, camera, viewport);
+        if (!p) continue;
 
-      const isFocus = camera.focusBodyId === body.id;
-      // This block is now only for SYSTEM_MAP
-      if (cameraMode === CameraMode.SYSTEM_MAP && p.inView) {
-        this.context.beginPath();
-        this.context.arc(p.x, p.y, isFocus ? 4 : 2.5, 0, Math.PI * 2);
-        this.context.fill();
-        this.context.fillText(body.name, p.x + 6, p.y - 6);
+        const isFocus = camera.focusBodyId === body.id;
+        if (p.inView) {
+          this.context.beginPath();
+          this.context.arc(p.x, p.y, isFocus ? 4 : 2.5, 0, Math.PI * 2);
+          this.context.fill();
+          this.context.fillText(body.name, p.x + 6, p.y - 6);
+        }
       }
     }
   }
@@ -63,8 +65,8 @@ export class HUDManager {
   
 
   // --- Ship Relative HUD ---
-  private drawShipHUD(frameData: ShipRelativePayload): void {
-    const { rawState, camera, viewport, playerShipId } = frameData;
+  private drawShipHUD(payload: RenderPayload): void {
+    const { rawState, camera, viewport, playerShipId } = payload;
     const playerShip = rawState.ships.find(s => s.id === playerShipId);
     if (!playerShip || !('velocity' in playerShip)) {
       return;
@@ -115,7 +117,7 @@ export class HUDManager {
     this.context.fillText(`${(speed).toFixed(1)} km/s`, centerX, centerY + 40);
 
     // 4. Target Info
-    const focusBody = rawState.bodies.find(b => b.id === camera.focusBodyId);
+    const focusBody = rawState.bodies.find(b => b.id === camera.focusBodyId) ?? rawState.ships.find(b => b.id === camera.focusBodyId);
     if (focusBody && focusBody.id !== playerShipId) {
       const dx = focusBody.position[0] - ship.position[0];
       const dy = focusBody.position[1] - ship.position[1];
@@ -123,9 +125,9 @@ export class HUDManager {
       const distKm = Math.hypot(dx, dy, dz);
 
       // Terrain-aware surface radius (km)
-      const baseR = (focusBody as any).terrain ? (focusBody as any).terrain.radius : focusBody.radius;
-      const sea = (focusBody as any).terrain ? (focusBody as any).terrain.seaLevel : 0.0;
-      const maxH = (focusBody as any).terrain ? (focusBody as any).terrain.maxHeight * baseR : 0.0;
+      const baseR = (focusBody as any).terrain?.radius ?? focusBody.radius;
+      const sea = (focusBody as any).terrain?.seaLevel ?? 0.0;
+      const maxH = ((focusBody as any).terrain?.maxHeight ?? 0.0) * baseR;
       const surfaceR = baseR + Math.max(sea, maxH);
       const altitudeKm = Math.max(0, distKm - surfaceR);
 
@@ -151,7 +153,7 @@ export class HUDManager {
     }
 
     // 6. Body Indicators: Draw indicators for off-screen bodies
-    this.drawBodyIndicators(frameData);
+    this.drawTargetIndicators(payload);
   }
 
   public resize(width: number, height: number, dpr: number = (globalThis as any).devicePixelRatio || 1): void {
@@ -196,27 +198,38 @@ export class HUDManager {
     this.context.stroke();
   }
 
-  private drawBodyIndicators(frameData: RenderPayload) {
-    // This is the logic from the original 'draw' method, now separated
-    const { bodiesToRender, camera, viewport, playerShipId } = frameData;
+  private drawTargetIndicators(payload: RenderPayload) {
+    const { bodiesToRender, camera, viewport, playerShipId } = payload;
     const centerX = viewport.width * 0.5;
     const centerY = viewport.height * 0.5;
     
-    const iterable = bodiesToRender.filter(b => b.id !== playerShipId);
+    const iterable = bodiesToRender ?? [];
 
-    for (const body of iterable) {
+    for (const body of iterable.filter(b => b.id !== playerShipId)) {
       const p = projectWorldToScreen(body.position as Vec3, camera, viewport);
       if (!p) continue;
       
       const isFocus = camera.focusBodyId === body.id;
       if (p.inView) {
+        const size = isFocus ? 5 : 3;
         this.context.beginPath();
-        this.context.arc(p.x, p.y, isFocus ? 4 : 3, 0, Math.PI * 2);
+        this.context.rect(p.x - size, p.y - size, size * 2, size * 2);
         this.context.fill();
+        if (isFocus) {
+          this.context.strokeRect(p.x - size - 2, p.y - size - 2, (size + 2) * 2, (size + 2) * 2);
+        }
       } else {
         const angle = Math.atan2(p.y - centerY, p.x - centerX);
-        const size = isFocus ? 10 : 8;
-        this._drawChevron(p.x, p.y, angle, size);
+        if (isFocus) {
+          const size = 10;
+          this._drawChevron(p.x, p.y, angle, size);
+        } else {
+          // Draw a small dot for other off-screen targets
+          const size = 2;
+          this.context.beginPath();
+          this.context.arc(p.x, p.y, size, 0, Math.PI * 2);
+          this.context.fill();
+        }
       }
     }
   }

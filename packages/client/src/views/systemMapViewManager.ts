@@ -28,6 +28,15 @@ export class SystemMapViewManager implements IViewManager {
 
     const unscaledBodiesForMap = mapData.unscaledBodiesForMap;
 
+    // Update the GPU buffer for the map pass to ensure it's ready for MapPass
+    const scene = renderer.getScene();
+    scene.updateMapBuffer(
+      systemState,
+      camera,
+      bodiesToRender.filter(b => b.id !== renderer.state.playerShipId),
+      renderScale
+    );
+
     // Handle click selection
     if (input.clicked) {
       let closestBodyId: string | null = null;
