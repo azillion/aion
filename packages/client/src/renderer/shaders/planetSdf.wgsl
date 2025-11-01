@@ -18,30 +18,6 @@ fn warp(p: vec3<f32>, seed: f32) -> vec3<f32> {
 
 // Calculates signed terrain height (km) using Fractal Brownian Motion (FBM).
 fn h_noise(dir: vec3<f32>, params: TerrainUniforms, dist_to_surface: f32, base_radius: f32, camera: CameraUniforms, scene: SceneUniforms) -> f32 {
-    // var h = 0.0;
-    // var a = 1.0;
-    // var f = 4.0;
-    // let octaves = 6; // Fixed octaves for now.
-
-    // var total_amplitude = 0.0;
-    // for(var i = 0; i < octaves; i = i + 1) {
-    //     // Derived LOD: stop when projected feature size < quality factor (pixels)
-    //     let quality_factor = 2.0;
-    //     let feature_size_world = base_radius / f; // km
-    //     let projected_size_pixels = (feature_size_world / max(1e-6, dist_to_surface)) * camera.projection_constants.x;
-    //     if (projected_size_pixels < quality_factor) { break; }
-    //     let p = dir * f;
-    //     h = h + a * snoise(p);
-    //     total_amplitude = total_amplitude + a;
-    //     a = a * 0.5;
-    //     f = f * 2.0;
-    // }
-
-    // if (total_amplitude == 0.0) { return 0.0; }
-    // let normalized_h = h / total_amplitude;
-    // // Map [-1,1] -> [0,1], then scale by base_radius and proportional max_height scalar
-    // let height_in_km = (normalized_h * 0.5 + 0.5) * params.base_radius * params.max_height;
-    // return height_in_km;
     return 0.0;
 }
 

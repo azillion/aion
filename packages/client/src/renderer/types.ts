@@ -1,4 +1,4 @@
-import type { Camera } from '../camera';
+import type { Camera } from '../camera/camera';
 import type { Scene } from './scene';
 import type { WebGPUCore } from './core';
 

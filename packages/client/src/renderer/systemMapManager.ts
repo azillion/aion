@@ -1,6 +1,6 @@
 import type { Body, SystemState } from '@shared/types';
 import { ReferenceFrame } from '../state';
-import type { Camera } from '../camera';
+import type { Camera } from '../camera/camera';
 import { Scene } from './scene';
 
 export interface SystemMapData {

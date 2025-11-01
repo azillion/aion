@@ -1,10 +1,11 @@
 import type { Body, SystemState, Star } from '@shared/types';
 import type { WebGPUCore } from './core';
-import type { Camera } from '../camera';
+import type { Camera } from '../camera/camera';
 
 const FLOATS_PER_SPHERE = 24;
 const FLOATS_PER_STAR = 8;
 const VISUAL_SETTINGS = { systemViewSize: 20.0 } as const;
+const CAMERA_UNIFORM_BUFFER_SIZE = 320; // 80 floats * 4 bytes/float. Matches Float32Array(80) in renderer/index.ts
 
 // Determine parent-child relationships by strongest gravitational influence
 function buildSystemHierarchy(bodies: Body[]): Map<string, string | null> {
@@ -59,7 +60,7 @@ export class Scene {
     this.device = core.device;
     this.sharedCameraUniformBuffer = this.device.createBuffer({
       label: 'Shared Camera Uniform Buffer',
-      size: 320,
+      size: CAMERA_UNIFORM_BUFFER_SIZE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.shadowCasterBuffer = this.device.createBuffer({

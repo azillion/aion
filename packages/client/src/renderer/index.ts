@@ -1,6 +1,6 @@
 import type { Authority } from '../authority';
 import { AppState, CameraMode } from '../state';
-import type { Camera } from '../camera';
+import type { Camera } from '../camera/camera';
 import { WebGPUCore } from './core';
 import { Scene } from './scene';
 import type { RenderContext } from './types';

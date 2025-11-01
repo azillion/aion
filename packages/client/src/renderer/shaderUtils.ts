@@ -1,5 +1,3 @@
-import type { GPUDevice } from '@webgpu/types';
-
 const includeRegex = /#include\s+"([^"]+)"/g;
 
 export async function createShaderModule(

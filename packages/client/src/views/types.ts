@@ -1,5 +1,5 @@
 import type { Body, SystemState, Vec3 } from '@shared/types';
-import type { Camera } from '@client/camera';
+import type { Camera } from '@client/camera/camera';
 import type { InputManager } from '@client/input';
 import { CameraMode } from '@client/state';
 import type { Scene } from '@client/renderer/scene';
