@@ -43,53 +43,9 @@ struct ShadowParams { count: u32 };
 
 fn rayAt(ray: Ray, t: f32) -> vec3<f32> { return ray.origin + ray.direction * t; }
 
-fn hit_sphere(sphere: Sphere, oc: vec3<f32>, r: Ray, ray_t: Interval, index: u32) -> HitRecord {
-    var rec: HitRecord; rec.hit = false;
-    let radius = sphere.pos_and_radius.w;
-    let a = dot(r.direction, r.direction); let h = dot(r.direction, oc); let c = dot(oc, oc) - radius * radius;
-    let discriminant = h * h - a * c; if (discriminant < 0.0) { return rec; }
-    let sqrtd = sqrt(discriminant);
-    var root = (h - sqrtd) / a; if (!intervalSurrounds(ray_t, root)) { root = (h + sqrtd) / a; if (!intervalSurrounds(ray_t, root)) { return rec; } }
-    rec.t = root; rec.p = rayAt(r, rec.t);
-    let outward_normal = (rec.p - sphere.pos_and_radius.xyz) / radius;
-    rec.front_face = dot(r.direction, outward_normal) < 0.0;
-    rec.normal = outward_normal;
-    rec.albedo = sphere.albedo_and_atmos_flag.xyz; rec.emissive = sphere.emissive_and_terrain_flag.xyz; rec.object_index = index; rec.hit = true; return rec;
-}
-
-// Performs a numerically stable check against a list of spheres and returns the closest hit.
-fn hit_spheres_shadow(r: Ray, ray_t: Interval, spheres_in: ptr<storage, array<Sphere>, read>, sphere_count: u32, ignore_pos: vec3<f32>) -> HitRecord {
-    var closest_so_far = ray_t.maxI;
-    var rec: HitRecord;
-    rec.hit = false;
-    for (var i = 0u; i < sphere_count; i++) {
-        let sphere = (*spheres_in)[i];
-        if (distance(sphere.pos_and_radius.xyz, ignore_pos) < 0.1) { continue; }
-        let oc = sphere.pos_and_radius.xyz - r.origin;
-        let sphere_rec = hit_sphere(sphere, oc, r, Interval(ray_t.minI, closest_so_far), i);
-        if (sphere_rec.hit) {
-            closest_so_far = sphere_rec.t;
-            rec = sphere_rec;
-        }
-    }
-    return rec;
-}
-
-// Generic indexed hit against the current tier's spheres buffer
-fn hit_tier_spheres(r: Ray, ray_t: Interval, spheres_in: ptr<storage, array<Sphere>, read>, sphere_count: u32, ignore_pos: vec3<f32>) -> HitRecord {
-    var closest_so_far = ray_t.maxI;
-    var rec: HitRecord; rec.hit = false;
-    for (var i = 0u; i < sphere_count; i++) {
-        let s = (*spheres_in)[i];
-        if (distance(s.pos_and_radius.xyz, ignore_pos) < 0.1) { continue; }
-        let oc = s.pos_and_radius.xyz - r.origin;
-        let sphere_rec = hit_sphere(s, oc, r, Interval(ray_t.minI, closest_so_far), i);
-        if (sphere_rec.hit) { closest_so_far = sphere_rec.t; rec = sphere_rec; }
-    }
-    return rec;
-}
-
+#include "raytracing.wgsl"
 #include "atmosphere.wgsl"
+#include "shading.wgsl"
  
 
 struct Camera { origin: vec3<f32>, lower_left_corner: vec3<f32>, horizontal: vec3<f32>, vertical: vec3<f32> }
@@ -104,58 +60,6 @@ fn createCamera(aspect_ratio: f32) -> Camera {
 
 fn getRay(camera: Camera, s: f32, t: f32) -> Ray {
     return Ray(camera.origin, normalize(camera.lower_left_corner + s*camera.horizontal + t*camera.vertical - camera.origin));
-}
-
-fn shade_planet_surface(rec: HitRecord, sphere: Sphere, ray: Ray, scene: SceneUniforms, camera: CameraUniforms) -> vec3<f32> {
-    let surface_albedo = sphere.albedo_and_atmos_flag.xyz;
-    let surface_normal = rec.normal;
-    let is_ocean = sphere.terrain_params.y > 0.0; // Simple ocean check based on sea level
-
-    let light_dir_to_source = -normalize(scene.dominant_light_direction.xyz);
-    let light_color = scene.dominant_light_color_and_debug.xyz;
-    let view_dir = normalize(ray.origin - rec.p);
-    let tier_scale = scene.tier_scale_and_pad.x;
-    let p_world = rec.p * tier_scale;
-	let self_pos_world = sphere.pos_and_radius.xyz * tier_scale;
-	let shadow_ray = Ray(p_world + surface_normal * 0.2, light_dir_to_source);
-	let inter_body_shadow_rec = hit_spheres_shadow(shadow_ray, createInterval(0.001, INFINITY), &shadow_casters, shadowParams.count, self_pos_world);
-	let is_eclipsed = inter_body_shadow_rec.hit && dot(inter_body_shadow_rec.emissive, inter_body_shadow_rec.emissive) < 0.1;
-
-	let has_atmosphere = sphere.albedo_and_atmos_flag.w > 0.5;
-	var lit_color = surface_albedo * select(0.0, 0.02, has_atmosphere);
-
-	if (has_atmosphere) {
-		let zenith_dir = surface_normal;
-		let sky_ambient = get_sky_color(
-			Ray(rec.p - sphere.pos_and_radius.xyz, zenith_dir),
-			sphere.pos_and_radius.w, sphere.terrain_params.x,
-			sphere.pos_and_radius.xyz, light_dir_to_source, light_color, scene, INFINITY,
-			&shadow_casters, shadowParams, self_pos_world
-		);
-		lit_color = surface_albedo * sky_ambient.in_scattering;
-
-		let dot_nl = dot(surface_normal, light_dir_to_source);
-		if (dot_nl > 0.0 && !is_eclipsed) {
-			 let params = get_earth_atmosphere();
-			 let tier_scale = scene.tier_scale_and_pad.x;
-			 let p_start_local = rec.p - sphere.pos_and_radius.xyz;
-			 let optical_lengths = calculate_optical_length_to_space(
-			 	 p_start_local, light_dir_to_source,
-			 	 sphere.pos_and_radius.w, sphere.pos_and_radius.w * ATMOSPHERE_RADIUS_SCALE,
-			 	 params.h_rayleigh, params.h_mie, tier_scale
-			 );
-			 let optical_depth = (params.beta_rayleigh * optical_lengths.x + params.beta_mie * optical_lengths.y) * tier_scale;
-			 let transmittance = exp(-optical_depth);
-			 let final_sun_color = light_color * transmittance;
-
-			 let diffuse_term = surface_albedo * dot_nl * final_sun_color;
-			 let half_vec = normalize(light_dir_to_source + view_dir);
-			 let specular_term = pow(max(0.0, dot(surface_normal, half_vec)), 64.0) * select(0.1, 1.0, is_ocean) * final_sun_color;
-			 lit_color += (diffuse_term + specular_term);
-		}
-	}
-	
-	return lit_color;
 }
 
 struct ComputeParams { bodyCount: u32 };

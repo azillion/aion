@@ -7,7 +7,10 @@ import sceneUniformsWGSL from '../shaders/sceneUniforms.wgsl?raw';
 import planetSdfWGSL from '../shaders/planetSdf.wgsl?raw';
 import noiseWGSL from '../shaders/noise.wgsl?raw';
 import atmosphereWGSL from '../shaders/atmosphere.wgsl?raw';
+import raytracingWGSL from '../shaders/raytracing.wgsl?raw';
+import shadingWGSL from '../shaders/shading.wgsl?raw';
 import { createShaderModule } from '../shaderUtils';
+
 
 const WORKGROUP_SIZE = 8;
 
@@ -34,6 +37,8 @@ export class TierPass implements IRenderPass {
         'planetSdf.wgsl': planetSdfWGSL,
         'noise.wgsl': noiseWGSL,
         'atmosphere.wgsl': atmosphereWGSL,
+        'raytracing.wgsl': raytracingWGSL,
+        'shading.wgsl': shadingWGSL,
       }
     );
     this.bindGroupLayout = core.device.createBindGroupLayout({

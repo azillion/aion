@@ -7,7 +7,8 @@ import { TierPass } from '../passes/tierPass';
 import { CompositorPass } from '../passes/compositorPass';
 import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
-import type { RenderPayload } from '@client/views/types';
+import type { RenderPayload, ShipRelativePayload } from '@client/views/types';
+import { CameraMode } from '@client/state';
 
 export class ShipRelativePipeline implements IRenderPipeline {
   private nearTierPass: TierPass;
@@ -36,17 +37,18 @@ export class ShipRelativePipeline implements IRenderPipeline {
   
 
   public async initialize(core: WebGPUCore, scene: Scene): Promise<void> {
-    const sceneUniformBufferSize = 48; // three vec4<f32>
+    // As defined in sceneUniforms.wgsl: 3 * vec4<f32> = 3 * 16 = 48 bytes
+    const SCENE_UNIFORM_BUFFER_SIZE = 48;
     this.nearSceneUniformBuffer = core.device.createBuffer({
-      size: sceneUniformBufferSize,
+      size: SCENE_UNIFORM_BUFFER_SIZE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.midSceneUniformBuffer = core.device.createBuffer({
-      size: sceneUniformBufferSize,
+      size: SCENE_UNIFORM_BUFFER_SIZE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.farSceneUniformBuffer = core.device.createBuffer({
-      size: sceneUniformBufferSize,
+      size: SCENE_UNIFORM_BUFFER_SIZE,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     await this.nearTierPass.initialize(core, scene);
@@ -73,6 +75,7 @@ export class ShipRelativePipeline implements IRenderPipeline {
   }
 
   render(encoder: GPUCommandEncoder, context: RenderContext, frameData: RenderPayload, theme: Theme): void {
+    if (frameData.cameraMode !== CameraMode.SHIP_RELATIVE) return;
     const clearBlack = { r: 0, g: 0, b: 0, a: 1 };
     encoder.beginRenderPass({
       colorAttachments: [{ view: this.nearColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
@@ -154,7 +157,7 @@ export class ShipRelativePipeline implements IRenderPipeline {
 
   private updateTierLightingUniforms(
     core: WebGPUCore,
-    frameData: RenderPayload,
+    frameData: ShipRelativePayload,
     targetBuffer: GPUBuffer,
     lightDirection: [number, number, number],
     emissive: [number, number, number],
