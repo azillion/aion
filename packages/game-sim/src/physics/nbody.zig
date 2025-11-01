@@ -136,8 +136,7 @@ pub fn tickSimulator(simulator: *anyopaque, dt_unscaled: f64, input_buffer: *typ
         if (angle > 0) {
             const axis = omega.scale(1.0 / @max(omega.len(), 1e-9));
             const dq = math.Quat.fromAxisAngle(axis, angle);
-            var qcur: types.Quat = ship.orientation;
-            qcur = math.Quat.multiply(qcur, dq);
+            ship.orientation = math.Quat.multiply(ship.orientation, dq);
             math.Quat.normalize(&ship.orientation);
         }
 
