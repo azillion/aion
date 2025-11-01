@@ -51,10 +51,6 @@ export class Scene {
   public nearCount: number = 0;
   public midCount: number = 0;
   public farCount: number = 0;
-  // Reusable zero-padded CPU buffers matching GPU tier buffer sizes to avoid per-frame allocations
-  private nearZeroPadded?: Float32Array;
-  private midZeroPadded?: Float32Array;
-  private farZeroPadded?: Float32Array;
   
   public get hierarchy(): Map<string, string | null> { return this._hierarchy; }
   private _hierarchy: Map<string, string | null> = new Map();
@@ -91,43 +87,18 @@ export class Scene {
     this.device.queue.writeBuffer(this.starBuffer, 0, starData);
   }
 
-  public updateTiers(nearBodies: Body[], midBodies: Body[], farBodies: Body[]) {
-    const totalBodyCount = nearBodies.length + midBodies.length + farBodies.length;
-    if (totalBodyCount > this.lastKnownBodyCount) {
-      this.initializeTierBuffers(totalBodyCount);
+  public updateTiers(nearData: Float32Array, midData: Float32Array, farData: Float32Array, nearCount: number, midCount: number, farCount: number) {
+    const maxCount = Math.max(nearCount, midCount, farCount, this.lastKnownBodyCount);
+    if (maxCount > this.lastKnownBodyCount) {
+      this.initializeTierBuffers(maxCount);
     }
-    this.nearCount = nearBodies.length;
-    this.midCount = midBodies.length;
-    this.farCount = farBodies.length;
+    this.nearCount = nearCount;
+    this.midCount = midCount;
+    this.farCount = farCount;
 
-    // Write full zero-padded buffers each frame using reusable scratch arrays
-    {
-      const data = this.serializeSystemState(nearBodies);
-      if (!this.nearZeroPadded || this.nearZeroPadded.length !== (this.nearTierBuffer.size / 4)) {
-        this.nearZeroPadded = new Float32Array(this.nearTierBuffer.size / 4);
-      }
-      this.nearZeroPadded.fill(0);
-      this.nearZeroPadded.set(data);
-      this.device.queue.writeBuffer(this.nearTierBuffer, 0, this.nearZeroPadded.buffer, 0, this.nearZeroPadded.byteLength);
-    }
-    {
-      const data = this.serializeSystemState(midBodies);
-      if (!this.midZeroPadded || this.midZeroPadded.length !== (this.midTierBuffer.size / 4)) {
-        this.midZeroPadded = new Float32Array(this.midTierBuffer.size / 4);
-      }
-      this.midZeroPadded.fill(0);
-      this.midZeroPadded.set(data);
-      this.device.queue.writeBuffer(this.midTierBuffer, 0, this.midZeroPadded.buffer, 0, this.midZeroPadded.byteLength);
-    }
-    {
-      const data = this.serializeSystemState(farBodies);
-      if (!this.farZeroPadded || this.farZeroPadded.length !== (this.farTierBuffer.size / 4)) {
-        this.farZeroPadded = new Float32Array(this.farTierBuffer.size / 4);
-      }
-      this.farZeroPadded.fill(0);
-      this.farZeroPadded.set(data);
-      this.device.queue.writeBuffer(this.farTierBuffer, 0, this.farZeroPadded.buffer, 0, this.farZeroPadded.byteLength);
-    }
+    this.device.queue.writeBuffer(this.nearTierBuffer, 0, nearData.buffer as ArrayBuffer, nearData.byteOffset, nearData.byteLength);
+    this.device.queue.writeBuffer(this.midTierBuffer, 0, midData.buffer as ArrayBuffer, midData.byteOffset, midData.byteLength);
+    this.device.queue.writeBuffer(this.farTierBuffer, 0, farData.buffer as ArrayBuffer, farData.byteOffset, farData.byteLength);
   }
 
   public updateShadowCasters(casters: Body[]) {
@@ -141,31 +112,16 @@ export class Scene {
   }
 
   public initializeTierBuffers(initialBodyCount: number) {
-    const size = Math.max(1, initialBodyCount * FLOATS_PER_SPHERE * 4);
+    const size = Math.ceil(initialBodyCount * 1.5) * FLOATS_PER_SPHERE * 4;
 
     if (this.nearTierBuffer) this.nearTierBuffer.destroy();
-    this.nearTierBuffer = this.device.createBuffer({
-      label: `Near Tier Buffer`,
-      size,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    this.nearZeroPadded = new Float32Array(size / 4);
+    this.nearTierBuffer = this.device.createBuffer({ label: `Near Tier Buffer`, size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
 
     if (this.midTierBuffer) this.midTierBuffer.destroy();
-    this.midTierBuffer = this.device.createBuffer({
-      label: `Mid Tier Buffer`,
-      size,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    this.midZeroPadded = new Float32Array(size / 4);
+    this.midTierBuffer = this.device.createBuffer({ label: `Mid Tier Buffer`, size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
 
     if (this.farTierBuffer) this.farTierBuffer.destroy();
-    this.farTierBuffer = this.device.createBuffer({
-      label: `Far Tier Buffer`,
-      size,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    this.farZeroPadded = new Float32Array(size / 4);
+    this.farTierBuffer = this.device.createBuffer({ label: `Far Tier Buffer`, size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
 
     this.lastKnownBodyCount = initialBodyCount;
   }
