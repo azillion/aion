@@ -1,6 +1,7 @@
 import type { FrameData, Vec3 } from '@shared/types';
 import { CameraMode } from './state';
 import { projectWorldToScreen } from './renderer/projection';
+import type { Ship } from '@shared/types';
 
 export class HUDManager {
   private canvas: HTMLCanvasElement;
@@ -58,11 +59,11 @@ export class HUDManager {
   // --- Ship Relative HUD ---
   private drawShipHUD(frameData: FrameData): void {
     const { rawState, camera, viewport, playerShipId } = frameData;
-    const playerShip = rawState.bodies.find(b => b.id === playerShipId);
+    const playerShip = rawState.ships.find(s => s.id === playerShipId);
     if (!playerShip || !('velocity' in playerShip)) {
       return;
     }
-    const ship = playerShip as import('./shared/types').Ship;
+    const ship = playerShip as Ship;
 
     const centerX = viewport.width / 2;
     const centerY = viewport.height / 2;

@@ -37,17 +37,17 @@ The project is a monorepo composed of several key packages:
 
 ---
 
-## Current Status: Prototype Complete
+## Current Status: Foundational Prototype Complete
 
 The foundational architecture is now proven and operational. The current prototype successfully demonstrates:
 *   End-to-end compilation of the Zig simulation core to both WASM and native.
 *   A TypeScript client that loads the WASM module in a Web Worker.
-*   The WASM module successfully driving a GPU-based cellular automaton (Conway's Game of Life) using WebGPU.
-*   A 3D planet renderer that visualizes the simulation state in real-time, sampling the simulation's output texture to drive the appearance of the planet's surface.
+*   The WASM module driving a N-body physics simulation for a solar system, including player ship controls.
+*   A multi-scale 3D planet renderer (WebGPU) that visualizes the simulation state in real-time with procedural atmospheric scattering.
 
 ## Next Steps
 
 With the core pipeline established, development is focused on expanding the simulation's complexity and adding interactive systems.
-*   **Phase 4:** Evolving the simulation from Game of Life to a physical simulation with procedural terrain and hydraulic flow.
+*   **Phase 4:** Expand the physical simulation with procedural terrain and hydraulic flow.
 *   **Phase 5:** Implementing the CPU "Agent Layer" and the two-way bridge, allowing player interaction to have a persistent effect on the world.
 *   **Phase 6:** Building out the server-side lifecycle management (`Active`/`Dormant` states) to enable galaxy-scale persistence.

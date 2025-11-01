@@ -2,7 +2,10 @@ const std = @import("std");
 
 pub const Vec3 = [3]f64;
 pub const Quat = [4]f64;
-pub const Atmosphere = struct {};
+pub const Atmosphere = struct {
+    N2: f64,
+    O2: f64,
+};
 pub const TerrainParams = struct {
     radius: f64,
     seaLevel: f64,

@@ -18,6 +18,7 @@ type WasmExports = {
     add_body: (simPtr: number, jsonPtr: number, jsonLen: number) => void;
     teleport_to_surface: (simPtr: number, idPtr: number, idLen: number) => void;
     auto_land: (simPtr: number, idPtr: number, idLen: number) => void;
+    debug_print_state: (simPtr: number) => void;
 };
 
 export class WasmAuthority implements Authority {
@@ -26,6 +27,7 @@ export class WasmAuthority implements Authority {
     private simPtr: number = 0;
     private scratchPtr: number = 0;
     private scratchBufPtr: number = 0;
+    private temp = 0;
 
     constructor() {}
 
@@ -50,8 +52,8 @@ export class WasmAuthority implements Authority {
         this.scratchPtr = e.get_query_scratch_ptr();
         this.scratchBufPtr = e.get_scratch_buffer_ptr();
 
+        console.log(initialState);
         const json = JSON.stringify(initialState);
-        console.log(json);
         const encoded = new TextEncoder().encode(json);
         // Write at a fixed offset in linear memory for initialization
         const base = 100000; // temporary fixed offset for init JSON
@@ -73,6 +75,10 @@ export class WasmAuthority implements Authority {
         copy.set(mem);
         this.exports.free_result_buffer(ptr, len);
         const json = new TextDecoder().decode(copy);
+        if (this.temp === 0) {
+            this.temp = 1;
+            console.log(JSON.parse(json));
+        }
         return JSON.parse(json) as SystemState;
     }
 
@@ -131,6 +137,14 @@ export class WasmAuthority implements Authority {
         new Uint8Array(this.exports.memory.buffer, this.scratchBufPtr, encoded.length).set(encoded);
         new Uint8Array(this.exports.memory.buffer, this.scratchBufPtr + encoded.length, Math.max(0, 4096 - encoded.length)).fill(0);
         this.exports.teleport_to_surface(this.simPtr, this.scratchBufPtr, encoded.length);
+    }
+
+    public debugPrintState(): void {
+        if (!this.instance) {
+            console.error('WASM not initialized, cannot print state.');
+            return;
+        }
+        this.exports.debug_print_state(this.simPtr);
     }
 }
 

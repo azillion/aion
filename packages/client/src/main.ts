@@ -15,6 +15,10 @@ import { ShipRelativePipeline } from '@client/renderer/pipelines/shipRelativePip
 import { SystemMapPipeline } from '@client/renderer/pipelines/systemMapPipeline';
 import type { IRenderPipeline } from '@client/renderer/pipelines/base';
 
+declare global {
+    interface Window { debugConnector: any }
+}
+
 async function main() {
     const canvas = document.getElementById("webgpu-canvas") as HTMLCanvasElement;
     const hudCanvas = document.getElementById("hud-canvas") as HTMLCanvasElement;
@@ -24,6 +28,11 @@ async function main() {
     const connector = await authorityProvider.createConnection();
     const authority = new ClientAuthority(connector);
     // --- END ---
+
+    // --- EXPOSE FOR DEBUGGING ---
+    (window as any).debugConnector = connector;
+    console.log('Debug connector exposed as `window.debugConnector`. Call `postMessage({ type: \u0064ebugPrintState })` to log Zig state.');
+    // --- END DEBUGGING ---
 
     // --- Application State ---
     const state = new AppState();

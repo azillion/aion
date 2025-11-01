@@ -59,7 +59,7 @@ async function main(): Promise<void> {
   // signal readiness
   (self as any).postMessage({ type: 'workerReady' });
 
-  (self as any).onmessage = async (e: MessageEvent<ClientToServerMessage>) => {
+  (self as any).onmessage = async (e: MessageEvent<ClientToServerMessage | { type: 'debugPrintState' }>) => {
     const msg = e.data;
     switch (msg.type) {
       case 'query': {
@@ -86,6 +86,10 @@ async function main(): Promise<void> {
       }
       case 'teleportToSurface': {
         await authority.teleportToSurface(msg.targetBodyId);
+        break;
+      }
+      case 'debugPrintState': {
+        authority.debugPrintState();
         break;
       }
     }

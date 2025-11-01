@@ -370,6 +370,56 @@ pub export fn tick_simulator(sim: *Simulator, dt_unscaled: f64) callconv(.c) voi
         s.position[0] += s.velocity[0] * dt;
         s.position[1] += s.velocity[1] * dt;
         s.position[2] += s.velocity[2] * dt;
+
+        // --- Simple ground clamp at 2 km AGL relative to nearest massive body ---
+        var nearest_index: ?usize = null;
+        var nearest_dist: f64 = 1.0e300;
+        var j: usize = 0;
+        while (j < num_bodies) : (j += 1) {
+            const b = sim.state.bodies[j];
+            if (b.mass < 1e22) continue; // only clamp to sufficiently massive bodies
+            const dx = s.position[0] - b.position[0];
+            const dy = s.position[1] - b.position[1];
+            const dz = s.position[2] - b.position[2];
+            const d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < nearest_dist) {
+                nearest_dist = d2;
+                nearest_index = j;
+            }
+        }
+        if (nearest_index) |ni| {
+            const b = sim.state.bodies[ni];
+            const dx = s.position[0] - b.position[0];
+            const dy = s.position[1] - b.position[1];
+            const dz = s.position[2] - b.position[2];
+            const dist = @sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist > 0) {
+                // Compute physical surface radius (km)
+                const baseR = if (b.terrain) |t| t.radius else b.radius;
+                const sea = if (b.terrain) |t| t.seaLevel else 0.0;
+                const maxH = if (b.terrain) |t| (t.maxHeight * baseR) else 0.0;
+                const surfaceR = baseR + @max(sea, maxH);
+                const minAltitude = 2.0; // km AGL clamp
+                const minDist = surfaceR + minAltitude;
+                if (dist < minDist) {
+                    // Move ship out to minDist along the outward normal
+                    const inv = 1.0 / dist;
+                    const nx = dx * inv;
+                    const ny = dy * inv;
+                    const nz = dz * inv;
+                    s.position[0] = b.position[0] + nx * minDist;
+                    s.position[1] = b.position[1] + ny * minDist;
+                    s.position[2] = b.position[2] + nz * minDist;
+                    // Remove inward radial velocity component to prevent tunneling
+                    const vdotn = s.velocity[0] * nx + s.velocity[1] * ny + s.velocity[2] * nz;
+                    if (vdotn < 0.0) {
+                        s.velocity[0] -= vdotn * nx;
+                        s.velocity[1] -= vdotn * ny;
+                        s.velocity[2] -= vdotn * nz;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -501,7 +551,12 @@ pub export fn teleport_to_surface(sim: *Simulator, target_id_ptr: u32, target_id
             } else {
                 dir = vec3Scale(dir, 1.0 / len);
             }
-            const new_pos = vec3Add(t.position, vec3Scale(dir, t.radius + 1.0));
+            const baseR = if (t.terrain) |terrain| terrain.radius else t.radius;
+            const sea = if (t.terrain) |terrain| terrain.seaLevel else 0.0;
+            const maxH = if (t.terrain) |terrain| (terrain.maxHeight * baseR) else 0.0;
+            const surfaceR = baseR + @max(sea, maxH);
+            const MIN_ALT: f64 = 2.0; // km
+            const new_pos = vec3Add(t.position, vec3Scale(dir, surfaceR + MIN_ALT));
             ship.position = new_pos;
             ship.velocity = t.velocity;
             ship.angularVelocity = .{ 0.0, 0.0, 0.0 };
@@ -509,10 +564,58 @@ pub export fn teleport_to_surface(sim: *Simulator, target_id_ptr: u32, target_id
     }
 }
 
-pub export fn auto_land(sim: *Simulator, _target_id_ptr: u32, _target_id_len: u32) callconv(.c) void {
-    _ = sim;
-    _ = _target_id_ptr;
-    _ = _target_id_len;
+pub export fn auto_land(sim: *Simulator, target_id_ptr: u32, target_id_len: u32) callconv(.c) void {
+    const id_ptr: [*]const u8 = @ptrFromInt(target_id_ptr);
+    const target_id = id_ptr[0..target_id_len];
+    const player_id = "player-ship";
+
+    var target_body: ?*const types.Body = null;
+    var i: usize = 0;
+    while (i < sim.state.bodies.len) : (i += 1) {
+        const b = &sim.state.bodies[i];
+        if (std.mem.eql(u8, b.id, target_id)) {
+            target_body = b;
+            break;
+        }
+    }
+    if (target_body == null) return;
+
+    var player_ship: ?*types.Ship = null;
+    i = 0;
+    while (i < sim.state.ships.len) : (i += 1) {
+        const s = &sim.state.ships[i];
+        if (std.mem.eql(u8, s.id, player_id)) {
+            player_ship = s;
+            break;
+        }
+    }
+    if (player_ship == null) return;
+
+    const t = target_body.?;
+    const ship = player_ship.?;
+    var dir = [3]f64{ ship.position[0] - t.position[0], ship.position[1] - t.position[1], ship.position[2] - t.position[2] };
+    var dist = vec3Len(dir);
+    if (dist < 1e-9) {
+        dir = .{ 1.0, 0.0, 0.0 };
+        dist = 1.0;
+    }
+    dir = vec3Scale(dir, 1.0 / dist);
+
+    const baseR = if (t.terrain) |terrain| terrain.radius else t.radius;
+    const sea = if (t.terrain) |terrain| terrain.seaLevel else 0.0;
+    const maxH = if (t.terrain) |terrain| (terrain.maxHeight * baseR) else 0.0;
+    const surfaceR = baseR + @max(sea, maxH);
+    const MIN_ALT: f64 = 2.0; // km
+    const minDist = surfaceR + MIN_ALT;
+
+    if (dist < minDist) {
+        // Push out to clamp altitude and zero inward normal velocity
+        ship.position = vec3Add(t.position, vec3Scale(dir, minDist));
+        const vdotn = ship.velocity[0] * dir[0] + ship.velocity[1] * dir[1] + ship.velocity[2] * dir[2];
+        if (vdotn < 0.0) {
+            ship.velocity = vec3Add(ship.velocity, vec3Scale(dir, -vdotn));
+        }
+    }
 }
 
 pub export fn free_result_buffer(ptr_addr: u32, len: u32) callconv(.c) void {

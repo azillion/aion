@@ -16,17 +16,11 @@ struct AtmosphereParams {
 };
 
 fn get_earth_atmosphere() -> AtmosphereParams {
-    // These coefficients are chosen for a clear Earth-like sky.
-    // beta_mie is kept low to avoid excessive haze.
     return AtmosphereParams(
         6371.0, 6371.0 * ATMOSPHERE_RADIUS_SCALE,
-        // Beta coefficients include 1/wavelength^4 dependency for Rayleigh
-        vec3<f32>(5.8e-3, 13.5e-3, 33.1e-3), 8.5, // h_rayleigh = 8.5km
-        // The previous beta_mie value (2.1e-3) was too high, causing excessive white
-        // haze at grazing angles (sunrise/sunset). Reducing it significantly makes the
-        // atmosphere much clearer, allowing Rayleigh's red scattering to dominate.
-        vec3<f32>(0.4e-3), 1.2, // h_mie = 1.2km
-        0.76 // Positive for forward scattering
+        vec3<f32>(5.8e-3, 13.5e-3, 33.1e-3), 8.5,
+        vec3<f32>(0.4e-3), 1.2,
+        0.76
     );
 }
 
@@ -40,52 +34,36 @@ fn ray_sphere_intersect(r0: vec3<f32>, rd: vec3<f32>, sr: f32) -> vec2<f32> {
 
 struct AtmosphereOutput { in_scattering: vec3<f32>, transmittance: vec3<f32>, alpha: f32 };
 
-// Phase 2: New self-contained analytic shader function.
-// This function replaces a costly ray-marching loop with a direct mathematical
-// approximation for the optical length of a ray traveling out to space. It is based
-// on the method described by Christian Schüler.
 fn calculate_optical_length_to_space(
-    p_start: vec3<f32>,         // Ray start point, relative to planet center (local tier units)
-    ray_dir: vec3<f32>,         // Ray direction (unit vector)
-    planet_radius: f32,         // Planet radius (local tier units)
-    atmosphere_radius: f32,     // Atmosphere radius (local tier units)
-    h_rayleigh: f32,            // Rayleigh scale height (world units, km)
-    h_mie: f32,                 // Mie scale height (world units, km)
-    tier_scale: f32             // Scale factor from local tier units to world km
-) -> vec2<f32> { // Returns optical length for (Rayleigh, Mie)
-    // 1. Find intersection of the ray with the top of the atmosphere. We only care
-    // about the exit point, which is the far intersection.
+    p_start: vec3<f32>,
+    ray_dir: vec3<f32>,
+    planet_radius: f32,
+    atmosphere_radius: f32,
+    h_rayleigh: f32,
+    h_mie: f32,
+    tier_scale: f32
+) -> vec2<f32> {
     let t_atmos_exit = ray_sphere_intersect(p_start, ray_dir, atmosphere_radius).y;
-
-    // If the ray doesn't exit the atmosphere in the forward direction, it means we are
-    // outside and looking away, or the ray is tangent. No attenuation.
     if (t_atmos_exit <= 0.0) {
         return vec2<f32>(0.0);
     }
 
-    // 2. Removed hard occlusion check to allow soft, density-based attenuation near the limb.
+    let t_planet_intersect = ray_sphere_intersect(p_start, ray_dir, planet_radius).x;
+    if (t_planet_intersect > 0.0 && t_planet_intersect < t_atmos_exit) {
+        return vec2<f32>(1e9); // Return a huge optical length for full occlusion.
+    }
     
-    // 3. Approximate the integral by taking a single sample at the midpoint of the path.
-    // This is an excellent trade-off between accuracy and performance.
     let path_length = t_atmos_exit;
     let p_mid = p_start + ray_dir * (path_length * 0.5);
 
-    // 4. Calculate the altitude of the midpoint. The density at this altitude will represent
-    // the average density over the entire path.
     let h_mid_local = length(p_mid) - planet_radius;
-    var h_mid_world = h_mid_local * tier_scale; // Convert to world units for density calculation
-    // Clamp altitude to avoid underground midpoint on long grazing rays
+    var h_mid_world = h_mid_local * tier_scale;
     h_mid_world = max(0.0, h_mid_world);
 
-    // --- Earth Curvature Correction ---
-    // Approximate Chapman function using 1 / cos(zenith_angle) to account
-    // for longer path through dense air at grazing angles.
     let up = normalize(p_start);
     let mu = dot(ray_dir, up);
-    let curvature_correction = 1.0 / max(mu, 0.001);
+    let curvature_correction = min(1.0 / max(mu, 0.001), 40.0); // Keep the stability clamp
 
-    // 5. Calculate the optical length for Rayleigh and Mie scattering.
-    // Optical Length = Average Density * Path Length. Density is unitless, path length is in tier units.
     let optical_length_r = exp(-h_mid_world / h_rayleigh) * path_length * curvature_correction;
     let optical_length_m = exp(-h_mid_world / h_mie) * path_length * curvature_correction;
 
@@ -98,19 +76,18 @@ fn get_sky_color(
     physical_radius_world: f32,
     planet_center_tier: vec3<f32>,
     light_dir: vec3<f32>, light_color: vec3<f32>,
-    scene: SceneUniforms, max_dist_local: f32, //
+    scene: SceneUniforms, max_dist_local: f32,
     shadow_casters_in: ptr<storage, array<Sphere>, read>,
     shadow_params_in: ShadowParams,
     ignore_pos_world: vec3<f32>
 ) -> AtmosphereOutput {
     let params = get_earth_atmosphere();
-    let tier_scale = scene.tier_scale_and_pad.x; // scale from local tier units to world km
+    let tier_scale = scene.tier_scale_and_pad.x;
     let atmosphere_radius_local = planet_radius_local * ATMOSPHERE_RADIUS_SCALE;
 
     let r0 = ray.origin;
     let rd = ray.direction;
 
-    // --- 1. Calculate ray segment within atmosphere ---
     let t_atmos = ray_sphere_intersect(r0, rd, atmosphere_radius_local);
     let t_planet = ray_sphere_intersect(r0, rd, planet_radius_local);
     
@@ -121,19 +98,14 @@ fn get_sky_color(
     let ray_length = t_end - t_start;
     if (ray_length <= 0.0) { return AtmosphereOutput(vec3<f32>(0.0), vec3<f32>(1.0), 0.0); }
 
-    // --- 2. Sampling ---
-    // Fixed sample counts for stability and quality.
-
-    // --- 3. Initialize accumulators ---
     let step_size = ray_length / f32(NUM_IN_SCATTER_SAMPLES);
     var transmittance = vec3<f32>(1.0);
     var scattered_light = vec3<f32>(0.0);
 
-    // --- 4. March along the view ray ---
     for (var i = 0u; i < NUM_IN_SCATTER_SAMPLES; i = i + 1u) {
         let p_sample = r0 + rd * (t_start + (f32(i) + 0.5) * step_size);
         if (length(p_sample) < planet_radius_local) { continue; }
-        // Numerically stable altitude: (|p|^2 - R^2) / (2R), with |p| in world units.
+        
         let p_world_sq = dot(p_sample, p_sample) * tier_scale * tier_scale;
         let h = (p_world_sq - physical_radius_world*physical_radius_world) / (2.0 * physical_radius_world);
 
@@ -141,22 +113,16 @@ fn get_sky_color(
             let density_r = exp(-h / params.h_rayleigh);
             let density_m = exp(-h / params.h_mie);
             let scattering_coeffs = params.beta_rayleigh * density_r + params.beta_mie * density_m;
-
-            // --- 4a. Sun visibility (transmittance to this sample point) ---
             var sun_transmittance = vec3<f32>(0.0);
             
-            // I. Check for global occlusion (eclipses) first.
-            // Reconstruct the sample's position in camera-relative tier space, then scale to world space.
             let p_sample_tier = p_sample + planet_center_tier;
             let p_world = p_sample_tier * tier_scale;
             let up_dir = normalize(p_sample);
             let eclipse_shadow_ray = Ray(p_world + up_dir * 0.2, light_dir);
             let eclipse_rec = hit_spheres(eclipse_shadow_ray, createInterval(0.001, INFINITY), shadow_casters_in, shadow_params_in.count, ignore_pos_world);
 
-            // If eclipsed by a non-emissive body, skip this sample entirely.
             if (eclipse_rec.hit && dot(eclipse_rec.emissive, eclipse_rec.emissive) < 0.1) { continue; }
 
-            // Sun is visible: compute its attenuation to this point.
             let optical_lengths = calculate_optical_length_to_space(
                 p_sample, light_dir, 
                 planet_radius_local,
@@ -169,15 +135,14 @@ fn get_sky_color(
                 sun_transmittance = exp(-optical_depth_sun * tier_scale);
             }
 
-            // --- 4b. Accumulate in-scattered light ---
             let mu = dot(rd, light_dir);
             let g = params.g_mie;
             let phase_r = 3.0 / (16.0 * PI) * (1.0 + mu*mu);
             let phase_m = 3.0 / (8.0 * PI) * ((1.0-g*g)*(1.0+mu*mu)) / ((2.0+g*g)*pow(1.0+g*g-2.0*g*mu, 1.5));
             let in_scatter = (params.beta_rayleigh * density_r * phase_r) + (params.beta_mie * density_m * phase_m);
 				
-				scattered_light += transmittance * in_scatter * sun_transmittance * step_size * tier_scale;
-				transmittance *= exp(-scattering_coeffs * step_size * tier_scale);
+			scattered_light += transmittance * in_scatter * sun_transmittance * step_size * tier_scale;
+			transmittance *= exp(-scattering_coeffs * step_size * tier_scale);
         }
     }
     

@@ -19,7 +19,6 @@ export class TierPass implements IRenderPass {
   private tierBuffer!: GPUBuffer;
   private outputTexture!: GPUTexture;
   private depthTexture!: GPUTexture;
-  private golTextureView: GPUTextureView | null = null;
 
   constructor() {}
 
@@ -48,7 +47,6 @@ export class TierPass implements IRenderPass {
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-        { binding: 8, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
       ]
     });
 
@@ -71,12 +69,8 @@ export class TierPass implements IRenderPass {
     this.tierBuffer = buf;
   }
 
-  public setGolTexture(view: GPUTextureView) {
-    this.golTextureView = view;
-  }
-
   public run(encoder: GPUCommandEncoder, context: RenderContext, bodyCount: number, sceneUniforms: GPUBuffer): void {
-    if (!this.outputTexture || !this.depthTexture || !this.golTextureView) return;
+    if (!this.outputTexture || !this.depthTexture) return;
     context.core.device.queue.writeBuffer(this.paramsUniformBuffer, 0, new Uint32Array([bodyCount]));
 
     const bindGroup = context.core.device.createBindGroup({
@@ -91,7 +85,6 @@ export class TierPass implements IRenderPass {
         { binding: 5, resource: { buffer: sceneUniforms } },
         { binding: 6, resource: { buffer: context.scene.shadowCasterBuffer } },
         { binding: 7, resource: { buffer: context.scene.shadowCasterCountBuffer } },
-        { binding: 8, resource: this.golTextureView },
       ]
     });
 
