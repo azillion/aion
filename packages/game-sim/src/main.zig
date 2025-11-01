@@ -410,13 +410,11 @@ pub export fn tick_simulator(sim: *Simulator, dt_unscaled: f64) callconv(.c) voi
                     s.position[0] = b.position[0] + nx * minDist;
                     s.position[1] = b.position[1] + ny * minDist;
                     s.position[2] = b.position[2] + nz * minDist;
-                    // Remove inward radial velocity component to prevent tunneling
+                    // Remove any radial velocity component to avoid bounce (hold altitude)
                     const vdotn = s.velocity[0] * nx + s.velocity[1] * ny + s.velocity[2] * nz;
-                    if (vdotn < 0.0) {
-                        s.velocity[0] -= vdotn * nx;
-                        s.velocity[1] -= vdotn * ny;
-                        s.velocity[2] -= vdotn * nz;
-                    }
+                    s.velocity[0] -= vdotn * nx;
+                    s.velocity[1] -= vdotn * ny;
+                    s.velocity[2] -= vdotn * nz;
                 }
             }
         }
@@ -555,7 +553,7 @@ pub export fn teleport_to_surface(sim: *Simulator, target_id_ptr: u32, target_id
             const sea = if (t.terrain) |terrain| terrain.seaLevel else 0.0;
             const maxH = if (t.terrain) |terrain| (terrain.maxHeight * baseR) else 0.0;
             const surfaceR = baseR + @max(sea, maxH);
-            const MIN_ALT: f64 = 2.0; // km
+            const MIN_ALT: f64 = 2.1; // km
             const new_pos = vec3Add(t.position, vec3Scale(dir, surfaceR + MIN_ALT));
             ship.position = new_pos;
             ship.velocity = t.velocity;
