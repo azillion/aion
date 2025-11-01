@@ -170,4 +170,20 @@ pub const Mat4 = struct {
 
         return out;
     }
+
+    pub fn format(
+        self: Mat4,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        try writer.print("[\n", .{});
+        try writer.print("  {d:+.3}, {d:+.3}, {d:+.3}, {d:+.3},\n", .{ self.m[0], self.m[1], self.m[2], self.m[3] });
+        try writer.print("  {d:+.3}, {d:+.3}, {d:+.3}, {d:+.3},\n", .{ self.m[4], self.m[5], self.m[6], self.m[7] });
+        try writer.print("  {d:+.3}, {d:+.3}, {d:+.3}, {d:+.3},\n", .{ self.m[8], self.m[9], self.m[10], self.m[11] });
+        try writer.print("  {d:+.3}, {d:+.3}, {d:+.3}, {d:+.3}\n", .{ self.m[12], self.m[13], self.m[14], self.m[15] });
+        try writer.print("]", .{});
+    }
 };

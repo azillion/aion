@@ -151,9 +151,7 @@ pub fn tickSimulator(simulator: *anyopaque, dt_unscaled: f64, input_buffer: *typ
         }
 
         const acc = total_force.scale(1.0 / @max(ship.body.mass, 1e-9));
-        accelerations[acc_index].x += acc.x;
-        accelerations[acc_index].y += acc.y;
-        accelerations[acc_index].z += acc.z;
+        accelerations[acc_index] = math.Vec3.add(accelerations[acc_index], acc);
     }
 
     // Integrate both bodies and ships

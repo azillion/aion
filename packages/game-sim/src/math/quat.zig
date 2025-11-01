@@ -170,4 +170,15 @@ pub const Quat = struct {
             .z = vz + 2.0 * (ux * c2y - uy * c2x),
         };
     }
+
+    pub fn format(
+        self: Quat,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        try writer.print("({d:+.3},{d:+.3},{d:+.3},{d:+.3})", .{ self.x, self.y, self.z, self.w });
+    }
 };

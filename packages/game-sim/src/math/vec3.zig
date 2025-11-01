@@ -133,6 +133,17 @@ pub const Vec3 = struct {
         return self.x == 0 and self.y == 0 and self.z == 0;
     }
 
+    pub fn format(
+        self: Vec3,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        try writer.print("({d:+.3},{d:+.3},{d:+.3})", .{ self.x, self.y, self.z });
+    }
+
     pub const UNIT_X = Vec3{ .x = 1, .y = 0, .z = 0 };
     pub const UNIT_Y = Vec3{ .x = 0, .y = 1, .z = 0 };
     pub const UNIT_Z = Vec3{ .x = 0, .y = 0, .z = 1 };
