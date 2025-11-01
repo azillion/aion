@@ -1,7 +1,8 @@
 const std = @import("std");
+const math = @import("math");
 
-pub const Vec3 = [3]f64;
-pub const Quat = [4]f64;
+pub const Vec3 = math.Vec3;
+pub const Quat = math.Quat;
 pub const Atmosphere = struct {
     N2: f64,
     O2: f64,
@@ -29,15 +30,7 @@ pub const Body = struct {
 
 pub const Ship = struct {
     const Self = @This();
-    // Inherit Body fields explicitly
-    id: []const u8,
-    name: []const u8,
-    position: Vec3,
-    velocity: Vec3,
-    radius: f64,
-    mass: f64,
-    albedo: Vec3,
-    emissive: ?Vec3 = null,
+    body: Body,
 
     // Ship-specific fields
     orientation: Quat,

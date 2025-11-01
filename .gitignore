@@ -1,6 +1,7 @@
 node_modules/
 **/deps/*
 **/.zig-cache/*
+**/zig-cache/*
 **/zig-out/*
 .DS_Store
 **/node_modules/*
