@@ -1,7 +1,7 @@
-import type { FrameData, Vec3 } from '@shared/types';
+import type { Vec3 } from '@shared/types';
 import { CameraMode } from './state';
 import { projectWorldToScreen } from './renderer/projection';
-import type { Ship } from '@shared/types';
+import type { RenderPayload, ShipRelativePayload } from './views/types';
 
 export class HUDManager {
   private canvas: HTMLCanvasElement;
@@ -25,7 +25,7 @@ export class HUDManager {
     this.context.restore();
   }
 
-  public draw(frameData: FrameData): void {
+  public draw(frameData: RenderPayload): void {
     const { bodiesToRender, camera, viewport, cameraMode } = frameData;
     this.clear();
 
@@ -39,7 +39,7 @@ export class HUDManager {
     this.context.lineCap = 'butt';
     this.context.lineJoin = 'miter';
     
-    if (cameraMode === CameraMode.SHIP_RELATIVE) {
+    if (frameData.cameraMode === CameraMode.SHIP_RELATIVE) {
       this.drawShipHUD(frameData);
       // We return here because drawShipHUD handles its own body indicators
       return;
@@ -63,13 +63,13 @@ export class HUDManager {
   
 
   // --- Ship Relative HUD ---
-  private drawShipHUD(frameData: FrameData): void {
+  private drawShipHUD(frameData: ShipRelativePayload): void {
     const { rawState, camera, viewport, playerShipId } = frameData;
     const playerShip = rawState.ships.find(s => s.id === playerShipId);
     if (!playerShip || !('velocity' in playerShip)) {
       return;
     }
-    const ship = playerShip as Ship;
+    const ship = playerShip;
 
     const centerX = viewport.width / 2;
     const centerY = viewport.height / 2;
@@ -196,7 +196,7 @@ export class HUDManager {
     this.context.stroke();
   }
 
-  private drawBodyIndicators(frameData: FrameData) {
+  private drawBodyIndicators(frameData: RenderPayload) {
     // This is the logic from the original 'draw' method, now separated
     const { bodiesToRender, camera, viewport, playerShipId } = frameData;
     const centerX = viewport.width * 0.5;

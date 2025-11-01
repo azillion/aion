@@ -410,11 +410,8 @@ pub export fn tick_simulator(sim: *Simulator, dt_unscaled: f64) callconv(.c) voi
                     s.position[0] = b.position[0] + nx * minDist;
                     s.position[1] = b.position[1] + ny * minDist;
                     s.position[2] = b.position[2] + nz * minDist;
-                    // Remove any radial velocity component to avoid bounce (hold altitude)
-                    const vdotn = s.velocity[0] * nx + s.velocity[1] * ny + s.velocity[2] * nz;
-                    s.velocity[0] -= vdotn * nx;
-                    s.velocity[1] -= vdotn * ny;
-                    s.velocity[2] -= vdotn * nz;
+                    // Hard hold: match planet velocity at clamp altitude to avoid energy injection
+                    s.velocity = b.velocity;
                 }
             }
         }

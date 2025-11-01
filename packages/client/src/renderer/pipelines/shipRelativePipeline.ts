@@ -1,4 +1,4 @@
-import type { FrameData, Theme } from '@shared/types';
+import type { Theme } from '@shared/types';
 import type { RenderContext } from '../types';
 import type { IRenderPipeline } from './base';
 import { FAR_TIER_SCALE, MID_TIER_SCALE } from '@shared/constants';
@@ -7,6 +7,7 @@ import { TierPass } from '../passes/tierPass';
 import { CompositorPass } from '../passes/compositorPass';
 import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
+import type { RenderPayload } from '@client/views/types';
 
 export class ShipRelativePipeline implements IRenderPipeline {
   private nearTierPass: TierPass;
@@ -71,7 +72,7 @@ export class ShipRelativePipeline implements IRenderPipeline {
     this.farDepthTexture = core.device.createTexture({ size, format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
   }
 
-  render(encoder: GPUCommandEncoder, context: RenderContext, frameData: FrameData, theme: Theme): void {
+  render(encoder: GPUCommandEncoder, context: RenderContext, frameData: RenderPayload, theme: Theme): void {
     const clearBlack = { r: 0, g: 0, b: 0, a: 1 };
     encoder.beginRenderPass({
       colorAttachments: [{ view: this.nearColorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: clearBlack }]
@@ -153,7 +154,7 @@ export class ShipRelativePipeline implements IRenderPipeline {
 
   private updateTierLightingUniforms(
     core: WebGPUCore,
-    frameData: FrameData,
+    frameData: RenderPayload,
     targetBuffer: GPUBuffer,
     lightDirection: [number, number, number],
     emissive: [number, number, number],
@@ -181,7 +182,7 @@ export class ShipRelativePipeline implements IRenderPipeline {
     core.device.queue.writeBuffer(targetBuffer, 0, bufferData);
   }
 
-  public prepare(_frameData: FrameData, _renderer: any): void {
+  public prepare(_frameData: RenderPayload, _renderer: any): void {
     // No-op for this pipeline
   }
 }

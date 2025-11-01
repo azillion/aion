@@ -1,4 +1,4 @@
-import type { FrameData, Theme } from '@shared/types';
+import type { Theme } from '@shared/types';
 import type { RenderContext } from '../types';
 import { GlyphsPass } from '../passes/glyphsPass';
 import { MapPass } from '../passes/mapPass';
@@ -7,6 +7,8 @@ import { SOIPass } from '../passes/soiPass';
 import type { IRenderPipeline } from './base';
 import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
+import type { RenderPayload } from '@client/views/types';
+import { CameraMode } from '@client/state';
 
 export class SystemMapPipeline implements IRenderPipeline {
   private orbitsPass: OrbitsPass;
@@ -32,10 +34,10 @@ export class SystemMapPipeline implements IRenderPipeline {
     // No-op
   }
 
-  public prepare(frameData: FrameData, renderer: any): void {
+  public prepare(frameData: RenderPayload, renderer: any): void {
+    if (frameData.cameraMode !== CameraMode.SYSTEM_MAP) return;
     const { showOrbits, unscaledBodiesForMap, systemScale } = frameData;
-    if (!showOrbits) return;
-    if (!unscaledBodiesForMap) return;
+    if (!showOrbits || !unscaledBodiesForMap) return;
     const glyphData = this.orbitsPass.update(unscaledBodiesForMap, renderer.getScene(), renderer.getCore(), systemScale);
     this.glyphsPass.update(
       glyphData.periapsisPoints,
@@ -50,13 +52,13 @@ export class SystemMapPipeline implements IRenderPipeline {
     this.orbitsPass.clearAll();
   }
 
-  render(encoder: GPUCommandEncoder, context: RenderContext, frameData: FrameData, theme: Theme): void {
-    const { showOrbits } = frameData;
-    if (showOrbits) {
+  render(encoder: GPUCommandEncoder, context: RenderContext, frameData: RenderPayload, theme: Theme): void {
+    if (frameData.cameraMode !== CameraMode.SYSTEM_MAP) return;
+    if (frameData.showOrbits) {
       this.orbitsPass.run(encoder, context, theme);
     }
-    this.mapPass.run(encoder, context, theme, showOrbits);
-    if (showOrbits) {
+    this.mapPass.run(encoder, context, theme, frameData.showOrbits);
+    if (frameData.showOrbits) {
       this.soiPass.run(encoder, context);
       this.glyphsPass.run(encoder, context);
     }

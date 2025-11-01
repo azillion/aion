@@ -9,11 +9,12 @@ import type { UI } from '../ui';
 import { PostFXPass } from './passes/postfxPass';
 import { themes } from '../theme';
 import { spectralResponses } from '../spectral';
-import type { Theme, FrameData } from '@shared/types';
+import type { Theme } from '@shared/types';
 import { HUDManager } from '../hud';
 import type { SystemState } from '@shared/types';
 import type { IRenderPipeline } from './pipelines/base';
-import { ShipRelativePipeline } from './pipelines/shipRelativePipeline';
+ 
+import type { RenderPayload } from '@client/views/types';
 
 export class Renderer {
   private readonly canvas: HTMLCanvasElement;
@@ -135,14 +136,15 @@ export class Renderer {
   public getTextureSize(): { width: number, height: number } { return this.textureSize; }
   public getCanvas(): HTMLCanvasElement { return this.canvas; }
 
-  public prepare(frameData: FrameData) {
+  public prepare(frameData: RenderPayload) {
     const pipeline = this.pipelines[frameData.cameraMode as unknown as keyof typeof this.pipelines];
     pipeline?.prepare(frameData, this);
   }
 
-  public render(frameData: FrameData) {
+  public render(frameData: RenderPayload) {
     if (!this.core.device || !this.textureSize) return;
-    const { camera, systemScale, deltaTime } = frameData;
+    const { camera, deltaTime } = frameData;
+    const systemScaleValue = frameData.cameraMode === CameraMode.SYSTEM_MAP ? frameData.systemScale : 1.0;
     this.lastDeltaTime = deltaTime;
     const theme = this.setTheme(this.currentThemeName, this.currentResponseName);
     if (!theme) return;
@@ -154,7 +156,7 @@ export class Renderer {
       core: this.core,
       scene: this.scene,
       camera: camera,
-      systemScale,
+      systemScale: systemScaleValue,
       textureSize: this.textureSize,
       sourceTexture: sourceTex,
       destinationTexture: destTex,

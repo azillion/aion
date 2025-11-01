@@ -63,20 +63,3 @@ export interface Orbit {
 	// Simulation timestamp of the epoch (seconds)
 	epoch: number;
 }
-
-export interface FrameData {
-	rawState: SystemState;
-	bodiesToRender: Body[];
-	camera: any;
-	systemScale: number;
-	viewport: { width: number, height: number };
-	deltaTime: number;
-	cameraMode: number;
-	playerShipId: string | null;
-  	dominantLight?: Body;
-  	worldCameraEye?: Vec3;
-    debugTierView?: number;
-    showOrbits: boolean;
-    showAtmosphere: boolean;
-    unscaledBodiesForMap?: Body[];
-}
