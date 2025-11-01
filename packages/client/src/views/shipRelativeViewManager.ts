@@ -4,12 +4,15 @@ import type { InputManager } from '@client/input';
 import { TierManager } from '@client/renderer/tierManager';
 import { CameraMode } from '@client/state';
 import type { Scene } from '@client/renderer/scene';
+import { SceneDataProcessor } from './sceneDataProcessor';
 
 export class ShipRelativeViewManager implements IViewManager {
   private tierManager: TierManager;
+  private sceneDataProcessor: SceneDataProcessor;
 
   constructor() {
     this.tierManager = new TierManager();
+    this.sceneDataProcessor = new SceneDataProcessor();
   }
 
   public prepare(
@@ -30,11 +33,14 @@ export class ShipRelativeViewManager implements IViewManager {
     cameraManager.update(CameraMode.SHIP_RELATIVE, { playerShip, keys: input.keys, viewport });
 
     const shipCameraEyeWorld = [...camera.eye] as Vec3; // Capture true f64 (JS number) camera position.
+    
+    // Tiering and serialization (CPU, f64 -> f32-safe, zero-padded per tier)
     const tieredScene = this.tierManager.build(systemState, shipCameraEyeWorld, state.playerShipId);
+    const processedData = this.sceneDataProcessor.process(tieredScene);
 
     // 4) HUD/selection should use unscaled, camera-relative positions.
-    const bodiesForHUD = systemState.bodies
-      .filter(b => b.id !== state.playerShipId)
+    const bodiesForTiers = systemState.bodies.filter(b => b.id !== state.playerShipId);
+    const bodiesForHUD = bodiesForTiers
       .map(b => {
         const HUD_RENDER_DISTANCE = 5000; // keep within stable f32 range for projection
         const p: [number, number, number] = [
@@ -55,12 +61,21 @@ export class ShipRelativeViewManager implements IViewManager {
     // 6) Move the main camera to the origin for this frame's rendering.
     camera.eye = [0, 0, 0];
 
+    // Tiered data already computed above
+
     // 7) Compute look_at using stable, camera-relative data.
     cameraManager.updateLookAt(camera, { keys: input.keys, relativeBodies: bodiesForHUD, playerShip });
     
     // Upload tier data to GPU buffers for ship-relative rendering
     const sceneTyped: Scene = scene as unknown as Scene;
-    sceneTyped.updateTiers(tieredScene.near, tieredScene.mid, tieredScene.far);
+    sceneTyped.updateTiers(
+      processedData.nearData,
+      processedData.midData,
+      processedData.farData,
+      processedData.nearCount,
+      processedData.midCount,
+      processedData.farCount
+    );
     // Upload global shadow casters (unscaled camera-relative positions)
     sceneTyped.updateShadowCasters(tieredScene.shadowCasters);
 

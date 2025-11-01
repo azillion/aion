@@ -118,8 +118,8 @@ fn get_sky_color(
             let p_sample_tier = p_sample + planet_center_tier;
             let p_world = p_sample_tier * tier_scale;
             let up_dir = normalize(p_sample);
-            let eclipse_shadow_ray = Ray(p_world + up_dir * 0.2, light_dir);
-            let eclipse_rec = hit_spheres(eclipse_shadow_ray, createInterval(0.001, INFINITY), shadow_casters_in, shadow_params_in.count, ignore_pos_world);
+            let eclipse_shadow_ray = Ray(p_world + up_dir * 0.2, light_dir); 
+            let eclipse_rec = hit_spheres_shadow(eclipse_shadow_ray, createInterval(0.001, INFINITY), shadow_casters_in, shadow_params_in.count, ignore_pos_world);
 
             if (eclipse_rec.hit && dot(eclipse_rec.emissive, eclipse_rec.emissive) < 0.1) { continue; }
 
@@ -140,9 +140,9 @@ fn get_sky_color(
             let phase_r = 3.0 / (16.0 * PI) * (1.0 + mu*mu);
             let phase_m = 3.0 / (8.0 * PI) * ((1.0-g*g)*(1.0+mu*mu)) / ((2.0+g*g)*pow(1.0+g*g-2.0*g*mu, 1.5));
             let in_scatter = (params.beta_rayleigh * density_r * phase_r) + (params.beta_mie * density_m * phase_m);
-				
-			scattered_light += transmittance * in_scatter * sun_transmittance * step_size * tier_scale;
-			transmittance *= exp(-scattering_coeffs * step_size * tier_scale);
+                
+            scattered_light += transmittance * in_scatter * sun_transmittance * step_size * tier_scale;
+            transmittance *= exp(-scattering_coeffs * step_size * tier_scale);
         }
     }
     
