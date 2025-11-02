@@ -26,7 +26,6 @@ export class HUDManager {
   }
 
   public draw(payload: RenderPayload): void {
-    const { camera, viewport, cameraMode } = payload;
     this.clear();
 
     // Style
@@ -43,22 +42,6 @@ export class HUDManager {
       this.drawShipHUD(payload);
       // We return here because drawShipHUD handles its own body indicators
       return;
-    }
-
-    if (cameraMode === CameraMode.SYSTEM_MAP) {
-      const bodies = payload.bodiesToRender ?? [];
-      for (const body of bodies) {
-        const p = projectWorldToScreen(body.position as Vec3, camera, viewport);
-        if (!p) continue;
-
-        const isFocus = camera.focusBodyId === body.id;
-        if (p.inView) {
-          this.context.beginPath();
-          this.context.arc(p.x, p.y, isFocus ? 4 : 2.5, 0, Math.PI * 2);
-          this.context.fill();
-          this.context.fillText(body.name, p.x + 6, p.y - 6);
-        }
-      }
     }
   }
 
@@ -199,14 +182,19 @@ export class HUDManager {
   }
 
   private drawTargetIndicators(payload: RenderPayload) {
-    const { bodiesToRender, camera, viewport, playerShipId } = payload;
+    const { bodiesToRender, camera, viewport, playerShipId, worldCameraEye } = payload;
     const centerX = viewport.width * 0.5;
     const centerY = viewport.height * 0.5;
     
     const iterable = bodiesToRender ?? [];
 
     for (const body of iterable.filter(b => b.id !== playerShipId)) {
-      const p = projectWorldToScreen(body.position as Vec3, camera, viewport);
+      const relativePos: Vec3 = [
+        (body.position as Vec3)[0] - worldCameraEye[0],
+        (body.position as Vec3)[1] - worldCameraEye[1],
+        (body.position as Vec3)[2] - worldCameraEye[2],
+      ];
+      const p = projectWorldToScreen(relativePos, camera, viewport);
       if (!p) continue;
       
       const isFocus = camera.focusBodyId === body.id;

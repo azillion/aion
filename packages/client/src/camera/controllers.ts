@@ -1,7 +1,6 @@
 import type { Ship, Body, Vec3 } from '@shared/types';
-import type { Camera } from '../camera';
+import type { Camera } from './camera';
 import { vec3, quat, mat4 } from 'gl-matrix';
-import { ReferenceFrame } from '../state';
 
 export interface ICameraController {
 	update(camera: Camera, context: any): void;
@@ -11,7 +10,6 @@ export interface SystemMapControllerContext {
   bodies: Body[];
   scale: number;
   viewport: { width: number; height: number };
-  referenceFrame: ReferenceFrame;
 }
 
 export interface ShipRelativeControllerContext {

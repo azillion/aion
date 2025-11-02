@@ -11,7 +11,6 @@ export interface IRendererAccessor {
     playerShipId: string | null;
     showOrbits: boolean;
     showAtmosphere: boolean;
-    referenceFrame: any; // Keep `any` for now for simplicity
   };
   ui: UI | null;
   getScene(): Scene;

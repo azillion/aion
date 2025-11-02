@@ -213,9 +213,4 @@ export class Renderer {
     this.core.device.queue.writeBuffer(this.themeUniformBuffer, 0, themeData);
     return theme;
   }
-
-  public clearOrbitHistory(): void {
-    const systemMap = this.pipelines[CameraMode.SYSTEM_MAP as unknown as keyof typeof this.pipelines] as any;
-    systemMap?.clearOrbitHistory?.();
-  }
 }

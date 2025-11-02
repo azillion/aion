@@ -5,9 +5,6 @@ import type { AppState } from './state';
 import type { UI } from './ui';
 import type { HUDManager } from './hud';
 import { CameraManager } from './camera/manager';
- 
-import { CameraMode } from './state';
-import { ReferenceFrameManager } from './views/referenceFrameManager';
 import { ShipRelativeViewManager } from './views/shipRelativeViewManager';
  
 import Stats from 'stats.js';
@@ -20,7 +17,6 @@ export class App {
   private readonly ui: UI;
   private readonly hud: HUDManager;
   private cameraManager: CameraManager;
-  private referenceFrameManager: ReferenceFrameManager;
   private shipRelativeViewManager: ShipRelativeViewManager;
   private lastFrameTime: number = 0;
   private fpsAccumulator = 0;
@@ -44,7 +40,6 @@ export class App {
     this.ui = ui;
     this.hud = hud;
     this.cameraManager = cameraManager;
-    this.referenceFrameManager = new ReferenceFrameManager();
     this.shipRelativeViewManager = new ShipRelativeViewManager();
   }
 
@@ -82,17 +77,7 @@ export class App {
 
     
     const systemState = await this.authority.query();
-
-    // --- Reference Frame Management ---
-    const worldCameraEye = [...this.cameraManager.getCamera().eye];
-    const newReferenceBodyId = this.referenceFrameManager.update(systemState.bodies, worldCameraEye as [number, number, number], this.state.referenceBodyId);
-    if (newReferenceBodyId) {
-      this.state.referenceBodyId = newReferenceBodyId;
-    }
-    // --- End Reference Frame Management ---
-    // --- Prepare scene based on camera mode ---
-    // For now, we only support ShipRelative mode.
-    this.state.cameraMode = CameraMode.SHIP_RELATIVE;
+    // --- Prepare scene ---
     const textureSize = this.renderer.getTextureSize();
     if (!textureSize) {
       requestAnimationFrame(this.updateLoop);
@@ -105,8 +90,7 @@ export class App {
     // Finalize camera and write shared camera buffer
     const camera = this.cameraManager.getCamera();
     camera.updateViewMatrix();
-    const currentFrameWorldEye = (renderPayload as any).worldCameraEye ?? worldCameraEye;
-    this.renderer.writeCameraBuffer(camera, currentFrameWorldEye as [number, number, number]);
+    this.renderer.writeCameraBuffer(camera, renderPayload.worldCameraEye);
 
     this.renderer.prepare(renderPayload);
     this.renderer.render(renderPayload);
