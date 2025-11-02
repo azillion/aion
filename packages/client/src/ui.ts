@@ -29,7 +29,6 @@ export class UI {
         'Theme': 'white',
         'Sensor': 'Full Color',
         'FPS': '0',
-        'Show Orbits': false,
         'Auto Land': async () => {
             const cam = this.cameraManager.getCamera();
             const targetId = cam.focusBodyId;
@@ -49,15 +48,7 @@ export class UI {
         'Add Asteroid': () => this.addAsteroid(),
         'Time Scale': 1.0, // We keep the slider for variable control
         'Current Warp': 'x1',
-        'Toggle View': () => {
-            if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
-                this.state.cameraMode = CameraMode.SHIP_RELATIVE;
-            } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
-                this.state.cameraMode = CameraMode.SYSTEM_MAP;
-            } else {
-                this.state.cameraMode = CameraMode.SHIP_RELATIVE;
-            }
-        }
+        'Toggle View': () => { console.log('View toggle disabled.'); }
     };
 
     constructor(renderer: Renderer, state: AppState, authority: Authority, cameraManager: CameraManager) {
@@ -91,14 +82,6 @@ export class UI {
 
         this.gui.add(this.settings, 'Sensor', Object.keys(spectralResponses))
             .onChange(() => this.updateTheme());
-
-        this.gui.add(this.settings, 'Show Orbits')
-            .onChange((value: boolean) => {
-                this.state.showOrbits = value;
-                if (!value) {
-                    this.renderer.clearOrbitHistory();
-                }
-            });
 
         this.gui.add(this.state, 'showAtmosphere').name('Show Atmosphere');
 

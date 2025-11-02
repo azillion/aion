@@ -161,7 +161,7 @@ export class Renderer {
   public render(frameData: RenderPayload) {
     if (!this.core.device || !this.textureSize) return;
     const { camera, deltaTime } = frameData;
-    const systemScaleValue = frameData.cameraMode === CameraMode.SYSTEM_MAP ? frameData.systemScale : 1.0;
+    const systemScaleValue = 1.0; // System Map removed
     this.lastDeltaTime = deltaTime;
     const theme = this.setTheme(this.currentThemeName, this.currentResponseName);
     if (!theme) return;

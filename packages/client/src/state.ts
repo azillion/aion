@@ -9,7 +9,7 @@ export enum CameraMode {
 }
 
 export class AppState {
-  public cameraMode: CameraMode = CameraMode.SHIP_RELATIVE;
+  public cameraMode: CameraMode = CameraMode.SHIP_RELATIVE; // Default and only mode for now
   public showOrbits: boolean = false;
   public showAtmosphere: boolean = true;
   public showHUD: boolean = true;
