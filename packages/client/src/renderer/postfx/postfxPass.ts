@@ -1,7 +1,7 @@
 import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
-import postfxShaderWGSL from '../shaders/postfx.wgsl?raw';
+import postfxShaderWGSL from './shaders/postfx.wgsl?raw';
 import type { Body, Theme } from '@shared/types';
 
 export class PostFXPass implements IRenderPass {
@@ -122,3 +122,5 @@ export class PostFXPass implements IRenderPass {
     device.queue.submit([encoder.finish()]);
   }
 }
+
+

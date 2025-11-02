@@ -1,3 +1,4 @@
+// Core ray-tracing intersection functions for analytic spheres.
 fn hit_sphere(sphere: Sphere, oc: vec3<f32>, r: Ray, ray_t: Interval, index: u32) -> HitRecord {
     var rec: HitRecord; rec.hit = false;
     let radius = sphere.pos_high_and_radius.w;
@@ -59,4 +60,5 @@ fn hit_scene_spheres(r: Ray, ray_t: Interval, spheres_in: ptr<storage, array<Sph
     }
     return rec;
 }
+
 

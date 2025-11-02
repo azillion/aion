@@ -1,3 +1,4 @@
+// Functions for calculating atmospheric in-scattering and transmittance.
 const ATMOSPHERE_RADIUS_SCALE: f32 = 1.025;
 const NUM_IN_SCATTER_SAMPLES: u32 = 16;
 
@@ -152,3 +153,5 @@ fn get_sky_color(
     
     return AtmosphereOutput(final_color, transmittance, 1.0 - transmittance.g);
 }
+
+

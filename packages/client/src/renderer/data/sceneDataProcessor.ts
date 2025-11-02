@@ -1,6 +1,6 @@
 import type { Body } from '@shared/types';
 
-const FLOATS_PER_BODY_GPU = 32; // This was correctly updated in Phase 1
+const FLOATS_PER_BODY_GPU = 32;
 
 export interface ProcessedSceneData {
   data: Float32Array;

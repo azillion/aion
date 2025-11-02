@@ -1,11 +1,11 @@
 import type { Theme } from '@shared/types';
 import type { RenderContext } from '../types';
 import type { IRenderPipeline } from './base';
-import { PostFXPass } from '../passes/postfxPass';
-import { SceneRenderPass } from '../passes/sceneRenderPass';
+import { PostFXPass } from '../postfx/postfxPass';
+import { SceneRenderPass } from '../scene/sceneRenderPass';
 import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
-import type { RenderPayload, ShipRelativePayload } from '@client/views/types';
+import type { RenderPayload, ShipRelativePayload } from '@client/orchestration/types';
 import { CameraMode } from '@client/state';
 
 export class ShipRelativePipeline implements IRenderPipeline {

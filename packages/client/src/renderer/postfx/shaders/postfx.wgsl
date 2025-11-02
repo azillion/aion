@@ -1,3 +1,4 @@
+// Post-processing and final compositing shader.
 struct Theme {
     // Use vec4 for all fields to guarantee 16-byte alignment per field.
     // params.x = deltaTime, params.y = crtIntensity
@@ -91,3 +92,5 @@ fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f
     let safeColor = clamp(noNan, vec3<f32>(0.0), vec3<f32>(1.0));
     return vec4<f32>(safeColor, 1.0);
 }
+
+

@@ -1,3 +1,4 @@
+// Functions for procedural terrain generation and ray-marching Signed Distance Fields (SDFs).
 // This must match the layout of the terrain_params vec4 in the Sphere struct.
 struct TerrainUniforms {
     base_radius: f32,
@@ -214,4 +215,5 @@ fn get_ocean_material(p_local: vec3<f32>) -> Material {
     let water_albedo = vec3<f32>(0.05, 0.15, 0.2);
     return Material(water_albedo);
 }
+
 

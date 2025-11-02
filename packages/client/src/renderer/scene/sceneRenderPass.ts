@@ -1,15 +1,15 @@
 import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
-import sceneRenderWGSL from '../shaders/sceneRender.wgsl?raw';
+import sceneRenderWGSL from './shaders/sceneRender.wgsl?raw';
 import cameraWGSL from '../shaders/camera.wgsl?raw';
 import sceneUniformsWGSL from '../shaders/sceneUniforms.wgsl?raw';
-import planetSdfWGSL from '../shaders/planetSdf.wgsl?raw';
+import planetSdfWGSL from './shaders/planetSdf.wgsl?raw';
 import noiseWGSL from '../shaders/noise.wgsl?raw';
-import atmosphereWGSL from '../shaders/atmosphere.wgsl?raw';
-import raytracingWGSL from '../shaders/raytracing.wgsl?raw';
-import shadingWGSL from '../shaders/shading.wgsl?raw';
-import f64WGSL from '../shaders/f64.wgsl?raw';
+import atmosphereWGSL from './shaders/atmosphere.wgsl?raw';
+import raytracingWGSL from './shaders/raytracing.wgsl?raw';
+import shadingWGSL from './shaders/shading.wgsl?raw';
+import f64WGSL from './shaders/f64.wgsl?raw';
 import { createShaderModule } from '../shaderUtils';
 
 const WORKGROUP_SIZE = 8;

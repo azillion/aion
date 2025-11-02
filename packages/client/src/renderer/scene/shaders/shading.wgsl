@@ -1,3 +1,4 @@
+// Shading and lighting calculations for planetary surfaces.
 fn shade_planet_surface(rec: HitRecord, sphere: Sphere, sphere_pos_relative: vec3<f32>, ray: Ray, scene: SceneUniforms, camera: CameraUniforms) -> vec3<f32> {
     let surface_albedo = sphere.albedo_and_atmos_flag.xyz;
     let surface_normal = rec.normal;
@@ -49,4 +50,5 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, sphere_pos_relative: vec
     
     return lit_color;
 }
+
 

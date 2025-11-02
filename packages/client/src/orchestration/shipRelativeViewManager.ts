@@ -3,7 +3,7 @@ import type { SystemState, Vec3, Body } from '@shared/types';
 import type { InputManager } from '@client/input';
 import { CameraMode } from '@client/state';
 import type { Scene } from '@client/renderer/scene';
-import { SceneDataProcessor } from './sceneDataProcessor';
+import { SceneDataProcessor } from '@client/renderer/data/sceneDataProcessor';
 
 export class ShipRelativeViewManager implements IViewManager {
   private sceneDataProcessor: SceneDataProcessor;

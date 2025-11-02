@@ -5,7 +5,7 @@ import type { AppState } from './state';
 import type { UI } from './ui';
 import type { HUDManager } from './hud';
 import { CameraManager } from './camera/manager';
-import { ShipRelativeViewManager } from './views/shipRelativeViewManager';
+import { ShipRelativeViewManager } from './orchestration/shipRelativeViewManager';
  
 import Stats from 'stats.js';
 

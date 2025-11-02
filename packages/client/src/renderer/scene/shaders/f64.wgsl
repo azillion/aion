@@ -1,3 +1,4 @@
+// Library for emulating 64-bit floating point arithmetic using two 32-bit floats.
 // f64 Emulation Library
 
 // Algorithm from "Accurate Sum and Dot Product" by T. Ogita, S. Rump, and S. Oishi
@@ -68,3 +69,5 @@ fn sub_f64_to_f32(a_h: vec3<f32>, a_l: vec3<f32>, b_h: vec3<f32>, b_l: vec3<f32>
     let r_z = sub_f64(vec2<f32>(a_h.z, a_l.z), vec2<f32>(b_h.z, b_l.z));
     return vec3<f32>(r_x.x + r_x.y, r_y.x + r_y.y, r_z.x + r_z.y);
 }
+
+

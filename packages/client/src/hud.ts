@@ -1,7 +1,7 @@
 import type { Vec3 } from '@shared/types';
 import { CameraMode } from './state';
 import { projectWorldToScreen } from './renderer/projection';
-import type { RenderPayload } from './views/types';
+import type { RenderPayload } from './orchestration/types';
 
 export class HUDManager {
   private canvas: HTMLCanvasElement;

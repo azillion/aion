@@ -6,7 +6,7 @@ import { Scene } from './scene';
 import type { RenderContext } from './types';
 import { vec3 } from 'gl-matrix';
 import type { UI } from '../ui';
-import { PostFXPass } from './passes/postfxPass';
+import { PostFXPass } from './postfx/postfxPass';
 import { themes } from '../theme';
 import { spectralResponses } from '../spectral';
 import type { Theme } from '@shared/types';
@@ -14,8 +14,8 @@ import { HUDManager } from '../hud';
 import type { SystemState } from '@shared/types';
 import type { IRenderPipeline } from './pipelines/base';
  
-import type { RenderPayload } from '@client/views/types';
-import { SceneDataProcessor } from '../views/sceneDataProcessor';
+import type { RenderPayload } from '@client/orchestration/types';
+import { SceneDataProcessor } from './data/sceneDataProcessor';
 import type { Vec3 } from '@shared/types';
 
 export class Renderer {
