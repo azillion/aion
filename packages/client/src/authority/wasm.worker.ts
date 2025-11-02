@@ -47,12 +47,21 @@ async function main(): Promise<void> {
     },
   };
   const playerShip: Ship = {
-    id: 'player-ship', name: 'AION-1',
-    position: [earth.position[0] + (earth.radius + 35786), earth.position[1], earth.position[2]],
-    velocity: [earth.velocity[0], earth.velocity[1] + Math.sqrt(G * earth.mass / (earth.radius + 35786)), earth.velocity[2]],
-    radius: 0.1, mass: 1e6, albedo: [0.8, 0.8, 0.9], emissive: [0.1, 0.3, 1.0],
-    orientation: [0, 0, 0, 1], angularVelocity: [0, 0, 0], thrust: [0, 0, 0]
-  } as any;
+    body: {
+      id: 'player-ship',
+      name: 'AION-1',
+      position: [earth.position[0] + (earth.radius + 35786), earth.position[1], earth.position[2]],
+      velocity: [earth.velocity[0], earth.velocity[1] + Math.sqrt(G * earth.mass / (earth.radius + 35786)), earth.velocity[2]],
+      radius: 0.1,
+      mass: 1e6,
+      albedo: [0.8, 0.8, 0.9],
+      emissive: [0.1, 0.3, 1.0],
+      terrain: null,
+    },
+    orientation: [0, 0, 0, 1],
+    angularVelocity: [0, 0, 0],
+    thrust: [0, 0, 0],
+  };
 
   const initial: SystemState = { timestamp: Date.now(), bodies: [sun, earth, moon], ships: [playerShip] };
   await authority.initialize(initial);

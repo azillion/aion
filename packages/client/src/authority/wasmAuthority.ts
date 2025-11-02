@@ -1,5 +1,5 @@
 import type { Authority, InputState } from '@shared/authority';
-import type { SystemState } from '@shared/types';
+import type { SystemState, Body, Ship, Vec3 } from '@shared/types';
 
 type WasmExports = {
     memory: WebAssembly.Memory;
@@ -31,6 +31,39 @@ export class WasmAuthority implements Authority {
 
     constructor() {}
 
+    // --- JSON normalization helpers (TS tuples -> Zig objects) ---
+    private v3(a: Vec3) { return { x: a[0], y: a[1], z: a[2] }; }
+    private quat(a: [number, number, number, number]) { return { x: a[0], y: a[1], z: a[2], w: a[3] }; }
+    private normalizeBody(b: Body) {
+        return {
+            id: b.id,
+            name: b.name,
+            position: this.v3(b.position),
+            velocity: this.v3(b.velocity),
+            radius: b.radius,
+            mass: b.mass,
+            albedo: this.v3(b.albedo),
+            emissive: b.emissive ? this.v3(b.emissive) : null,
+            terrain: b.terrain ?? null,
+        };
+    }
+    private normalizeShip(s: Ship) {
+        return {
+            body: this.normalizeBody(s.body),
+            orientation: this.quat(s.orientation),
+            angularVelocity: this.v3(s.angularVelocity),
+            thrust: this.v3(s.thrust),
+        };
+    }
+    private normalizeSystemState(ss: SystemState) {
+        return {
+            timestamp: ss.timestamp,
+            bodies: ss.bodies.map(b => this.normalizeBody(b)),
+            ships: ss.ships.map(s => this.normalizeShip(s)),
+            flags: ss.flags ?? undefined,
+        };
+    }
+
     async initialize(initialState: SystemState): Promise<void> {
         const response = await fetch('/packages/game-sim/zig-out/bin/game-sim.wasm');
         const bytes = await response.arrayBuffer();
@@ -53,7 +86,7 @@ export class WasmAuthority implements Authority {
         this.scratchBufPtr = e.get_scratch_buffer_ptr();
 
         console.log(initialState);
-        const json = JSON.stringify(initialState);
+        const json = JSON.stringify(this.normalizeSystemState(initialState));
         const encoded = new TextEncoder().encode(json);
         // Write at a fixed offset in linear memory for initialization
         const base = 100000; // temporary fixed offset for init JSON
@@ -61,6 +94,39 @@ export class WasmAuthority implements Authority {
 
         this.simPtr = e.create_simulator(base, encoded.length);
         if (!this.simPtr) throw new Error('Failed to create simulator');
+    }
+
+    private fromObjVec3(o: any): Vec3 { return [o.x, o.y, o.z]; }
+    private fromObjQuat(o: any): [number, number, number, number] { return [o.x, o.y, o.z, o.w]; }
+    private fromZigState(obj: any): SystemState {
+        const bodies = (obj.bodies ?? []).map((b: any) => ({
+            id: b.id,
+            name: b.name,
+            position: this.fromObjVec3(b.position),
+            velocity: this.fromObjVec3(b.velocity),
+            radius: b.radius,
+            mass: b.mass,
+            albedo: this.fromObjVec3(b.albedo),
+            emissive: b.emissive ? this.fromObjVec3(b.emissive) : null,
+            terrain: b.terrain ?? undefined,
+        }));
+        const ships = (obj.ships ?? []).map((s: any) => ({
+            body: {
+                id: s.body.id,
+                name: s.body.name,
+                position: this.fromObjVec3(s.body.position),
+                velocity: this.fromObjVec3(s.body.velocity),
+                radius: s.body.radius,
+                mass: s.body.mass,
+                albedo: this.fromObjVec3(s.body.albedo),
+                emissive: s.body.emissive ? this.fromObjVec3(s.body.emissive) : null,
+                terrain: s.body.terrain ?? undefined,
+            },
+            orientation: this.fromObjQuat(s.orientation),
+            angularVelocity: this.fromObjVec3(s.angularVelocity),
+            thrust: this.fromObjVec3(s.thrust),
+        }));
+        return { timestamp: obj.timestamp, bodies, ships, flags: obj.flags } as SystemState;
     }
 
     async query(): Promise<SystemState> {
@@ -75,11 +141,9 @@ export class WasmAuthority implements Authority {
         copy.set(mem);
         this.exports.free_result_buffer(ptr, len);
         const json = new TextDecoder().decode(copy);
-        if (this.temp === 0) {
-            this.temp = 1;
-            console.log(JSON.parse(json));
-        }
-        return JSON.parse(json) as SystemState;
+        const obj = JSON.parse(json);
+        if (this.temp === 0) { this.temp = 1; console.log(obj); }
+        return this.fromZigState(obj);
     }
 
     async tick(deltaTime: number, input: InputState): Promise<void> {
@@ -117,7 +181,17 @@ export class WasmAuthority implements Authority {
 
     async addBody(body: Omit<SystemState['bodies'][number], 'id'>): Promise<void> {
         if (!this.instance) throw new Error('WASM not initialized');
-        const json = JSON.stringify(body);
+        // Normalize to Zig schema: object vec3s
+        const normalized = {
+            name: body.name,
+            position: this.v3(body.position),
+            velocity: this.v3(body.velocity),
+            radius: body.radius,
+            mass: body.mass,
+            albedo: this.v3(body.albedo),
+            emissive: body.emissive ? this.v3(body.emissive) : null,
+        };
+        const json = JSON.stringify(normalized);
         const encoded = new TextEncoder().encode(json);
         new Uint8Array(this.exports.memory.buffer, this.scratchBufPtr, encoded.length).set(encoded);
         this.exports.add_body(this.simPtr, this.scratchBufPtr, encoded.length);

@@ -39,5 +39,5 @@ pub const Bound3 = struct {
             self.max.x >= point.x and self.max.y >= point.y and self.max.z >= point.z;
     }
 
-    pub const zero = Bound3.init(Vec3.zero, Vec3.zero);
+    pub const zero = Bound3.init(Vec3.ZERO, Vec3.ZERO);
 };

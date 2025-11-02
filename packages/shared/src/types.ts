@@ -22,13 +22,14 @@ export interface Body {
 	mass: number;
 	albedo: Vec3;
 	emissive?: Vec3 | null;
-    terrain?: TerrainParams;
+	terrain?: TerrainParams | null;
 }
 
-export interface Ship extends Body {
-	orientation: [number, number, number, number];
-	angularVelocity: Vec3;
-	thrust: Vec3;
+export interface Ship {
+    body: Body;
+    orientation: [number, number, number, number];
+    angularVelocity: Vec3;
+    thrust: Vec3;
 }
 
 export interface SystemState {

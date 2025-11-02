@@ -1,4 +1,5 @@
 const std = @import("std");
+const std_math = @import("std").math;
 const types = @import("core");
 const math = @import("math");
 
@@ -144,7 +145,7 @@ pub fn tickSimulator(simulator: *anyopaque, dt_unscaled: f64, input_buffer: *typ
         if (isSet.f(mask, 13)) {
             const v = ship.body.velocity;
             const v_forward = math.Vec3.dot(v, ship_forward);
-            if (std.math.fabs(v_forward) > 0.1) {
+            if (@abs(v_forward) > 0.1) {
                 const brake_dir = ship_forward.scale(if (v_forward > 0) -1.0 else 1.0);
                 total_force = math.Vec3.add(total_force, brake_dir.scale(THRUST_FORCE));
             }

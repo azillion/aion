@@ -27,7 +27,7 @@ export class ShipRelativeViewManager implements IViewManager {
     const state = renderer.state;
     const renderScale = 1.0;
 
-    const playerShip = systemState.ships.find(s => s.id === state.playerShipId);
+    const playerShip = systemState.ships.find(s => s.body.id === state.playerShipId);
 
     // 1) Update world-space camera from controller FIRST.
     cameraManager.update(CameraMode.SHIP_RELATIVE, { playerShip, keys: input.keys, viewport });
@@ -100,9 +100,9 @@ export class ShipRelativeViewManager implements IViewManager {
         let closestDistSq = Infinity;
         for (const body of systemState.bodies) {
           if (body.id === state.playerShipId) continue;
-          const dx = body.position[0] - playerShip.position[0];
-          const dy = body.position[1] - playerShip.position[1];
-          const dz = body.position[2] - playerShip.position[2];
+          const dx = body.position[0] - playerShip.body.position[0];
+          const dy = body.position[1] - playerShip.body.position[1];
+          const dz = body.position[2] - playerShip.body.position[2];
           const distSq = dx*dx + dy*dy + dz*dz;
           if (distSq < closestDistSq) {
             closestDistSq = distSq;

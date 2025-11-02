@@ -74,7 +74,7 @@ pub export fn tick_simulator(simulator: *sim.Simulator, dt_unscaled: f64) callco
     physics.tickSimulator(simulator, dt_unscaled, &input_buffer);
 }
 
-pub export fn query_simulator_state(simulator: *sim.Simulator) SliceU8 {
+pub export fn query_simulator_state(simulator: *sim.Simulator) callconv(.c) SliceU8 {
     const alloc = wasmAllocator();
     // Use ArrayListUnmanaged; provide allocator at usage sites
     var a = std.ArrayListUnmanaged(u8){};
@@ -187,7 +187,7 @@ pub export fn teleport_to_surface(simulator: *sim.Simulator, target_id_ptr: u32,
     i = 0;
     while (i < simulator.state.ships.len) : (i += 1) {
         const s = &simulator.state.ships[i];
-        if (std.mem.eql(u8, s.id, player_id)) {
+        if (std.mem.eql(u8, s.body.id, player_id)) {
             player_ship = s;
             break;
         }
@@ -195,7 +195,7 @@ pub export fn teleport_to_surface(simulator: *sim.Simulator, target_id_ptr: u32,
 
     if (target_body) |t| {
         if (player_ship) |ship| {
-            var dir = math.Vec3.sub(ship.position, t.position);
+            var dir = math.Vec3.sub(ship.body.position, t.position);
             const len = dir.len();
             if (len < 1e-9) {
                 dir = types.Vec3{ .x = 1.0, .y = 0.0, .z = 0.0 };
@@ -208,8 +208,8 @@ pub export fn teleport_to_surface(simulator: *sim.Simulator, target_id_ptr: u32,
             const surfaceR = baseR + @max(sea, maxH);
             const MIN_ALT: f64 = 2.1; // km
             const new_pos = math.Vec3.add(t.position, dir.scale(surfaceR + MIN_ALT));
-            ship.position = new_pos;
-            ship.velocity = t.velocity;
+            ship.body.position = new_pos;
+            ship.body.velocity = t.velocity;
             ship.angularVelocity = types.Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 };
         }
     }
@@ -235,7 +235,7 @@ pub export fn auto_land(simulator: *sim.Simulator, target_id_ptr: u32, target_id
     i = 0;
     while (i < simulator.state.ships.len) : (i += 1) {
         const s = &simulator.state.ships[i];
-        if (std.mem.eql(u8, s.id, player_id)) {
+        if (std.mem.eql(u8, s.body.id, player_id)) {
             player_ship = s;
             break;
         }
@@ -244,7 +244,7 @@ pub export fn auto_land(simulator: *sim.Simulator, target_id_ptr: u32, target_id
 
     const t = target_body.?;
     const ship = player_ship.?;
-    var dir = math.Vec3.sub(ship.position, t.position);
+    var dir = math.Vec3.sub(ship.body.position, t.position);
     var dist = dir.len();
     if (dist < 1e-9) {
         dir = types.Vec3{ .x = 1.0, .y = 0.0, .z = 0.0 };
@@ -261,10 +261,10 @@ pub export fn auto_land(simulator: *sim.Simulator, target_id_ptr: u32, target_id
 
     if (dist < minDist) {
         // Push out to clamp altitude and zero inward normal velocity
-        ship.position = math.Vec3.add(t.position, dir.scale(minDist));
-        const vdotn = ship.velocity.x * dir.x + ship.velocity.y * dir.y + ship.velocity.z * dir.z;
+        ship.body.position = math.Vec3.add(t.position, dir.scale(minDist));
+        const vdotn = ship.body.velocity.x * dir.x + ship.body.velocity.y * dir.y + ship.body.velocity.z * dir.z;
         if (vdotn < 0.0) {
-            ship.velocity = math.Vec3.add(ship.velocity, dir.scale(-vdotn));
+            ship.body.velocity = math.Vec3.add(ship.body.velocity, dir.scale(-vdotn));
         }
     }
 }

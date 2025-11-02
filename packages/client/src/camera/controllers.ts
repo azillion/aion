@@ -55,7 +55,7 @@ export class ShipRelativeController implements ICameraController {
         mat4.perspective(camera.projectionMatrix, camera.vfov * (Math.PI / 180.0), aspect, 0.001, 1e10);
         const ship = context.playerShip;
         if (!ship) return;
-        camera.eye = ship.position;
+        camera.eye = ship.body.position;
 
         const shipOrientation = quat.fromValues(
             ship.orientation[0],

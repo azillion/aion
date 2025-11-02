@@ -67,8 +67,8 @@ export class HUDManager {
   // --- Ship Relative HUD ---
   private drawShipHUD(payload: RenderPayload): void {
     const { rawState, camera, viewport, playerShipId } = payload;
-    const playerShip = rawState.ships.find(s => s.id === playerShipId);
-    if (!playerShip || !('velocity' in playerShip)) {
+    const playerShip = rawState.ships.find(s => s.body.id === playerShipId);
+    if (!playerShip || !('velocity' in playerShip.body)) {
       return;
     }
     const ship = playerShip;
@@ -88,9 +88,9 @@ export class HUDManager {
     const sun = rawState.bodies.find(b => b.id === 'sol');
     const sunVel = sun ? sun.velocity : [0,0,0];
     const relativeVel: Vec3 = [
-      ship.velocity[0] - sunVel[0],
-      ship.velocity[1] - sunVel[1],
-      ship.velocity[2] - sunVel[2]
+      ship.body.velocity[0] - sunVel[0],
+      ship.body.velocity[1] - sunVel[1],
+      ship.body.velocity[2] - sunVel[2]
     ];
     const speed = Math.hypot(...relativeVel);
 
@@ -117,11 +117,11 @@ export class HUDManager {
     this.context.fillText(`${(speed).toFixed(1)} km/s`, centerX, centerY + 40);
 
     // 4. Target Info
-    const focusBody = rawState.bodies.find(b => b.id === camera.focusBodyId) ?? rawState.ships.find(b => b.id === camera.focusBodyId);
+    const focusBody = rawState.bodies.find(b => b.id === camera.focusBodyId) ?? rawState.ships.find(s => s.body.id === camera.focusBodyId)?.body;
     if (focusBody && focusBody.id !== playerShipId) {
-      const dx = focusBody.position[0] - ship.position[0];
-      const dy = focusBody.position[1] - ship.position[1];
-      const dz = focusBody.position[2] - ship.position[2];
+      const dx = focusBody.position[0] - ship.body.position[0];
+      const dy = focusBody.position[1] - ship.body.position[1];
+      const dz = focusBody.position[2] - ship.body.position[2];
       const distKm = Math.hypot(dx, dy, dz);
 
       // Terrain-aware surface radius (km)

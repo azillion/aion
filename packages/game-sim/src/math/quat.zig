@@ -1,4 +1,5 @@
 const std = @import("std");
+const std_math = @import("std").math;
 const vec3 = @import("vec3.zig");
 const Vec3 = vec3.Vec3;
 
@@ -58,7 +59,7 @@ pub const Quat = struct {
         const dot_prod = norm_a.x * norm_b.x + norm_a.y * norm_b.y + norm_a.z * norm_b.z;
         if (dot_prod < -0.999999) {
             var axis = Vec3{ .x = 1.0, .y = 0.0, .z = 0.0 };
-            if (std.math.fabs(norm_a.x) > 0.9) axis = Vec3{ .x = 0.0, .y = 1.0, .z = 0.0 };
+            if (@abs(norm_a.x) > 0.9) axis = Vec3{ .x = 0.0, .y = 1.0, .z = 0.0 };
             const ortho = vec3.Vec3.cross(axis, norm_a);
             return fromAxisAngle(ortho, std.math.pi);
         }

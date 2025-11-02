@@ -23,8 +23,8 @@ pub const Simulator = struct {
 
         // free string fields for ships then free slice
         for (self.state.ships) |s| {
-            self.allocator.free(s.id);
-            self.allocator.free(s.name);
+            self.allocator.free(s.body.id);
+            self.allocator.free(s.body.name);
         }
         self.allocator.free(self.state.ships);
 

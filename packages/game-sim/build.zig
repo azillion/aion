@@ -2,29 +2,48 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
-
-    const wasm_target = b.standardTargetOptions(.{ .default_target = .{
+    const target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
         .os_tag = .freestanding,
-    } });
+    });
+
+    // root module for the exe is the ffi entry
+    const root_mod = b.createModule(.{
+        .root_source_file = b.path("src/ffi/index.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const wasm_exe = b.addExecutable(.{
         .name = "game-sim",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = wasm_target,
-            .optimize = optimize,
-        }),
+        .root_module = root_mod,
     });
 
-    // Add our new directories as modules (Zig 0.15.x API)
-    wasm_exe.root_module.addImport("core", b.createModule(.{ .root_source_file = b.path("src/core/types.zig") }));
-    wasm_exe.root_module.addImport("ffi", b.createModule(.{ .root_source_file = b.path("src/ffi/index.zig") }));
-    wasm_exe.root_module.addImport("math", b.createModule(.{ .root_source_file = b.path("src/math/index.zig") }));
-    wasm_exe.root_module.addImport("physics", b.createModule(.{ .root_source_file = b.path("src/physics/nbody.zig") }));
-    wasm_exe.root_module.addImport("sim", b.createModule(.{ .root_source_file = b.path("src/sim/index.zig") }));
+    // deps as modules (with target/optimize)
+    const math_mod = b.createModule(.{ .root_source_file = b.path("src/math/index.zig"), .target = target, .optimize = optimize });
+    const core_mod = b.createModule(.{ .root_source_file = b.path("src/core/types.zig"), .target = target, .optimize = optimize });
+    const physics_mod = b.createModule(.{ .root_source_file = b.path("src/physics/nbody.zig"), .target = target, .optimize = optimize });
+    const sim_mod = b.createModule(.{ .root_source_file = b.path("src/sim/index.zig"), .target = target, .optimize = optimize });
 
-    // Ensure required FFI symbols are exported and not stripped
+    // wire module dependencies transitively
+    // core -> math
+    core_mod.addImport("math", math_mod);
+    // physics -> core, math, sim
+    physics_mod.addImport("core", core_mod);
+    physics_mod.addImport("math", math_mod);
+    physics_mod.addImport("sim", sim_mod);
+    // sim -> core, math (no physics needed unless referenced)
+    sim_mod.addImport("core", core_mod);
+    sim_mod.addImport("math", math_mod);
+
+    // wire imports so @import("core") etc. works in ffi
+    root_mod.addImport("core", core_mod);
+    root_mod.addImport("math", math_mod);
+    root_mod.addImport("physics", physics_mod);
+    root_mod.addImport("sim", sim_mod);
+
+    // keep exports visible for wasm
+    wasm_exe.entry = .disabled;
     wasm_exe.rdynamic = true;
 
     b.installArtifact(wasm_exe);
