@@ -75,7 +75,7 @@ export class ShipRelativePipeline implements IRenderPipeline {
     bufferData.set(lightDir, 0);
     bufferData[3] = 0.0;
     bufferData.set(finalLightColor, 4);
-    bufferData[7] = frameData.debugTierView;
+    bufferData[7] = 0.0; // debugTierView removed; slot unused
     bufferData[8] = 1.0; // tierScale is now always 1.0
     bufferData[9] = frameData.showAtmosphere ? 1.0 : 0.0;
     core.device.queue.writeBuffer(context.sceneUniformBuffer!, 0, bufferData);

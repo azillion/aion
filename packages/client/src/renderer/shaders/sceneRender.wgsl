@@ -88,7 +88,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 	let atmosphereEnabled = scene.scale_and_flags.y > 0.5;
 
     // Ray-scene intersection against the full scene object buffer
-    var rec = hit_tier_spheres(ray, createInterval(0.001, INFINITY), &spheres, params.bodyCount, vec3<f32>(1e30), camera);
+    var rec = hit_scene_spheres(ray, createInterval(0.001, INFINITY), &spheres, params.bodyCount, camera);
 
 	var final_pixel_color = vec3<f32>(0.0);
 	var final_alpha = 0.0;

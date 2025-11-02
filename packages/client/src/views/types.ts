@@ -11,7 +11,6 @@ export interface IRendererAccessor {
     playerShipId: string | null;
     showOrbits: boolean;
     showAtmosphere: boolean;
-    debugTierView: number;
     referenceFrame: any; // Keep `any` for now for simplicity
   };
   ui: UI | null;
@@ -32,7 +31,6 @@ export interface ShipRelativePayload extends BasePayload {
   cameraMode: CameraMode.SHIP_RELATIVE;
   worldCameraEye: Vec3;
   dominantLight: Body;
-  debugTierView: number;
   showAtmosphere: boolean;
   // This list is camera-relative and prepared specifically for the HUD
   bodiesToRender: Body[];

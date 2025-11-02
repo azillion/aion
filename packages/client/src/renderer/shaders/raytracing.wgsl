@@ -43,7 +43,7 @@ fn hit_spheres_shadow(r: Ray, ray_t: Interval, spheres_in: ptr<storage, array<Sp
 }
 
 // Generic indexed hit against the current tier's spheres buffer. Ray origin MUST be (0,0,0).
-fn hit_tier_spheres(r: Ray, ray_t: Interval, spheres_in: ptr<storage, array<Sphere>, read>, sphere_count: u32, ignore_pos: vec3<f32>, camera: CameraUniforms) -> HitRecord {
+fn hit_scene_spheres(r: Ray, ray_t: Interval, spheres_in: ptr<storage, array<Sphere>, read>, sphere_count: u32, camera: CameraUniforms) -> HitRecord {
     var closest_so_far = ray_t.maxI;
     var rec: HitRecord; rec.hit = false;
     for (var i = 0u; i < sphere_count; i++) {
@@ -54,8 +54,6 @@ fn hit_tier_spheres(r: Ray, ray_t: Interval, spheres_in: ptr<storage, array<Sphe
             s.pos_high_and_radius.xyz, s.pos_low_and_unused.xyz,
             camera.eye_pos_high, camera.eye_pos_low
         );
-        // Perform the ignore check AFTER converting to camera-relative space
-        if (distance(sphere_pos_relative, ignore_pos) < 0.1) { continue; }
         let sphere_rec = hit_sphere(s, sphere_pos_relative, r, Interval(ray_t.minI, closest_so_far), i);
         if (sphere_rec.hit) { closest_so_far = sphere_rec.t; rec = sphere_rec; }
     }

@@ -166,6 +166,11 @@ export class Renderer {
     const theme = this.setTheme(this.currentThemeName, this.currentResponseName);
     if (!theme) return;
 
+    // Ensure theme buffer exists (defensive)
+    if (!this.themeUniformBuffer) {
+      this.themeUniformBuffer = this.core.device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    }
+
     const sourceTex = this.frameCount % 2 === 0 ? this.postFxTextureB : this.postFxTextureA;
     const destTex = this.frameCount % 2 === 0 ? this.postFxTextureA : this.postFxTextureB;
 

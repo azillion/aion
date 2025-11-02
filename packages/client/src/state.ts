@@ -17,7 +17,6 @@ export class AppState {
   public crtIntensity: number = 1.0;
   public referenceFrame: ReferenceFrame = ReferenceFrame.BARYCENTRIC;
   public referenceBodyId: string | null = 'sol';
-  public debugTierView: number = -1; // -1: off, 0: Near, 1: Mid, 2: Far
 }
 
 

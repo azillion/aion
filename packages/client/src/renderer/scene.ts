@@ -147,29 +147,27 @@ export class Scene {
       // pos_low is zero for the map view
 
       // Material
-      sphereData.set(body.albedo, f_base + 8);
+      sphereData.set(body.albedo, f_base + 8); // offset 8
       sphereData[f_base + 11] = body.terrain && (body.terrain as any).atmosphere ? 1.0 : 0.0;
 
       const emissive = body.emissive ?? [0, 0, 0];
-      sphereData.set(emissive, f_base + 12);
+      sphereData.set(emissive, f_base + 12); // offset 12
       sphereData[f_base + 15] = body.terrain ? 1.0 : 0.0;
       
-      // Maintain struct alignment: ref_idx_opacity_pad vec4 slot (offset 12..15)
+      // Maintain struct alignment: ref_idx_opacity_pad vec4 slot
       // Even if unused, fill with sane defaults to match WGSL layout.
-      sphereData[f_base + 16] = 1.0; // ref_idx
+      sphereData[f_base + 16] = 1.0; // ref_idx (offset 16)
       sphereData[f_base + 17] = 1.0; // opacity
 
       // Planet data
       if (body.terrain) {
-        sphereData[f_base + 20] = body.terrain.radius;      // base_radius
+        sphereData[f_base + 20] = body.terrain.radius;      // base_radius (offset 20)
         sphereData[f_base + 21] = body.terrain.seaLevel;    // sea_level
         sphereData[f_base + 22] = body.terrain.maxHeight;   // max_height
         sphereData[f_base + 23] = body.terrain.noiseSeed;   // seed
       } else {
-        sphereData[f_base + 20] = 0.0;
-        sphereData[f_base + 21] = 0.0;
-        sphereData[f_base + 22] = 0.0;
-        sphereData[f_base + 23] = 0.0;
+        // This also correctly zeroes the terrain_params block
+        sphereData.fill(0.0, f_base + 20, f_base + 24);
       }
     });
     return sphereData;

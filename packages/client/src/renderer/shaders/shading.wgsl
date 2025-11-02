@@ -8,8 +8,8 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, sphere_pos_relative: vec
     let view_dir = normalize(ray.origin - rec.p);
     let world_scale = scene.scale_and_flags.x;
     let p_world = rec.p * world_scale;
-    let self_pos_world = sphere.pos_high_and_radius.xyz * world_scale;
-    let shadow_ray = Ray(p_world + surface_normal * 0.2, light_dir_to_source); // This ray is in camera-relative space
+    let self_pos_world = sphere_pos_relative * world_scale; // Use the already computed relative pos
+    let shadow_ray = Ray(rec.p + surface_normal * 0.2, light_dir_to_source); // This ray is in camera-relative space
     let inter_body_shadow_rec = hit_spheres_shadow(shadow_ray, createInterval(0.001, INFINITY), &shadow_casters, shadowParams.count, self_pos_world, camera);
     let is_eclipsed = inter_body_shadow_rec.hit && dot(inter_body_shadow_rec.emissive, inter_body_shadow_rec.emissive) < 0.1;
 

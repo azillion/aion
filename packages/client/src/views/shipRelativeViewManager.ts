@@ -105,7 +105,6 @@ export class ShipRelativeViewManager implements IViewManager {
       playerShipId: state.playerShipId,
       dominantLight: dominantLight,
       worldCameraEye: worldCameraEye,
-      debugTierView: state.debugTierView,
       showAtmosphere: state.showAtmosphere,
       // Pass the specially-prepared HUD body list
       bodiesToRender: bodiesToRender, // Pass world-space bodies to HUD
