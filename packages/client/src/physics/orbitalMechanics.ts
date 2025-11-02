@@ -9,7 +9,6 @@ export interface OrbitalElements {
   a: number; // semi-major axis
   e: number; // eccentricity
   currentTrueAnomaly: number;
-  points: Float32Array;
   pointCount: number;
   periapsis: Vec3 | null;
   apoapsis: Vec3 | null;
@@ -18,6 +17,8 @@ export interface OrbitalElements {
 }
 
 export function calculateAnalyticOrbit(
+  destination: Float32Array,
+  offset: number,
   r_vec: Vec3,
   v_vec: Vec3,
   totalSystemMass: number,
@@ -55,23 +56,22 @@ export function calculateAnalyticOrbit(
 
     const Q = vec3.cross(vec3.create(), W, P) as Vec3;
 
-    // Generate orbit ribbon points
-    const points = new Float32Array(ORBIT_MAX_POINTS * 4);
+    // Generate orbit ribbon points directly into destination buffer
     for (let k = 0; k < ORBIT_MAX_POINTS; k++) {
       const theta = (k / (ORBIT_MAX_POINTS - 1)) * Math.PI * 2;
       const xPeri = a * (Math.cos(theta) - e);
       const yPeri = bSemi * Math.sin(theta);
-      const base = k * 4;
+      const base = offset + k * 4;
 
       const pos = vec3.create();
       vec3.scaleAndAdd(pos, pos, P, xPeri);
       vec3.scaleAndAdd(pos, pos, Q, yPeri);
       vec3.scale(pos, pos, systemScale);
       
-      points[base+0] = pos[0];
-      points[base+1] = pos[1];
-      points[base+2] = pos[2];
-      points[base+3] = 1.0;
+      destination[base+0] = pos[0];
+      destination[base+1] = pos[1];
+      destination[base+2] = pos[2];
+      destination[base+3] = 1.0;
     }
     
     const dotR_Q = vec3.dot(r_vec, Q);
@@ -98,7 +98,7 @@ export function calculateAnalyticOrbit(
 
     return {
         a, e, currentTrueAnomaly,
-        points, pointCount: ORBIT_MAX_POINTS,
+        pointCount: ORBIT_MAX_POINTS,
         periapsis, apoapsis, ascendingNode, descendingNode,
     };
 }

@@ -25,6 +25,8 @@ export class OrbitsPass implements IRenderPass {
   private instanceDataBuffer!: GPUBuffer;    // storage buffer for per-instance orbit data
   private visibleInstanceCount = 0;
   private orbitalElements: (OrbitalElements | null)[] = [];
+  private cpuPoints!: Float32Array;
+  private cpuInstance!: Float32Array;
   
   public async initialize(core: WebGPUCore, scene: Scene): Promise<void> {
     const module = await createShaderModule(
@@ -60,7 +62,7 @@ export class OrbitsPass implements IRenderPass {
       primitive: { topology: 'triangle-strip' },
     });
 
-    // Allocate large shared buffers
+    // Allocate large shared GPU buffers
     const pointsPerOrbit = ORBIT_MAX_POINTS;
     const bytesPerPoint = 4 * 4; // vec4<f32>
     const totalPoints = MAX_ORBITS * pointsPerOrbit;
@@ -75,6 +77,10 @@ export class OrbitsPass implements IRenderPass {
       size: MAX_ORBITS * bytesPerInstance,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+
+    // Allocate large shared CPU-side buffers to avoid per-frame allocations
+    this.cpuPoints = new Float32Array(MAX_ORBITS * pointsPerOrbit * 4);
+    this.cpuInstance = new Float32Array(MAX_ORBITS * (bytesPerInstance / 4));
 
     this.bindGroup = core.device.createBindGroup({
       label: 'Orbits Bind Group',
@@ -129,37 +135,32 @@ export class OrbitsPass implements IRenderPass {
     const descendingNodePoints: (Vec3 | null)[] = Array(bodies.length).fill(null);
 
     const pointsPerOrbit = ORBIT_MAX_POINTS;
-    const bytesPerPoint = 4 * 4;
-    const cpuPoints = new Float32Array(MAX_ORBITS * pointsPerOrbit * 4);
     const instanceStrideFloats = 16; // 64 bytes
-    const cpuInstance = new Float32Array(MAX_ORBITS * instanceStrideFloats);
 
     let visibleIndex = 0;
     for (let i = 0; i < Math.min(bodies.length, MAX_ORBITS); i++) {
       const body = bodies[i];
       const r_vec = vec3.subtract(vec3.create(), body.position, barycenter.position) as Vec3;
       const v_vec = vec3.subtract(vec3.create(), body.velocity, barycenter.velocity) as Vec3;
-      const elements = calculateAnalyticOrbit(r_vec, v_vec, barycenter.totalMass, systemScale);
+      // Calculate points directly into the large CPU buffer at the correct offset
+      const pointBase = visibleIndex * pointsPerOrbit * 4;
+      const elements = calculateAnalyticOrbit(this.cpuPoints, pointBase, r_vec, v_vec, barycenter.totalMass, systemScale);
       this.orbitalElements[i] = elements;
 
       if (elements) {
-        // copy points into the large CPU buffer at the correct offset
-        const pointBase = visibleIndex * pointsPerOrbit * 4;
-        cpuPoints.set(elements.points, pointBase);
-
         // write instance data
         const instBase = visibleIndex * instanceStrideFloats;
         // color (use theme accent in run, but we can set placeholder; will be overridden if needed)
         // store as neutral white; shaders can colorize
-        cpuInstance[instBase + 0] = 1.0; // r
-        cpuInstance[instBase + 1] = 1.0; // g
-        cpuInstance[instBase + 2] = 1.0; // b
-        cpuInstance[instBase + 3] = elements.pointCount;
-        cpuInstance[instBase + 4] = elements.a * systemScale;
-        cpuInstance[instBase + 5] = elements.e;
-        cpuInstance[instBase + 6] = elements.currentTrueAnomaly;
+        this.cpuInstance[instBase + 0] = 1.0; // r
+        this.cpuInstance[instBase + 1] = 1.0; // g
+        this.cpuInstance[instBase + 2] = 1.0; // b
+        this.cpuInstance[instBase + 3] = elements.pointCount;
+        this.cpuInstance[instBase + 4] = elements.a * systemScale;
+        this.cpuInstance[instBase + 5] = elements.e;
+        this.cpuInstance[instBase + 6] = elements.currentTrueAnomaly;
         // pack offset (as float for alignment; shader reads as u32 via bitcast or we place into separate u32 slot)
-        cpuInstance[instBase + 7] = pointBase; // offset into points array (in vec4 units)
+        this.cpuInstance[instBase + 7] = pointBase; // offset into points array (in vec4 units)
 
         periapsisPoints[i] = elements.periapsis;
         apoapsisPoints[i] = elements.apoapsis;
@@ -169,13 +170,13 @@ export class OrbitsPass implements IRenderPass {
       }
     }
     // upload to GPU
-    core.device.queue.writeBuffer(this.allOrbitsVertexBuffer, 0, cpuPoints);
-    core.device.queue.writeBuffer(this.instanceDataBuffer, 0, cpuInstance);
+    core.device.queue.writeBuffer(this.allOrbitsVertexBuffer, 0, this.cpuPoints.buffer as ArrayBuffer, 0, this.cpuPoints.byteLength);
+    core.device.queue.writeBuffer(this.instanceDataBuffer, 0, this.cpuInstance.buffer as ArrayBuffer, 0, this.cpuInstance.byteLength);
     this.visibleInstanceCount = visibleIndex;
     return { periapsisPoints, apoapsisPoints, ascendingNodePoints, descendingNodePoints };
   }
 
-  public run(encoder: GPUCommandEncoder, context: RenderContext, theme: Theme): void {
+  public run(encoder: GPUCommandEncoder, context: RenderContext, _theme: Theme): void {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: context.orbitsTexture.createView(),
