@@ -110,7 +110,8 @@ export class App {
     // Finalize camera and write shared camera buffer
     const camera = this.cameraManager.getCamera();
     camera.updateViewMatrix();
-    this.renderer.writeCameraBuffer(camera);
+    const currentFrameWorldEye = (renderPayload as any).worldCameraEye ?? worldCameraEye;
+    this.renderer.writeCameraBuffer(camera, currentFrameWorldEye as [number, number, number]);
 
     this.renderer.prepare(renderPayload);
     this.renderer.render(renderPayload);

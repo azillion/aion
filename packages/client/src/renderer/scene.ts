@@ -2,10 +2,10 @@ import type { Body, SystemState, Star } from '@shared/types';
 import type { WebGPUCore } from './core';
 import type { Camera } from '../camera/camera';
 
-const FLOATS_PER_SPHERE = 24;
+const FLOATS_PER_SPHERE = 32; // This was correctly updated in Phase 1
 const FLOATS_PER_STAR = 8;
 const VISUAL_SETTINGS = { systemViewSize: 20.0 } as const;
-const CAMERA_UNIFORM_BUFFER_SIZE = 320; // 80 floats * 4 bytes/float. Matches Float32Array(80) in renderer/index.ts
+const CAMERA_UNIFORM_BUFFER_SIZE = 352; // 88 floats * 4 bytes/float. Matches Float32Array(88) in renderer/index.ts
 
 // Determine parent-child relationships by strongest gravitational influence
 function buildSystemHierarchy(bodies: Body[]): Map<string, string | null> {
@@ -37,9 +37,7 @@ export class Scene {
   private device: GPUDevice;
 
   // Scene object buffers
-  public nearTierBuffer!: GPUBuffer;
-  public midTierBuffer!: GPUBuffer;
-  public farTierBuffer!: GPUBuffer;
+  public sceneObjectsBuffer!: GPUBuffer;
   public mapSpheresBuffer!: GPUBuffer;
   public shadowCasterBuffer!: GPUBuffer;
   public shadowCasterCountBuffer!: GPUBuffer;
@@ -49,9 +47,7 @@ export class Scene {
   public sharedCameraUniformBuffer!: GPUBuffer;
 
   public lastKnownBodyCount: number = 0;
-  public nearCount: number = 0;
-  public midCount: number = 0;
-  public farCount: number = 0;
+  public sceneObjectCount: number = 0;
   
   public get hierarchy(): Map<string, string | null> { return this._hierarchy; }
   private _hierarchy: Map<string, string | null> = new Map();
@@ -78,7 +74,7 @@ export class Scene {
 
   public initialize(systemState: SystemState, stars: Star[]) {
     this.lastKnownBodyCount = systemState.bodies.length;
-    this.initializeTierBuffers(this.lastKnownBodyCount);
+    this.initializeSceneObjectBuffer(this.lastKnownBodyCount);
 
     const starData = this.serializeStars(stars);
     this.starBuffer = this.device.createBuffer({
@@ -88,42 +84,28 @@ export class Scene {
     this.device.queue.writeBuffer(this.starBuffer, 0, starData);
   }
 
-  public updateTiers(nearData: Float32Array, midData: Float32Array, farData: Float32Array, nearCount: number, midCount: number, farCount: number) {
-    const maxCount = Math.max(nearCount, midCount, farCount, this.lastKnownBodyCount);
-    if (maxCount > this.lastKnownBodyCount) {
-      this.initializeTierBuffers(maxCount);
+  public updateSceneObjects(data: Float32Array, count: number) {
+    if (count > this.lastKnownBodyCount) {
+      this.initializeSceneObjectBuffer(count);
     }
-    this.nearCount = nearCount;
-    this.midCount = midCount;
-    this.farCount = farCount;
-
-    this.device.queue.writeBuffer(this.nearTierBuffer, 0, nearData.buffer as ArrayBuffer, nearData.byteOffset, nearData.byteLength);
-    this.device.queue.writeBuffer(this.midTierBuffer, 0, midData.buffer as ArrayBuffer, midData.byteOffset, midData.byteLength);
-    this.device.queue.writeBuffer(this.farTierBuffer, 0, farData.buffer as ArrayBuffer, farData.byteOffset, farData.byteLength);
+    this.sceneObjectCount = count;
+    this.device.queue.writeBuffer(this.sceneObjectsBuffer, 0, data.buffer, data.byteOffset, data.byteLength);
   }
 
-  public updateShadowCasters(casters: Body[]) {
-    const data = this.serializeSystemState(casters);
+  public updateShadowCasters(data: Float32Array, count: number) {
     const capacityFloats = this.shadowCasterBuffer.size / 4;
     const scratch = new Float32Array(capacityFloats);
     scratch.fill(0);
     scratch.set(data);
     this.device.queue.writeBuffer(this.shadowCasterBuffer, 0, scratch.buffer, 0, scratch.byteLength);
-    this.device.queue.writeBuffer(this.shadowCasterCountBuffer, 0, new Uint32Array([casters.length]));
+    this.device.queue.writeBuffer(this.shadowCasterCountBuffer, 0, new Uint32Array([count]));
   }
 
-  public initializeTierBuffers(initialBodyCount: number) {
+  public initializeSceneObjectBuffer(initialBodyCount: number) {
     const size = Math.ceil(initialBodyCount * 1.5) * FLOATS_PER_SPHERE * 4;
 
-    if (this.nearTierBuffer) this.nearTierBuffer.destroy();
-    this.nearTierBuffer = this.device.createBuffer({ label: `Near Tier Buffer`, size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-
-    if (this.midTierBuffer) this.midTierBuffer.destroy();
-    this.midTierBuffer = this.device.createBuffer({ label: `Mid Tier Buffer`, size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-
-    if (this.farTierBuffer) this.farTierBuffer.destroy();
-    this.farTierBuffer = this.device.createBuffer({ label: `Far Tier Buffer`, size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-
+    if (this.sceneObjectsBuffer) this.sceneObjectsBuffer.destroy();
+    this.sceneObjectsBuffer = this.device.createBuffer({ label: `Scene Objects Buffer`, size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     this.lastKnownBodyCount = initialBodyCount;
   }
 
@@ -154,38 +136,40 @@ export class Scene {
     const sphereData = new Float32Array(bodies.length * FLOATS_PER_SPHERE);
     bodies.forEach((body, i) => {
       const f_base = i * FLOATS_PER_SPHERE;
-      sphereData[f_base + 0] = body.position[0];
-      sphereData[f_base + 1] = body.position[1];
-      sphereData[f_base + 2] = body.position[2];
-      sphereData[f_base + 3] = body.radius;
+      // In an f64 architecture, we would split the f64 position here.
+      // However, the map view still uses a scaled f32 system.
+      // This serialization logic is now specific to the map view.
+      sphereData[f_base + 0] = body.position[0]; // pos_high.x
+      sphereData[f_base + 1] = body.position[1]; // pos_high.y
+      sphereData[f_base + 2] = body.position[2]; // pos_high.z
+      sphereData[f_base + 3] = body.radius; // radius
+
+      // pos_low is zero for the map view
 
       // Material
-      sphereData.set(body.albedo, f_base + 4); // material.albedo
-      // Atmosphere flag in albedo vec4.w
-      sphereData[f_base + 7] = body.terrain && (body.terrain as any).atmosphere ? 1.0 : 0.0;
+      sphereData.set(body.albedo, f_base + 8);
+      sphereData[f_base + 11] = body.terrain && (body.terrain as any).atmosphere ? 1.0 : 0.0;
+
       const emissive = body.emissive ?? [0, 0, 0];
-      sphereData.set(emissive, f_base + 8); // material.emissive
-      // Planet shading flag: 1.0 if terrain data exists (use detailed terrain shader)
-      sphereData[f_base + 11] = body.terrain ? 1.0 : 0.0;
+      sphereData.set(emissive, f_base + 12);
+      sphereData[f_base + 15] = body.terrain ? 1.0 : 0.0;
       
       // Maintain struct alignment: ref_idx_opacity_pad vec4 slot (offset 12..15)
       // Even if unused, fill with sane defaults to match WGSL layout.
-      sphereData[f_base + 12] = 1.0; // ref_idx
-      sphereData[f_base + 13] = 1.0; // opacity
-      sphereData[f_base + 14] = 0.0; // pad
-      sphereData[f_base + 15] = 0.0; // pad
+      sphereData[f_base + 16] = 1.0; // ref_idx
+      sphereData[f_base + 17] = 1.0; // opacity
 
       // Planet data
       if (body.terrain) {
-        sphereData[f_base + 16] = body.terrain.radius;      // base_radius
-        sphereData[f_base + 17] = body.terrain.seaLevel;    // sea_level
-        sphereData[f_base + 18] = body.terrain.maxHeight;   // max_height
-        sphereData[f_base + 19] = body.terrain.noiseSeed;   // seed
+        sphereData[f_base + 20] = body.terrain.radius;      // base_radius
+        sphereData[f_base + 21] = body.terrain.seaLevel;    // sea_level
+        sphereData[f_base + 22] = body.terrain.maxHeight;   // max_height
+        sphereData[f_base + 23] = body.terrain.noiseSeed;   // seed
       } else {
-        sphereData[f_base + 16] = 0.0;
-        sphereData[f_base + 17] = 0.0;
-        sphereData[f_base + 18] = 0.0;
-        sphereData[f_base + 19] = 0.0;
+        sphereData[f_base + 20] = 0.0;
+        sphereData[f_base + 21] = 0.0;
+        sphereData[f_base + 22] = 0.0;
+        sphereData[f_base + 23] = 0.0;
       }
     });
     return sphereData;

@@ -15,6 +15,8 @@ import type { SystemState } from '@shared/types';
 import type { IRenderPipeline } from './pipelines/base';
  
 import type { RenderPayload } from '@client/views/types';
+import { SceneDataProcessor } from '../views/sceneDataProcessor';
+import type { Vec3 } from '@shared/types';
 
 export class Renderer {
   private readonly canvas: HTMLCanvasElement;
@@ -42,6 +44,7 @@ export class Renderer {
   private frameCount = 0;
   
   private lastSystemState?: SystemState; // TODO: consider removing if unused
+  private sceneDataProcessor: SceneDataProcessor;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -53,7 +56,9 @@ export class Renderer {
     this.state = state;
     this.hud = hud;
     this.pipelines = pipelines;
+    this.sceneDataProcessor = new SceneDataProcessor();
   }
+
 
   public async initialize(authority: Authority): Promise<void> {
     this.core = await WebGPUCore.create(this.canvas);
@@ -68,7 +73,7 @@ export class Renderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.sceneUniformBuffer = this.core.device.createBuffer({
-      size: 48, // three vec4<f32> (added tier_scale_and_pad)
+      size: 48, // three vec4<f32>
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -114,20 +119,32 @@ export class Renderer {
 
   
 
-  public writeCameraBuffer(camera: Camera) {
-    const buffer = new Float32Array(80);
+  public writeCameraBuffer(camera: Camera, worldCameraEye: Vec3) {
+    // The new buffer has 88 floats (352 bytes)
+    const buffer = new Float32Array(88);
     buffer.set(camera.viewMatrix as unknown as number[], 0);
     buffer.set(camera.projectionMatrix as unknown as number[], 16);
     buffer.set(camera.viewProjectionMatrix as unknown as number[], 32);
-    buffer[48] = camera.eye[0]; buffer[49] = camera.eye[1]; buffer[50] = camera.eye[2]; buffer[51] = 0.0;
+
+    // Split the f64 world position and write to the new slots
+    const [eyeX_h, eyeX_l] = this.sceneDataProcessor.splitDouble(worldCameraEye[0] as number);
+    const [eyeY_h, eyeY_l] = this.sceneDataProcessor.splitDouble(worldCameraEye[1] as number);
+    const [eyeZ_h, eyeZ_l] = this.sceneDataProcessor.splitDouble(worldCameraEye[2] as number);
+    buffer[48] = eyeX_h; buffer[49] = eyeY_h; buffer[50] = eyeZ_h; // eye_pos_high
+    buffer[52] = eyeX_l; buffer[53] = eyeY_l; buffer[54] = eyeZ_l; // eye_pos_low
+
+    // The old `eye` uniform is now the camera-relative origin, always (0,0,0)
+    buffer[56] = 0.0; buffer[57] = 0.0; buffer[58] = 0.0;
+
     const dist = vec3.distance(camera.eye as unknown as number[], camera.look_at as unknown as number[]);
-    buffer[52] = camera.forward[0]; buffer[53] = camera.forward[1]; buffer[54] = camera.forward[2]; buffer[55] = dist;
-    buffer[56] = camera.right[0]; buffer[57] = camera.right[1]; buffer[58] = camera.right[2]; buffer[59] = 0.0;
-    buffer[60] = camera.up[0]; buffer[61] = camera.up[1]; buffer[62] = camera.up[2]; buffer[63] = 0.0;
-    // projection_constants (vec4): .x = lod_constant
+    buffer[60] = camera.forward[0]; buffer[61] = camera.forward[1]; buffer[62] = camera.forward[2]; buffer[63] = dist;
+    buffer[64] = camera.right[0]; buffer[65] = camera.right[1]; buffer[66] = camera.right[2];
+    buffer[68] = camera.up[0]; buffer[69] = camera.up[1]; buffer[70] = camera.up[2];
+    
     const vfov_rad = camera.vfov * (Math.PI / 180.0);
     const lod_constant = this.textureSize.height / vfov_rad;
-    buffer[64] = lod_constant;
+    buffer[72] = lod_constant;
+
     this.core.device.queue.writeBuffer(this.scene.sharedCameraUniformBuffer, 0, buffer);
   }
 

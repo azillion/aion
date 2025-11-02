@@ -1,6 +1,6 @@
 // Centralized Camera Uniform definition.
 // This must match the layout expected by all shaders and populated by the CPU.
-// Total size: 320 bytes.
+// Total size: 352 bytes.
 
 struct CameraUniforms {
     // --- Matrices (64 bytes each) ---
@@ -9,7 +9,13 @@ struct CameraUniforms {
     viewProjection: mat4x4<f32>,
 
     // --- Vectors & Scalars (16 bytes per row) ---
-    eye: vec3<f32>,
+    eye_pos_high: vec3<f32>,
+    _pad_high: f32,
+
+    eye_pos_low: vec3<f32>,
+    _pad_low: f32,
+
+    eye: vec3<f32>, // NOTE: This will now always be (0,0,0) for camera-relative rendering
     _pad1: f32,
 
     forward: vec3<f32>,

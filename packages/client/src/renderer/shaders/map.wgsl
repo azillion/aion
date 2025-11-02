@@ -4,12 +4,14 @@
 
 // This struct must match the layout of the spheresBuffer in the compute pass.
 struct Sphere {
-	pos_and_radius: vec4<f32>,              // .xyz = position, .w = geometric radius
+	pos_high_and_radius: vec4<f32>,         // .xyz = position_high, .w = geometric radius
+	pos_low_and_unused: vec4<f32>,          // .xyz = position_low, .w = unused
 	albedo_and_atmos_flag: vec4<f32>,       // .xyz = albedo, .w = has_atmosphere_flag
 	emissive_and_terrain_flag: vec4<f32>,   // .xyz = emissive, .w = has_terrain_flag
-	ref_idx_opacity_pad: vec4<f32>,         // .x = ref_idx, .y = opacity, .zw unused (placeholder for alignment)
+	ref_idx_opacity_pad: vec4<f32>,         // .x = ref_idx, .y = opacity, .zw unused
 	terrain_params: vec4<f32>,              // .x = base_radius, .y = sea_level, .z = max_height, .w = seed
-	padding_vec: vec4<f32>,                 // Padding to maintain 24-float stride
+	padding1: vec4<f32>,                    // Padding to maintain 32-float stride
+	padding2: vec4<f32>,                    // Padding to maintain 32-float stride
 }
 @group(0) @binding(1) var<storage, read> bodies: array<Sphere>;
 
@@ -36,7 +38,7 @@ fn vertexMain(
     let corner = corners[vertexIndex % 4u];
 
     // Project center to clip space, then offset in NDC for screen-aligned quad (constant on-screen size)
-    let p_clip = camera.viewProjection * vec4<f32>(body.pos_and_radius.xyz, 1.0);
+    let p_clip = camera.viewProjection * vec4<f32>(body.pos_high_and_radius.xyz, 1.0);
     let size_ndc = 0.006; // tweak visual size as needed
     let offset = corner * size_ndc * p_clip.w;
 
