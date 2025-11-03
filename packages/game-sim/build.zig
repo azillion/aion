@@ -33,7 +33,7 @@ pub fn build(b: *std.Build) void {
     physics_mod.addImport("core", core_mod);
     physics_mod.addImport("math", math_mod);
     physics_mod.addImport("sim", sim_mod);
-    // sim -> core, math (no physics needed unless referenced)
+    // sim -> core, math
     sim_mod.addImport("core", core_mod);
     sim_mod.addImport("math", math_mod);
     // planet -> math

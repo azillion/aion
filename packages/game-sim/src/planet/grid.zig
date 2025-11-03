@@ -308,8 +308,10 @@ pub const Grid = struct {
         const map = neighborEdgeAndReversal(face, ei);
         const rev_pos = if (map.rev) (edge_len - 1) - pos else pos;
         if (debug_edge_logs < 30 and (face == 15 or face == 6)) {
-            std.debug.print("edge alias: face={d} ei={d} pos={d} -> nf={d} ne={d} rev={any} rev_pos={d} q={d} r={d}\n", .{ face, ei, pos, map.nf, map.ne, map.rev, rev_pos, q, r });
-            debug_edge_logs += 1;
+            if (@import("builtin").is_test) {
+                std.debug.print("edge alias: face={d} ei={d} pos={d} -> nf={d} ne={d} rev={any} rev_pos={d} q={d} r={d}\n", .{ face, ei, pos, map.nf, map.ne, map.rev, rev_pos, q, r });
+                debug_edge_logs += 1;
+            }
         }
         if (map.nf < 20 and map.ne < 3 and rev_pos < self.edge_indices[map.nf][map.ne].len) {
             self.edge_indices[map.nf][map.ne][rev_pos] = current_index;
@@ -370,8 +372,10 @@ pub const Grid = struct {
                         const h = hashCoord(tmp5[k].q, tmp5[k].r, tmp5[k].face);
                         const idx = coord_to_index.get(h) orelse i;
                         if (idx == i and debug_nbr_logs < 24) {
-                            std.debug.print("miss penta map: i={d} (f={d},q={d},r={d}) -> (f={d},q={d},r={d})\n", .{ i, cvar.face, cvar.q, cvar.r, tmp5[k].face, tmp5[k].q, tmp5[k].r });
-                            debug_nbr_logs += 1;
+                            if (@import("builtin").is_test) {
+                                std.debug.print("miss penta map: i={d} (f={d},q={d},r={d}) -> (f={d},q={d},r={d})\n", .{ i, cvar.face, cvar.q, cvar.r, tmp5[k].face, tmp5[k].q, tmp5[k].r });
+                                debug_nbr_logs += 1;
+                            }
                         }
                         if (idx == i) continue;
                         // dedup
@@ -395,8 +399,10 @@ pub const Grid = struct {
                         const h = hashCoord(tmp6[k].q, tmp6[k].r, tmp6[k].face);
                         const idx = coord_to_index.get(h) orelse i;
                         if (idx == i and debug_nbr_logs < 24) {
-                            std.debug.print("miss edge map: i={d} (f={d},q={d},r={d}) -> (f={d},q={d},r={d})\n", .{ i, cvar.face, cvar.q, cvar.r, tmp6[k].face, tmp6[k].q, tmp6[k].r });
-                            debug_nbr_logs += 1;
+                            if (@import("builtin").is_test) {
+                                std.debug.print("miss edge map: i={d} (f={d},q={d},r={d}) -> (f={d},q={d},r={d})\n", .{ i, cvar.face, cvar.q, cvar.r, tmp6[k].face, tmp6[k].q, tmp6[k].r });
+                                debug_nbr_logs += 1;
+                            }
                         }
                         if (idx == i) continue;
                         var seen = false;
@@ -419,8 +425,10 @@ pub const Grid = struct {
                         const h = hashCoord(tmp6[k].q, tmp6[k].r, tmp6[k].face);
                         const idx = coord_to_index.get(h) orelse i;
                         if (idx == i and debug_nbr_logs < 24) {
-                            std.debug.print("miss inner map: i={d} (f={d},q={d},r={d}) -> (f={d},q={d},r={d})\n", .{ i, cvar.face, cvar.q, cvar.r, tmp6[k].face, tmp6[k].q, tmp6[k].r });
-                            debug_nbr_logs += 1;
+                            if (@import("builtin").is_test) {
+                                std.debug.print("miss inner map: i={d} (f={d},q={d},r={d}) -> (f={d},q={d},r={d})\n", .{ i, cvar.face, cvar.q, cvar.r, tmp6[k].face, tmp6[k].q, tmp6[k].r });
+                                debug_nbr_logs += 1;
+                            }
                         }
                         if (idx == i) continue;
                         var seen = false;

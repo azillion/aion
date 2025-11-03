@@ -17,9 +17,36 @@ fn warp(p: vec3<f32>, seed: f32) -> vec3<f32> {
     return p + 0.8 * q;
 }
 
-// Calculates signed terrain height (km) using Fractal Brownian Motion (FBM).
+// Simple FBM using snoise
+fn fbm(p: vec3<f32>, seed: f32) -> f32 {
+    var total: f32 = 0.0;
+    var frequency: f32 = 4.0;
+    var amplitude: f32 = 0.5;
+    let persistence: f32 = 0.5;
+    let lacunarity: f32 = 2.0;
+    let octaves = 6;
+
+    for (var i = 0; i < octaves; i = i + 1) {
+        total = total + snoise(p * frequency + seed) * amplitude;
+        frequency = frequency * lacunarity;
+        amplitude = amplitude * persistence;
+    }
+    return total;
+}
+
+// Calculates signed terrain height (km) based on coarse grid + FBM detail.
 fn h_noise(dir: vec3<f32>, params: TerrainUniforms, dist_to_surface: f32, base_radius: f32, camera: CameraUniforms, scene: SceneUniforms) -> f32 {
-    return 0.0;
+    // 1) Base elevation from coarse grid [0,1]
+    let base_elevation_norm = sampleCoarseGrid(dir);
+
+    // 2) Detail noise [-1,1]
+    let detail_noise = fbm(dir, params.seed);
+
+    // 3) Combine
+    let max_height_km = params.max_height * params.base_radius;
+    let base_height_km = (base_elevation_norm - 0.5) * max_height_km;
+    let detail_height_km = detail_noise * (max_height_km * 0.1);
+    return base_height_km + detail_height_km;
 }
 
 // Calculates a more accurate normal for a displaced heightfield via central differencing.
@@ -86,14 +113,11 @@ fn dWorld(
     lod_dist: f32
 ) -> f32 {
     let dir = normalize(p_local);
-    let tier_scale = scene.tier_scale_and_pad.x;
-    let real_dist_for_lod = lod_dist * tier_scale;
-    let h = h_noise(dir, params, real_dist_for_lod, params.base_radius, camera, scene);
-    let h_scaled = h / tier_scale;
-    let R_scaled = params.base_radius / tier_scale;
-    let d_terrain = length(p_local) - (R_scaled + h_scaled);
-    let water_radius_scaled = (params.base_radius + params.sea_level) / tier_scale;
-    let d_ocean = length(p_local) - water_radius_scaled;
+    let h = h_noise(dir, params, lod_dist, params.base_radius, camera, scene);
+    let R = params.base_radius;
+    let d_terrain = length(p_local) - (R + h);
+    let water_radius = R + params.sea_level;
+    let d_ocean = length(p_local) - water_radius;
     return min(d_terrain, d_ocean);
 }
 

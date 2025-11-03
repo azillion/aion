@@ -292,6 +292,8 @@ pub export fn create_grid(size: u32) callconv(.c) void {
         alloc.destroy(g);
         return;
     };
+    // Phase 2: populate per-vertex bedrock elevations immediately after mesh generation
+    planet.planet_gen.generateBedrock(g, 42);
     active_grid = g;
 }
 
