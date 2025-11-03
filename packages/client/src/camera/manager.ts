@@ -15,12 +15,6 @@ export class CameraManager {
 
     public update(mode: CameraMode, context: any): void {
         switch (mode) {
-            case CameraMode.SYSTEM_MAP: {
-                if ('bodies' in context && 'scale' in context) {
-                    this.systemMapController.update(this.camera, context as SystemMapControllerContext);
-                }
-                break;
-            }
             case CameraMode.SHIP_RELATIVE: {
                 if ('playerShip' in context) {
                     this.shipRelativeController.update(this.camera, context as ShipRelativeControllerContext);

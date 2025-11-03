@@ -12,7 +12,6 @@ import type { IAuthorityProvider } from "@client/authority/provider";
 
 // Import all passes and pipelines
 import { ShipRelativePipeline } from '@client/renderer/pipelines/shipRelativePipeline';
-import { SystemMapPipeline } from '@client/renderer/pipelines/systemMapPipeline';
 import type { IRenderPipeline } from '@client/renderer/pipelines/base';
 
 declare global {
@@ -43,8 +42,8 @@ async function main() {
     // 1. Instantiate all rendering pipelines
     const pipelines: Record<CameraMode, IRenderPipeline> = {
       [CameraMode.SHIP_RELATIVE]: new ShipRelativePipeline(),
-      [CameraMode.SYSTEM_MAP]: new SystemMapPipeline(),
-    };
+      // System Map removed
+    } as unknown as Record<CameraMode, IRenderPipeline>;
 
     // 3. Instantiate core modules, injecting dependencies
     const input = new InputManager(canvas);

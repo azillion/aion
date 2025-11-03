@@ -1,17 +1,14 @@
 import type { IRendererAccessor, IViewManager, RenderPayload, ShipRelativePayload } from './types';
-import type { SystemState, Vec3 } from '@shared/types';
+import type { SystemState, Vec3, Body } from '@shared/types';
 import type { InputManager } from '@client/input';
-import { TierManager } from '@client/renderer/tierManager';
 import { CameraMode } from '@client/state';
 import type { Scene } from '@client/renderer/scene';
-import { SceneDataProcessor } from './sceneDataProcessor';
+import { SceneDataProcessor } from '@client/renderer/data/sceneDataProcessor';
 
 export class ShipRelativeViewManager implements IViewManager {
-  private tierManager: TierManager;
   private sceneDataProcessor: SceneDataProcessor;
 
   constructor() {
-    this.tierManager = new TierManager();
     this.sceneDataProcessor = new SceneDataProcessor();
   }
 
@@ -25,59 +22,42 @@ export class ShipRelativeViewManager implements IViewManager {
     const scene: Scene = renderer.getScene();
     const camera = cameraManager.getCamera();
     const state = renderer.state;
-    const renderScale = 1.0;
 
     const playerShip = systemState.ships.find(s => s.body.id === state.playerShipId);
 
     // 1) Update world-space camera from controller FIRST.
     cameraManager.update(CameraMode.SHIP_RELATIVE, { playerShip, keys: input.keys, viewport });
 
-    const shipCameraEyeWorld = [...camera.eye] as Vec3; // Capture true f64 (JS number) camera position.
+    const worldCameraEye = [...camera.eye] as Vec3; // Capture true f64 (JS number) camera position.
     
-    // Tiering and serialization (CPU, f64 -> f32-safe, zero-padded per tier)
-    const tieredScene = this.tierManager.build(systemState, shipCameraEyeWorld, state.playerShipId);
-    const processedData = this.sceneDataProcessor.process(tieredScene);
-
-    // 4) HUD/selection should use unscaled, camera-relative positions.
-    const bodiesForTiers = systemState.bodies.filter(b => b.id !== state.playerShipId);
-    const bodiesForHUD = bodiesForTiers
-      .map(b => {
-        const HUD_RENDER_DISTANCE = 5000; // keep within stable f32 range for projection
-        const p: [number, number, number] = [
-          b.position[0] - shipCameraEyeWorld[0],
-          b.position[1] - shipCameraEyeWorld[1],
-          b.position[2] - shipCameraEyeWorld[2],
-        ];
-        const dist = Math.hypot(p[0], p[1], p[2]);
-        if (dist > HUD_RENDER_DISTANCE) {
-          const inv = 1.0 / dist;
-          p[0] = p[0] * inv * HUD_RENDER_DISTANCE;
-          p[1] = p[1] * inv * HUD_RENDER_DISTANCE;
-          p[2] = p[2] * inv * HUD_RENDER_DISTANCE;
+    // 2) Prepare a single list of all bodies with their true f64 world positions.
+    // No more tiering or scaling.
+    const bodiesToRender: Body[] = systemState.bodies.filter(b => b.id !== state.playerShipId);
+    const shadowCasters: Body[] = [];
+    systemState.bodies.forEach(body => {
+        if (body.mass > 1e22) {
+            shadowCasters.push({ ...body }); // Pass absolute f64 world position
         }
-        return { ...b, position: p };
-      });
+    });
+
+    // 3) Serialize the data for the GPU.
+    const processedData = this.sceneDataProcessor.process(bodiesToRender);
 
     // 6) Move the main camera to the origin for this frame's rendering.
     camera.eye = [0, 0, 0];
 
-    // Tiered data already computed above
-
-    // 7) Compute look_at using stable, camera-relative data.
-    cameraManager.updateLookAt(camera, { keys: input.keys, relativeBodies: bodiesForHUD, playerShip });
+    // 5) Compute look_at using camera-relative data for precision.
+    const relativeBodiesForLookAt = bodiesToRender.map(b => ({
+        ...b,
+        position: [b.position[0] - worldCameraEye[0], b.position[1] - worldCameraEye[1], b.position[2] - worldCameraEye[2]] as Vec3
+    }));
+    cameraManager.updateLookAt(camera, { keys: input.keys, relativeBodies: relativeBodiesForLookAt, playerShip });
     
-    // Upload tier data to GPU buffers for ship-relative rendering
-    const sceneTyped: Scene = scene as unknown as Scene;
-    sceneTyped.updateTiers(
-      processedData.nearData,
-      processedData.midData,
-      processedData.farData,
-      processedData.nearCount,
-      processedData.midCount,
-      processedData.farCount
-    );
-    // Upload global shadow casters (unscaled camera-relative positions)
-    sceneTyped.updateShadowCasters(tieredScene.shadowCasters);
+    // 6) Upload data to GPU buffers.
+    scene.updateSceneObjects(processedData.data, processedData.count);
+    // Serialize shadow casters using the same f64-split logic.
+    const processedShadowData = this.sceneDataProcessor.process(shadowCasters);
+    scene.updateShadowCasters(processedShadowData.data, processedShadowData.count);
 
     // Determine dominant light by emissive energy
     let dominantLight = systemState.bodies[0];
@@ -124,11 +104,10 @@ export class ShipRelativeViewManager implements IViewManager {
       cameraMode: CameraMode.SHIP_RELATIVE,
       playerShipId: state.playerShipId,
       dominantLight: dominantLight,
-      worldCameraEye: shipCameraEyeWorld,
-      debugTierView: state.debugTierView,
+      worldCameraEye: worldCameraEye,
       showAtmosphere: state.showAtmosphere,
       // Pass the specially-prepared HUD body list
-      bodiesToRender: bodiesForHUD,
+      bodiesToRender: bodiesToRender, // Pass world-space bodies to HUD
     };
     return payload;
   }

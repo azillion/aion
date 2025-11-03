@@ -2,7 +2,7 @@ import type { Theme } from '@shared/types';
 import type { RenderContext } from '../types';
 import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
-import type { RenderPayload } from '@client/views/types';
+import type { RenderPayload } from '@client/orchestration/types';
 
 export interface IRenderPipeline {
   initialize(core: WebGPUCore, scene: Scene): Promise<void>;

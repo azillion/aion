@@ -1,4 +1,4 @@
-import type { Body, SystemState, Vec3 } from '@shared/types';
+import type { Body, SystemState } from '@shared/types';
 import type { Camera } from '@client/camera/camera';
 import type { InputManager } from '@client/input';
 import { CameraMode } from '@client/state';
@@ -11,8 +11,6 @@ export interface IRendererAccessor {
     playerShipId: string | null;
     showOrbits: boolean;
     showAtmosphere: boolean;
-    debugTierView: number;
-    referenceFrame: any; // Keep `any` for now for simplicity
   };
   ui: UI | null;
   getScene(): Scene;
@@ -30,24 +28,14 @@ interface BasePayload {
 // Payload specific to the ShipRelative view
 export interface ShipRelativePayload extends BasePayload {
   cameraMode: CameraMode.SHIP_RELATIVE;
-  worldCameraEye: Vec3;
+  worldCameraEye: [number, number, number];
   dominantLight: Body;
-  debugTierView: number;
   showAtmosphere: boolean;
   // This list is camera-relative and prepared specifically for the HUD
   bodiesToRender: Body[];
 }
 
-// Payload specific to the SystemMap view
-export interface SystemMapPayload extends BasePayload {
-  cameraMode: CameraMode.SYSTEM_MAP;
-  unscaledBodiesForMap: Body[];
-  bodiesToRender: Body[]; // Scaled bodies for map pass
-  systemScale: number;
-  showOrbits: boolean;
-}
-
-export type RenderPayload = ShipRelativePayload | SystemMapPayload;
+export type RenderPayload = ShipRelativePayload; // Only one payload type for now
 
 export interface IViewManager {
   /**

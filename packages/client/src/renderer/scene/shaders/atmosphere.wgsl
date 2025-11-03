@@ -1,3 +1,4 @@
+// Functions for calculating atmospheric in-scattering and transmittance.
 const ATMOSPHERE_RADIUS_SCALE: f32 = 1.025;
 const NUM_IN_SCATTER_SAMPLES: u32 = 16;
 
@@ -41,7 +42,7 @@ fn calculate_optical_length_to_space(
     atmosphere_radius: f32,
     h_rayleigh: f32,
     h_mie: f32,
-    tier_scale: f32
+    world_scale: f32 // Always 1.0 now
 ) -> vec2<f32> {
     let t_atmos_exit = ray_sphere_intersect(p_start, ray_dir, atmosphere_radius).y;
     if (t_atmos_exit <= 0.0) {
@@ -57,7 +58,7 @@ fn calculate_optical_length_to_space(
     let p_mid = p_start + ray_dir * (path_length * 0.5);
 
     let h_mid_local = length(p_mid) - planet_radius;
-    var h_mid_world = h_mid_local * tier_scale;
+    var h_mid_world = h_mid_local * world_scale;
     h_mid_world = max(0.0, h_mid_world);
 
     let up = normalize(p_start);
@@ -78,17 +79,18 @@ fn get_sky_color(
     light_dir: vec3<f32>, light_color: vec3<f32>,
     scene: SceneUniforms, max_dist_local: f32,
     shadow_casters_in: ptr<storage, array<Sphere>, read>,
-    shadow_params_in: ShadowParams,
+    shadow_params_in: ShadowParams, camera: CameraUniforms,
     ignore_pos_world: vec3<f32>
 ) -> AtmosphereOutput {
     let params = get_earth_atmosphere();
-    let tier_scale = scene.tier_scale_and_pad.x;
+    let world_scale = scene.scale_and_flags.x;
     let atmosphere_radius_local = planet_radius_local * ATMOSPHERE_RADIUS_SCALE;
 
     let r0 = ray.origin;
     let rd = ray.direction;
 
     let t_atmos = ray_sphere_intersect(r0, rd, atmosphere_radius_local);
+    
     let t_planet = ray_sphere_intersect(r0, rd, planet_radius_local);
     
     let t_start = max(0.0, t_atmos.x);
@@ -106,7 +108,7 @@ fn get_sky_color(
         let p_sample = r0 + rd * (t_start + (f32(i) + 0.5) * step_size);
         if (length(p_sample) < planet_radius_local) { continue; }
         
-        let p_world_sq = dot(p_sample, p_sample) * tier_scale * tier_scale;
+        let p_world_sq = dot(p_sample, p_sample) * world_scale * world_scale;
         let h = (p_world_sq - physical_radius_world*physical_radius_world) / (2.0 * physical_radius_world);
 
         if (h > 0.0) {
@@ -115,11 +117,11 @@ fn get_sky_color(
             let scattering_coeffs = params.beta_rayleigh * density_r + params.beta_mie * density_m;
             var sun_transmittance = vec3<f32>(0.0);
             
-            let p_sample_tier = p_sample + planet_center_tier;
-            let p_world = p_sample_tier * tier_scale;
+            let p_sample_relative = p_sample + planet_center_tier;
+            let p_world = p_sample_relative * world_scale;
             let up_dir = normalize(p_sample);
             let eclipse_shadow_ray = Ray(p_world + up_dir * 0.2, light_dir); 
-            let eclipse_rec = hit_spheres_shadow(eclipse_shadow_ray, createInterval(0.001, INFINITY), shadow_casters_in, shadow_params_in.count, ignore_pos_world);
+            let eclipse_rec = hit_spheres_shadow(eclipse_shadow_ray, createInterval(0.001, INFINITY), shadow_casters_in, shadow_params_in.count, ignore_pos_world, camera);
 
             if (eclipse_rec.hit && dot(eclipse_rec.emissive, eclipse_rec.emissive) < 0.1) { continue; }
 
@@ -128,11 +130,11 @@ fn get_sky_color(
                 planet_radius_local,
                 atmosphere_radius_local,
                 params.h_rayleigh, params.h_mie,
-                tier_scale
+                world_scale
             );
             if (optical_lengths.x < 1e9) {
                 let optical_depth_sun = params.beta_rayleigh * optical_lengths.x + params.beta_mie * optical_lengths.y;
-                sun_transmittance = exp(-optical_depth_sun * tier_scale);
+                sun_transmittance = exp(-optical_depth_sun * world_scale);
             }
 
             let mu = dot(rd, light_dir);
@@ -141,8 +143,8 @@ fn get_sky_color(
             let phase_m = 3.0 / (8.0 * PI) * ((1.0-g*g)*(1.0+mu*mu)) / ((2.0+g*g)*pow(1.0+g*g-2.0*g*mu, 1.5));
             let in_scatter = (params.beta_rayleigh * density_r * phase_r) + (params.beta_mie * density_m * phase_m);
                 
-            scattered_light += transmittance * in_scatter * sun_transmittance * step_size * tier_scale;
-            transmittance *= exp(-scattering_coeffs * step_size * tier_scale);
+            scattered_light += transmittance * in_scatter * sun_transmittance * step_size * world_scale;
+            transmittance *= exp(-scattering_coeffs * step_size * world_scale);
         }
     }
     
@@ -151,3 +153,5 @@ fn get_sky_color(
     
     return AtmosphereOutput(final_color, transmittance, 1.0 - transmittance.g);
 }
+
+

@@ -2,7 +2,7 @@ import { GUI } from 'dat.gui';
 import type { Renderer } from './renderer/index';
 import { spectralResponses } from './spectral';
 import { themes } from './theme';
-import { AppState, CameraMode, ReferenceFrame } from './state';
+import { AppState, CameraMode } from './state';
 import { G } from '@shared/constants';
 import type { Authority } from './authority';
 import { CameraManager } from './camera/manager';
@@ -29,7 +29,6 @@ export class UI {
         'Theme': 'white',
         'Sensor': 'Full Color',
         'FPS': '0',
-        'Show Orbits': false,
         'Auto Land': async () => {
             const cam = this.cameraManager.getCamera();
             const targetId = cam.focusBodyId;
@@ -49,15 +48,7 @@ export class UI {
         'Add Asteroid': () => this.addAsteroid(),
         'Time Scale': 1.0, // We keep the slider for variable control
         'Current Warp': 'x1',
-        'Toggle View': () => {
-            if (this.state.cameraMode === CameraMode.SYSTEM_MAP) {
-                this.state.cameraMode = CameraMode.SHIP_RELATIVE;
-            } else if (this.state.cameraMode === CameraMode.SHIP_RELATIVE) {
-                this.state.cameraMode = CameraMode.SYSTEM_MAP;
-            } else {
-                this.state.cameraMode = CameraMode.SHIP_RELATIVE;
-            }
-        }
+        'Toggle View': () => { console.log('View toggle disabled.'); }
     };
 
     constructor(renderer: Renderer, state: AppState, authority: Authority, cameraManager: CameraManager) {
@@ -92,30 +83,13 @@ export class UI {
         this.gui.add(this.settings, 'Sensor', Object.keys(spectralResponses))
             .onChange(() => this.updateTheme());
 
-        this.gui.add(this.settings, 'Show Orbits')
-            .onChange((value: boolean) => {
-                this.state.showOrbits = value;
-                if (!value) {
-                    this.renderer.clearOrbitHistory();
-                }
-            });
-
         this.gui.add(this.state, 'showAtmosphere').name('Show Atmosphere');
 
         this.gui.add(this.state, 'showHUD').name('Show HUD');
 
         this.gui.add(this.state, 'crtIntensity', 0.0, 1.0).name('CRT Effect');
 
-        this.gui.add(this.state, 'debugTierView', {
-            'Normal': -1,
-            'Near Tier Only': 0,
-            'Mid Tier Only': 1,
-            'Far Tier Only': 2,
-        }).name('Debug View');
-
         this.gui.add(this.settings, 'Toggle View');
-
-        this.gui.add(this.state, 'referenceFrame', Object.values(ReferenceFrame)).name('Reference Frame');
 
         // Display FPS (read-only, updated by App)
         this.gui.add(this.settings, 'FPS').listen();

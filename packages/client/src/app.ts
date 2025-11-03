@@ -5,12 +5,7 @@ import type { AppState } from './state';
 import type { UI } from './ui';
 import type { HUDManager } from './hud';
 import { CameraManager } from './camera/manager';
- 
-import { CameraMode } from './state';
-import { ReferenceFrameManager } from './views/referenceFrameManager';
-import type { IViewManager } from './views/types';
-import { SystemMapViewManager } from './views/systemMapViewManager';
-import { ShipRelativeViewManager } from './views/shipRelativeViewManager';
+import { ShipRelativeViewManager } from './orchestration/shipRelativeViewManager';
  
 import Stats from 'stats.js';
 
@@ -22,9 +17,7 @@ export class App {
   private readonly ui: UI;
   private readonly hud: HUDManager;
   private cameraManager: CameraManager;
-  private referenceFrameManager: ReferenceFrameManager;
-  private viewManagers: Record<CameraMode, IViewManager>;
-  private currentViewManager!: IViewManager;
+  private shipRelativeViewManager: ShipRelativeViewManager;
   private lastFrameTime: number = 0;
   private fpsAccumulator = 0;
   private fpsFrameCount = 0;
@@ -47,11 +40,7 @@ export class App {
     this.ui = ui;
     this.hud = hud;
     this.cameraManager = cameraManager;
-    this.referenceFrameManager = new ReferenceFrameManager();
-    this.viewManagers = {
-      [CameraMode.SYSTEM_MAP]: new SystemMapViewManager(),
-      [CameraMode.SHIP_RELATIVE]: new ShipRelativeViewManager(),
-    };
+    this.shipRelativeViewManager = new ShipRelativeViewManager();
   }
 
   public async start(): Promise<void> {
@@ -88,29 +77,20 @@ export class App {
 
     
     const systemState = await this.authority.query();
-
-    // --- Reference Frame Management ---
-    const worldCameraEye = [...this.cameraManager.getCamera().eye];
-    const newReferenceBodyId = this.referenceFrameManager.update(systemState.bodies, worldCameraEye as [number, number, number], this.state.referenceBodyId);
-    if (newReferenceBodyId) {
-      this.state.referenceBodyId = newReferenceBodyId;
-    }
-    // --- End Reference Frame Management ---
-    // --- Prepare scene based on camera mode ---
-    this.currentViewManager = this.viewManagers[this.state.cameraMode];
+    // --- Prepare scene ---
     const textureSize = this.renderer.getTextureSize();
     if (!textureSize) {
       requestAnimationFrame(this.updateLoop);
       return;
     }
 
-    const renderPayload = this.currentViewManager.prepare(systemState, this.cameraManager, this.input, textureSize, this.renderer as any);
+    const renderPayload = this.shipRelativeViewManager.prepare(systemState, this.cameraManager, this.input, textureSize, this.renderer as any);
     renderPayload.deltaTime = deltaTime; // Inject the final delta time
 
     // Finalize camera and write shared camera buffer
     const camera = this.cameraManager.getCamera();
     camera.updateViewMatrix();
-    this.renderer.writeCameraBuffer(camera);
+    this.renderer.writeCameraBuffer(camera, renderPayload.worldCameraEye);
 
     this.renderer.prepare(renderPayload);
     this.renderer.render(renderPayload);
