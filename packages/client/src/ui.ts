@@ -34,6 +34,9 @@ export class UI {
             const targetId = cam.focusBodyId;
             if (targetId && targetId !== 'player-ship') {
                 await this.authority.autoLand(targetId);
+                // Keep UX consistent with teleport: ensure ship-relative view focuses the action
+                this.state.cameraMode = CameraMode.SHIP_RELATIVE;
+                cam.pendingFrame = true;
             }
         },
         'Teleport to Surface': async () => {

@@ -220,54 +220,33 @@ pub export fn auto_land(simulator: *sim.Simulator, target_id_ptr: u32, target_id
     const id_ptr: [*]const u8 = @ptrFromInt(target_id_ptr);
     const target_id = id_ptr[0..target_id_len];
     const player_id = "player-ship";
-
-    var target_body: ?*const types.Body = null;
+    // Find target body index
+    var target_index: ?usize = null;
     var i: usize = 0;
     while (i < simulator.state.bodies.len) : (i += 1) {
-        const b = &simulator.state.bodies[i];
+        const b = simulator.state.bodies[i];
         if (std.mem.eql(u8, b.id, target_id)) {
-            target_body = b;
+            target_index = i;
             break;
         }
     }
-    if (target_body == null) return;
+    if (target_index == null) return;
 
-    var player_ship: ?*types.Ship = null;
+    // Ensure the player ship exists
+    var player_exists = false;
     i = 0;
     while (i < simulator.state.ships.len) : (i += 1) {
-        const s = &simulator.state.ships[i];
+        const s = simulator.state.ships[i];
         if (std.mem.eql(u8, s.body.id, player_id)) {
-            player_ship = s;
+            player_exists = true;
             break;
         }
     }
-    if (player_ship == null) return;
+    if (!player_exists) return;
 
-    const t = target_body.?;
-    const ship = player_ship.?;
-    var dir = math.Vec3.sub(ship.body.position, t.position);
-    var dist = dir.len();
-    if (dist < 1e-9) {
-        dir = types.Vec3{ .x = 1.0, .y = 0.0, .z = 0.0 };
-        dist = 1.0;
-    }
-    dir = dir.scale(1.0 / dist);
-
-    const baseR = if (t.terrain) |terrain| terrain.radius else t.radius;
-    const sea = if (t.terrain) |terrain| terrain.seaLevel else 0.0;
-    const maxH = if (t.terrain) |terrain| (terrain.maxHeight * baseR) else 0.0;
-    const surfaceR = baseR + @max(sea, maxH);
-    const MIN_ALT: f64 = 2.0; // km
-    const minDist = surfaceR + MIN_ALT;
-
-    if (dist < minDist) {
-        // Push out to clamp altitude and zero inward normal velocity
-        ship.body.position = math.Vec3.add(t.position, dir.scale(minDist));
-        const vdotn = ship.body.velocity.x * dir.x + ship.body.velocity.y * dir.y + ship.body.velocity.z * dir.z;
-        if (vdotn < 0.0) {
-            ship.body.velocity = math.Vec3.add(ship.body.velocity, dir.scale(-vdotn));
-        }
-    }
+    // Arm suicide-burn autoland controller
+    simulator.auto_land_active = true;
+    simulator.auto_land_target_index = target_index.?;
 }
 
 pub export fn free_result_buffer(ptr_addr: u32, len: u32) callconv(.c) void {

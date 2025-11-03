@@ -46,6 +46,18 @@ async function main(): Promise<void> {
       noiseSeed: 1337.0,
     },
   };
+  // Add Alpha Centauri A as a distant emissive star
+  const alpha_dist = 4.367 * 9.4607e12; // ~4.367 ly in km
+  const alphaCentauri: Body = {
+    id: 'alpha-centauri-a',
+    name: 'Alpha Centauri A',
+    position: [alpha_dist, 0, 0],
+    velocity: [0, 0, 0],
+    radius: 1.223 * 696340, // ~1.223 R_sun
+    mass: 1.1 * 1.989e30,   // ~1.1 M_sun
+    albedo: [1.0, 1.0, 0.95],
+    emissive: [1200, 1200, 1100],
+  };
   const playerShip: Ship = {
     body: {
       id: 'player-ship',
@@ -63,7 +75,7 @@ async function main(): Promise<void> {
     thrust: [0, 0, 0],
   };
 
-  const initial: SystemState = { timestamp: Date.now(), bodies: [sun, earth, moon], ships: [playerShip] };
+  const initial: SystemState = { timestamp: Date.now(), bodies: [sun, earth, moon, alphaCentauri], ships: [playerShip] };
   await authority.initialize(initial);
   // signal readiness
   (self as any).postMessage({ type: 'workerReady' });
