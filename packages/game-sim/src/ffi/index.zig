@@ -3,6 +3,7 @@ const sim = @import("sim");
 const types = @import("core");
 const math = @import("math");
 const physics = @import("physics");
+const planet = @import("planet");
 
 // Import JS logging function for error reporting
 extern "env" fn log_error(ptr: [*]const u8, len: usize) void;
