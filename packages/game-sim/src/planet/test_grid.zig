@@ -3,288 +3,311 @@ const planet = @import("index.zig");
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 
-test "Grid.init" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 1);
-    defer grid.deinit();
-
-    try expectEqual(@as(usize, 1), grid.size);
-    try expectEqual(@as(usize, 0), grid.tile_count);
-    try expect(grid.coord_map != null);
-    try expect(grid.neighbors == null);
-}
-
-test "Grid.isValid coordinates" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 2);
-    defer grid.deinit();
-
-    // Valid coordinates within the hex boundary
-    try expect(grid.isValid(0, 0));
-    try expect(grid.isValid(1, 0));
-    try expect(grid.isValid(0, 1));
-    try expect(grid.isValid(-1, 0));
-    try expect(grid.isValid(0, -1));
-
-    // Invalid coordinates outside the hex boundary
-    try expect(!grid.isValid(3, 0));
-    try expect(!grid.isValid(0, 3));
-    try expect(!grid.isValid(-3, 0));
-    try expect(!grid.isValid(0, -3));
-    try expect(!grid.isValid(2, 2)); // q + r would be 4, s = -4, q - s = 6 > 2
-}
-
-test "Grid.isEdge detection" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 2);
-    defer grid.deinit();
-
-    // Edge coordinates where q - s = size, r - q = size, or s - r = size
-    try expect(grid.isEdge(0, 2)); // r - q = 2 - 0 = 2 = size
-    try expect(grid.isEdge(-2, 0)); // s - r = 2 - 0 = 2 = size
-
-    // Coordinates that are NOT edges (based on actual behavior)
-    try expect(!grid.isEdge(2, 0)); // q - s = 4 > size, but also invalid
-    try expect(!grid.isEdge(0, 0));
-    try expect(grid.isEdge(1, 0)); // q - s = 2 = size, so this IS an edge
-    try expect(!grid.isEdge(0, 1));
-}
-
-test "Grid.isPenta detection" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 2);
-    defer grid.deinit();
-
-    // Pentagon coordinates where q = size, r = size, or s = size
-    try expect(grid.isPenta(2, 0)); // q = size
-    try expect(grid.isPenta(0, 2)); // r = size
-    try expect(grid.isPenta(-2, 0)); // s = -(q + r) = -(-2 + 0) = 2 = size
-
-    // Non-pentagon coordinates
-    try expect(!grid.isPenta(0, 0));
-    try expect(!grid.isPenta(1, 0));
-    try expect(!grid.isPenta(0, 1));
-}
-
-test "Grid.hashCoord uniqueness" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 2);
-    defer grid.deinit();
-
-    const hash1 = planet.Grid.hashCoord(0, 0, 0);
-    const hash2 = planet.Grid.hashCoord(1, 0, 0);
-    const hash3 = planet.Grid.hashCoord(0, 0, 1);
-
-    try expect(hash1 != hash2);
-    try expect(hash1 != hash3);
-    try expect(hash2 != hash3);
-}
-
-test "Grid.populateIndices basic functionality" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 1);
-    defer grid.deinit();
-
-    try grid.populateIndices();
-
-    // Should have some tiles
-    try expect(grid.tile_count > 0);
-
-    // Coord map should be populated
-    try expect(grid.coord_map != null);
-    if (grid.coord_map) |*coord_map| {
-        try expect(coord_map.count() > 0);
-    }
-}
-
-test "Grid.populateIndices index consistency" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 1);
-    defer grid.deinit();
-
-    try grid.populateIndices();
-
-    if (grid.coord_map) |*coord_map| {
-        var iterator = coord_map.iterator();
-
-        // All indices should be within bounds
-        while (iterator.next()) |entry| {
-            const index = entry.value_ptr.*;
-            try expect(index < grid.tile_count);
-        }
-
-        // Check that we have the expected number of unique coordinates
-        // For size=1, we should have coordinates for all valid (q,r) pairs across 20 faces
-        const expected_min_tiles = 20; // At least 20 tiles (one per face)
-        try expect(coord_map.count() >= expected_min_tiles);
-    }
-}
-
-test "Grid.populateIndices shared edge handling" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 2);
-    defer grid.deinit();
-
-    try grid.populateIndices();
-
-    if (grid.coord_map) |*coord_map| {
-        // Find edge tiles and verify they share indices across faces
-        var edge_indices = std.ArrayListUnmanaged(usize){};
-        defer edge_indices.deinit(std.testing.allocator);
-
-        var iterator = coord_map.iterator();
-        while (iterator.next()) |entry| {
-            const coord_hash = entry.key_ptr.*;
-            const index = entry.value_ptr.*;
-
-            // Extract face from hash
-            const face = coord_hash >> 40;
-
-            // Only check first few faces for this test
-            if (face < 3) {
-                try edge_indices.append(std.testing.allocator, index);
-            }
-        }
-
-        // Should have some indices
-        try expect(edge_indices.items.len > 0);
-    }
-}
-
-test "Grid.populateIndices pentagon handling" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 2);
-    defer grid.deinit();
-
-    try grid.populateIndices();
-
-    // Pentagon indices should be initialized (not max value)
-    for (grid.penta_indices) |penta_index| {
-        try expect(penta_index != std.math.maxInt(usize));
-    }
-}
-
-test "Grid memory management" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 2);
-
-    try grid.populateIndices();
-
-    // Should not leak when deinitialized
-    grid.deinit();
-
-    // If we got here without crashing, memory management is working
-    try expect(true);
-}
-
-test "Grid different sizes" {
-    const allocator = std.testing.allocator;
-
-    // Test different grid sizes
-    const sizes = [_]usize{ 1, 2, 3 };
-
-    for (sizes) |size| {
-        var grid = try planet.Grid.init(allocator, size);
-        defer grid.deinit();
-
-        try grid.populateIndices();
-
-        // Larger grids should have more tiles
-        try expect(grid.tile_count > 0);
-
-        if (grid.coord_map) |*coord_map| {
-            try expect(coord_map.count() > 0);
+// Helper to iterate q,r in [-N..N]
+fn eachValid(N: usize, grid: *planet.Grid, f: fn (q: isize, r: isize, g: *planet.Grid) anyerror!void) !void {
+    const Ni: isize = @intCast(N);
+    var q: isize = -Ni;
+    while (q <= Ni) : (q += 1) {
+        var r: isize = -Ni;
+        while (r <= Ni) : (r += 1) {
+            try f(q, r, grid);
         }
     }
 }
 
-test "Grid coordinate hash roundtrip" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 2);
-    defer grid.deinit();
-
-    const test_coords = [_]struct { q: isize, r: isize, face: usize }{
-        .{ .q = 0, .r = 0, .face = 0 },
-        .{ .q = 1, .r = 0, .face = 5 },
-        .{ .q = -1, .r = 1, .face = 10 },
-        .{ .q = 2, .r = -1, .face = 15 },
-    };
-
-    for (test_coords) |coord| {
-        const hash = planet.Grid.hashCoord(coord.q, coord.r, coord.face);
-
-        // Verify hash encodes the face correctly
-        const extracted_face = hash >> 44;
-        try expectEqual(coord.face, extracted_face);
-    }
-}
-
-test "Grid.hex coordinate system properties" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 3);
-    defer grid.deinit();
-
-    // Test that q + r + s = 0 for cube coordinates
-    const test_coords = [_]struct { q: isize, r: isize }{
-        .{ .q = 0, .r = 0 },
-        .{ .q = 1, .r = -1 },
-        .{ .q = -1, .r = 1 },
-        .{ .q = 2, .r = -1 },
-        .{ .q = -2, .r = 2 },
-    };
-
-    for (test_coords) |coord| {
-        const s = -(coord.q + coord.r);
-        try expectEqual(@as(isize, 0), coord.q + coord.r + s);
-    }
-}
-
-test "Grid.edge and pentagon relationship" {
-    const allocator = std.testing.allocator;
-    var grid = try planet.Grid.init(allocator, 2);
-    defer grid.deinit();
-
-    // All pentagons should also be edges (since they're at the corners)
-    const penta_coords = [_]struct { q: isize, r: isize }{
-        .{ .q = 2, .r = 0 },
-        .{ .q = 0, .r = 2 },
-        .{ .q = -2, .r = 0 },
-        .{ .q = 0, .r = -2 },
-    };
-
-    for (penta_coords) |coord| {
-        if (grid.isValid(coord.q, coord.r)) {
-            const is_penta = grid.isPenta(coord.q, coord.r);
-            const is_edge = grid.isEdge(coord.q, coord.r);
-
-            if (is_penta) {
-                try expect(is_edge); // All pentagons should be edges
+// Hash roundtrip and face extraction
+test "grid: hash roundtrip" {
+    var g = try planet.Grid.init(std.testing.allocator, 8);
+    defer g.deinit();
+    for (0..20) |face| {
+        const Ni: isize = @intCast(8);
+        var q: isize = -Ni;
+        while (q <= Ni) : (q += 1) {
+            var r: isize = -Ni;
+            while (r <= Ni) : (r += 1) {
+                if (!g.isValid(q, r)) continue;
+                const h = planet.Grid.hashCoord(q, r, face);
+                const t = planet.Grid.unhashCoord(h);
+                try expectEqual(q, t.q);
+                try expectEqual(r, t.r);
+                try expectEqual(@as(usize, face), t.face);
             }
         }
     }
 }
 
-test "Grid.tile_count scales with size" {
-    const allocator = std.testing.allocator;
+// Valid/edge/penta partitioning
+test "grid: valid/edge/penta partition" {
+    var g = try planet.Grid.init(std.testing.allocator, 6);
+    defer g.deinit();
+    try eachValid(6, &g, struct {
+        fn run(q: isize, r: isize, grid: *planet.Grid) !void {
+            const v = grid.isValid(q, r);
+            const e = grid.isEdge(q, r);
+            const p = grid.isPenta(q, r);
+            if (!v) return;
+            // Exactly one of inner, edge_nonpenta, penta
+            const inner = v and !e and !p;
+            const edge_nonpenta = v and e and !p;
+            const is_penta = v and p;
+            try expect(@intFromBool(inner) + @intFromBool(edge_nonpenta) + @intFromBool(is_penta) == 1);
+        }
+    }.run);
+}
 
-    var grid1 = try planet.Grid.init(allocator, 1);
-    defer grid1.deinit();
-    try grid1.populateIndices();
+// Edge position sanity and mirror
+test "grid: edge pos and mirror" {
+    var g = try planet.Grid.init(std.testing.allocator, 7);
+    defer g.deinit();
+    var m = try g.populateIndices();
+    defer m.deinit();
+    const N = g.size;
+    if (N <= 1) return; // nothing to test
+    for (0..20) |face| {
+        const Ni: isize = @intCast(N);
+        var q: isize = -Ni;
+        while (q <= Ni) : (q += 1) {
+            var r: isize = -Ni;
+            while (r <= Ni) : (r += 1) {
+                if (!g.isValid(q, r) or !g.isEdge(q, r) or g.isPenta(q, r)) continue;
+                const ei_opt = g.testGetEdgeIndex(q, r);
+                try expect(ei_opt != null);
+                const ei = ei_opt.?;
+                const pos = g.testGetEdgePosition(q, r, ei);
+                try expect(pos < N - 1);
+                const pair_opt = g.testEdgeAliasPair(q, r, face);
+                try expect(pair_opt != null);
+                const pair = pair_opt.?;
+                // Ensure both sides are assigned (not UNSET)
+                try expect(pair.a != std.math.maxInt(usize));
+                try expect(pair.b != std.math.maxInt(usize));
+            }
+        }
+    }
+}
 
-    var grid2 = try planet.Grid.init(allocator, 2);
-    defer grid2.deinit();
-    try grid2.populateIndices();
+// Pentas deduplicate to exactly 12 indices
+test "grid: pentas are 12 unique indices" {
+    var g = try planet.Grid.init(std.testing.allocator, 6);
+    defer g.deinit();
+    var m = try g.populateIndices();
+    defer m.deinit();
+    var seen = std.AutoHashMap(usize, void).init(std.testing.allocator);
+    defer seen.deinit();
+    var count: usize = 0;
+    for (0..20) |face| {
+        const Ni: isize = @intCast(g.size);
+        var q: isize = -Ni;
+        while (q <= Ni) : (q += 1) {
+            var r: isize = -Ni;
+            while (r <= Ni) : (r += 1) {
+                if (!g.isValid(q, r) or !g.isPenta(q, r)) continue;
+                const h = planet.Grid.hashCoord(q, r, face);
+                const idx = m.get(h).?;
+                if (!seen.contains(idx)) {
+                    try seen.put(idx, {});
+                    count += 1;
+                }
+            }
+        }
+    }
+    try expectEqual(@as(usize, 12), count);
+}
 
-    var grid3 = try planet.Grid.init(allocator, 3);
-    defer grid3.deinit();
-    try grid3.populateIndices();
+// Index consistency after populateIndices
+test "grid: indices within bounds and unique mapping" {
+    var g = try planet.Grid.init(std.testing.allocator, 3);
+    defer g.deinit();
+    var m = try g.populateIndices();
+    defer m.deinit();
+    var it = m.iterator();
+    while (it.next()) |e| {
+        try expect(e.value_ptr.* < g.tile_count);
+    }
+}
 
-    // Larger grids should have more tiles
-    try expect(grid2.tile_count > grid1.tile_count);
-    try expect(grid3.tile_count > grid2.tile_count);
+// Neighbor ring basic invariants and cross-face steps
+test "grid: neighbor rings valid and symmetric-ish" {
+    var g = try planet.Grid.init(std.testing.allocator, 4);
+    defer g.deinit();
+    var m = try g.populateIndices();
+    defer m.deinit();
+    try g.populateNeighbors(&m);
+    for (0..g.tile_count) |i| {
+        const nbrs = g.neighbors[i];
+        const c = g.coords[i];
+        const expected: u8 = if (g.isPenta(c.q, c.r)) 5 else 6;
+        try expectEqual(expected, nbrs.count);
+        var k: usize = 0;
+        while (k < nbrs.count) : (k += 1) try expect(nbrs.ids[k] < g.tile_count);
+    }
+    // symmetry check (weak)
+    for (0..g.tile_count) |a| {
+        var ia: usize = 0;
+        while (ia < g.neighbors[a].count) : (ia += 1) {
+            const b = g.neighbors[a].ids[ia];
+            if (b == a) continue; // skip padding/self entries
+            var found = false;
+            var jb: usize = 0;
+            while (jb < g.neighbors[b].count) : (jb += 1) {
+                if (g.neighbors[b].ids[jb] == a) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                const ca = g.coords[a];
+                const cb = g.coords[b];
+                std.debug.print("Asymmetry: a={d} face={d} q={d} r={d} -> b={d} face={d} q={d} r={d}\n", .{ a, ca.face, ca.q, ca.r, b, cb.face, cb.q, cb.r });
+                std.debug.print("a nbrs (count={d}): ", .{g.neighbors[a].count});
+                var ka: usize = 0;
+                while (ka < g.neighbors[a].count) : (ka += 1) {
+                    const nb = g.neighbors[a].ids[ka];
+                    const cnb = g.coords[nb];
+                    std.debug.print("{d}(f={d},q={d},r={d}) ", .{ nb, cnb.face, cnb.q, cnb.r });
+                }
+                std.debug.print("\n", .{});
+                std.debug.print("b nbrs (count={d}): ", .{g.neighbors[b].count});
+                var kb: usize = 0;
+                while (kb < g.neighbors[b].count) : (kb += 1) {
+                    const nb2 = g.neighbors[b].ids[kb];
+                    const cnb2 = g.coords[nb2];
+                    std.debug.print("{d}(f={d},q={d},r={d}) ", .{ nb2, cnb2.face, cnb2.q, cnb2.r });
+                }
+                std.debug.print("\n", .{});
+                try expect(false);
+            }
+        }
+    }
+}
 
-    // Should have reasonable numbers (not zero)
-    try expect(grid1.tile_count > 0);
-    try expect(grid2.tile_count > 0);
-    try expect(grid3.tile_count > 0);
+// Tile count formula sanity
+test "grid: tile_count formula" {
+    const sizes = [_]usize{ 2, 3, 4, 5 };
+    for (sizes) |N| {
+        var g = try planet.Grid.init(std.testing.allocator, N);
+        defer g.deinit();
+        var m = try g.populateIndices();
+        defer m.deinit();
+        // Consistency: tile_count equals number of unique coord->index values
+        var unique = std.AutoHashMap(usize, void).init(std.testing.allocator);
+        defer unique.deinit();
+        var it = m.iterator();
+        while (it.next()) |e| {
+            _ = try unique.put(e.value_ptr.*, {});
+        }
+        try expectEqual(unique.count(), g.tile_count);
+    }
+}
+
+// GenerateMesh placeholder
+test "grid: generateMesh placeholder" {
+    var g = try planet.Grid.init(std.testing.allocator, 5);
+    defer g.deinit();
+    var m = try g.populateIndices();
+    defer m.deinit();
+    try g.populateNeighbors(&m);
+    try g.generateMesh();
+}
+
+// Edge alias bijection across all faces/edges and sizes
+test "grid: edge alias bijection" {
+    const sizes_to_test = [_]usize{ 2, 3, 4, 5, 8 };
+    for (sizes_to_test) |N| {
+        if (N <= 1) continue;
+        const edge_len: usize = N - 1;
+
+        var g = try planet.Grid.init(std.testing.allocator, N);
+        defer g.deinit();
+
+        // We don't need to build indices here; this test checks the topology mapping only
+        for (0..20) |face_a| {
+            for (0..3) |edge_a| {
+                const map_fwd = planet.Grid.testNeighborEdgeMap(face_a, edge_a);
+                const face_b = map_fwd.nf;
+                const edge_b = map_fwd.ne;
+
+                const map_rev = planet.Grid.testNeighborEdgeMap(face_b, edge_b);
+
+                var pos_a: usize = 0;
+                while (pos_a < edge_len) : (pos_a += 1) {
+                    const pos_b = if (map_fwd.rev) (edge_len - 1) - pos_a else pos_a;
+                    const pos_c = if (map_rev.rev) (edge_len - 1) - pos_b else pos_b;
+                    try expectEqual(pos_a, pos_c);
+                }
+            }
+        }
+    }
+}
+
+// Degree (valence) check across sizes
+test "grid: degrees are 5 at pentas, 6 elsewhere" {
+    const sizes = [_]usize{ 2, 3, 4, 5, 7, 8 };
+    for (sizes) |N| {
+        var g = try planet.Grid.init(std.testing.allocator, N);
+        defer g.deinit();
+
+        var map = try g.populateIndices();
+        defer map.deinit();
+        try g.populateNeighbors(&map);
+
+        var i: usize = 0;
+        while (i < g.tile_count) : (i += 1) {
+            const c = g.coords[i];
+            const expect_deg: u8 = if (g.isPenta(c.q, c.r)) 5 else 6;
+            try expectEqual(expect_deg, g.neighbors[i].count);
+        }
+    }
+}
+
+// Pentagon loop-closure and reciprocity across seams
+test "grid: pentagon ring closes consistently across seams" {
+    const sizes = [_]usize{ 3, 4, 5, 8 };
+    for (sizes) |N| {
+        var g = try planet.Grid.init(std.testing.allocator, N);
+        defer g.deinit();
+
+        var map = try g.populateIndices();
+        defer map.deinit();
+        try g.populateNeighbors(&map);
+
+        var i: usize = 0;
+        while (i < g.tile_count) : (i += 1) {
+            const c = g.coords[i];
+            if (!g.isPenta(c.q, c.r)) continue;
+
+            const ring = g.neighbors[i];
+            try expectEqual(@as(u8, 5), ring.count);
+
+            // Uniqueness and non-self
+            var k: usize = 0;
+            while (k < 5) : (k += 1) {
+                const n = ring.ids[k];
+                try expect(n != i);
+                var dup = false;
+                var j: usize = 0;
+                while (j < k) : (j += 1) {
+                    if (ring.ids[j] == n) {
+                        dup = true;
+                    }
+                }
+                try expect(!dup);
+            }
+
+            // Reciprocity
+            k = 0;
+            while (k < 5) : (k += 1) {
+                const n = ring.ids[k];
+                var has_back = false;
+                var j: usize = 0;
+                while (j < g.neighbors[n].count) : (j += 1) {
+                    if (g.neighbors[n].ids[j] == i) {
+                        has_back = true;
+                        break;
+                    }
+                }
+                try expect(has_back);
+            }
+        }
+    }
 }

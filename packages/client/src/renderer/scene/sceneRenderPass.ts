@@ -4,6 +4,7 @@ import type { IRenderPass, RenderContext } from '../types';
 import sceneRenderWGSL from './shaders/sceneRender.wgsl?raw';
 import cameraWGSL from '../shaders/camera.wgsl?raw';
 import sceneUniformsWGSL from '../shaders/sceneUniforms.wgsl?raw';
+import coarseGridWGSL from '../shaders/coarseGrid.wgsl?raw';
 import planetSdfWGSL from './shaders/planetSdf.wgsl?raw';
 import noiseWGSL from '../shaders/noise.wgsl?raw';
 import atmosphereWGSL from './shaders/atmosphere.wgsl?raw';
@@ -27,6 +28,7 @@ export class SceneRenderPass implements IRenderPass {
       {
         'camera.wgsl': cameraWGSL,
         'sceneUniforms.wgsl': sceneUniformsWGSL,
+        'coarseGrid.wgsl': coarseGridWGSL,
         'planetSdf.wgsl': planetSdfWGSL,
         'noise.wgsl': noiseWGSL,
         'atmosphere.wgsl': atmosphereWGSL,
@@ -47,6 +49,9 @@ export class SceneRenderPass implements IRenderPass {
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       ]
     });
 
@@ -83,6 +88,9 @@ export class SceneRenderPass implements IRenderPass {
         { binding: 4, resource: { buffer: context.sceneUniformBuffer! } },
         { binding: 5, resource: { buffer: scene.shadowCasterBuffer } },
         { binding: 6, resource: { buffer: scene.shadowCasterCountBuffer } },
+        { binding: 7, resource: { buffer: (context as any).gridVertexBuffer } },
+        { binding: 8, resource: { buffer: (context as any).gridElevationBuffer } },
+        { binding: 9, resource: { buffer: (context as any).gridIndexBuffer } },
       ]
     });
 

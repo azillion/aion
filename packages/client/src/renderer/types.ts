@@ -21,6 +21,11 @@ export interface RenderContext {
   themeUniformBuffer: GPUBuffer;
   sceneUniformBuffer?: GPUBuffer;
   lastDeltaTime: number;
+
+  // Coarse grid buffers
+  gridVertexBuffer?: GPUBuffer;
+  gridElevationBuffer?: GPUBuffer;
+  gridIndexBuffer?: GPUBuffer;
 }
 
 export interface IRenderPass {
