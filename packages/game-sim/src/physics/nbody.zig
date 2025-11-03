@@ -153,6 +153,100 @@ pub fn tickSimulator(simulator: *anyopaque, dt_unscaled: f64, input_buffer: *typ
 
         const acc = total_force.scale(1.0 / @max(ship.body.mass, 1e-9));
         accelerations[acc_index] = math.Vec3.add(accelerations[acc_index], acc);
+
+        // --- Advanced autoland: gravity-aware bang-bang with tangential cancellation ---
+        if (sim.auto_land_active) {
+            const target = sim.state.bodies[sim.auto_land_target_index];
+            var diff_in = math.Vec3.sub(target.position, ship.body.position); // inward toward target
+            const dist = diff_in.len();
+            if (dist > 0.0) {
+                const n_in = diff_in.scale(1.0 / dist);
+                const n_out = n_in.scale(-1.0);
+                const baseR = if (target.terrain) |t| t.radius else target.radius;
+                const sea = if (target.terrain) |t| t.seaLevel else 0.0;
+                const maxH = if (target.terrain) |t| (t.maxHeight * baseR) else 0.0;
+                const surfaceR = baseR + @max(sea, maxH);
+                const minAlt = sim.auto_land_min_alt_km;
+                const minDist = surfaceR + minAlt;
+
+                const v_rel = math.Vec3.sub(ship.body.velocity, target.velocity);
+                const v_in = v_rel.x * n_in.x + v_rel.y * n_in.y + v_rel.z * n_in.z; // inward +
+                const v_in_vec = n_in.scale(v_in);
+                const v_tan = math.Vec3.sub(v_rel, v_in_vec);
+                const v_tan_len = v_tan.len();
+                const r = dist - minDist;
+
+                // Thrust capability
+                const AUTOPILOT_FORCE: f64 = 5e5; // matches THRUST_FORCE scale
+                const a_max = AUTOPILOT_FORCE / @max(ship.body.mass, 1e-9);
+
+                // Estimate gravity toward target for switching rule
+                const mu = 6.67430e-20 * target.mass; // km^3/s^2
+                const g_in = mu / @max(dist * dist, 1e-9); // inward (+)
+
+                // Allocate some acceleration to cancel tangential velocity
+                // Aim to kill tangential over ~2 seconds, capped to 60% of a_max
+                var a_tan_mag = v_tan_len / 2.0;
+                if (a_tan_mag > a_max * 0.6) a_tan_mag = a_max * 0.6;
+                const a_rad_budget = @max(a_max - a_tan_mag, 0.0);
+
+                var a_cmd = math.Vec3.ZERO;
+
+                if (r <= 0.0) {
+                    // Inside target altitude: clamp and finish
+                    ship.body.position = math.Vec3.add(target.position, n_out.scale(minDist));
+                    ship.body.velocity = target.velocity;
+                    ship.angularVelocity = types.Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 };
+                    sim.auto_land_active = false;
+                } else {
+                    // Gravity-aware brake distance
+                    const denom = 2.0 * (a_rad_budget + g_in + 1e-9);
+                    const brakeDist = if (v_in > 0.0) ((v_in * v_in) / denom) else 0.0;
+
+                    // Radial command: inward accelerate until switching surface, then outward brake
+                    if ((v_in > 0.0) and (r <= brakeDist + 0.5)) {
+                        // Brake outward using full radial budget
+                        a_cmd = math.Vec3.add(a_cmd, n_out.scale(a_rad_budget));
+                    } else if ((v_in <= 0.0) or (r > brakeDist)) {
+                        // Accelerate inward to build approach speed
+                        a_cmd = math.Vec3.add(a_cmd, n_in.scale(a_rad_budget));
+                    }
+
+                    // Tangential cancellation using remaining budget slice
+                    if (v_tan_len > 0.01 and a_tan_mag > 0.0) {
+                        const tan_dir = v_tan.scale(1.0 / @max(v_tan_len, 1e-9));
+                        a_cmd = math.Vec3.add(a_cmd, tan_dir.scale(-a_tan_mag));
+                    }
+
+                    // Cap total magnitude to a_max
+                    const a_len = a_cmd.len();
+                    if (a_len > a_max) {
+                        a_cmd = a_cmd.scale(a_max / a_len);
+                    }
+
+                    // Terminal settle: close and slow
+                    const speed_rel = v_rel.len();
+                    if ((r < 0.5) and (speed_rel < 0.05)) {
+                        ship.body.position = math.Vec3.add(target.position, n_out.scale(minDist));
+                        ship.body.velocity = target.velocity;
+                        ship.angularVelocity = types.Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 };
+                        sim.auto_land_active = false;
+                        a_cmd = math.Vec3.ZERO;
+                    }
+
+                    // Apply commanded acceleration
+                    accelerations[acc_index] = math.Vec3.add(accelerations[acc_index], a_cmd);
+
+                    // Point ship along thrust direction when burning
+                    if (a_cmd.len() > 0.0) {
+                        const desired_dir = a_cmd.scale(1.0 / @max(a_cmd.len(), 1e-9));
+                        ship.orientation = math.Quat.fromTwoVectors(base_forward, desired_dir);
+                        math.Quat.normalize(&ship.orientation);
+                        ship.angularVelocity = types.Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 };
+                    }
+                }
+            }
+        }
     }
 
     // Integrate both bodies and ships

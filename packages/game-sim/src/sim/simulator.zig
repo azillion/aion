@@ -6,6 +6,10 @@ pub const Simulator = struct {
     state: types.SystemState,
     time_scale: f64 = 1.0,
     next_body_id: u64 = 0,
+    // Simple autopilot state for suicide-burn autoland
+    auto_land_active: bool = false,
+    auto_land_target_index: usize = 0,
+    auto_land_min_alt_km: f64 = 2.0,
 
     pub fn create(allocator: std.mem.Allocator, initial_state: types.SystemState) !*Simulator {
         const sim = try allocator.create(Simulator);
