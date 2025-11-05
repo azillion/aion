@@ -13,6 +13,7 @@ import raytracingWGSL from './shaders/raytracing.wgsl?raw';
 import shadingWGSL from './shaders/shading.wgsl?raw';
 import terrainCommonWGSL from './shaders/terrainCommon.wgsl?raw';
 import f64WGSL from './shaders/f64.wgsl?raw';
+import planetHeightWGSL from './shaders/planetHeight.wgsl?raw';
 import { createShaderModule } from '../shaderUtils';
 
 const WORKGROUP_SIZE = 8;
@@ -34,6 +35,7 @@ export class SceneRenderPass implements IRenderPass {
         'coarseGrid.wgsl': coarseGridWGSL,
         'terrainCommon.wgsl': terrainCommonWGSL,
         'planetSdf.wgsl': planetSdfWGSL,
+        'planetHeight.wgsl': planetHeightWGSL,
         'noise.wgsl': noiseWGSL,
         'atmosphere.wgsl': atmosphereWGSL,
         'raytracing.wgsl': raytracingWGSL,

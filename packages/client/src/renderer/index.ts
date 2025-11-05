@@ -1,4 +1,4 @@
-import type { Authority } from '../authority';
+import type { Authority } from '@shared/authority';
 import { AppState, CameraMode } from '../state';
 import type { Camera } from '../camera/camera';
 import { WebGPUCore } from './core';

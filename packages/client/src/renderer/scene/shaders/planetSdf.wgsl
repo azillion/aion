@@ -1,88 +1,8 @@
 // Functions for procedural terrain generation and ray-marching Signed Distance Fields (SDFs).
 
-// Domain warping function for more interesting shapes.
-fn warp(p: vec3<f32>, seed: f32) -> vec3<f32> {
-    let q2 = vec2<f32>(
-        snoise(p + vec3<f32>(0.0, 0.0, seed)),
-        snoise(p + vec3<f32>(5.2, 1.3, seed))
-    );
-    return p + 0.4 * vec3<f32>(q2.x, q2.y, q2.x);
-}
-
-// Fractal Brownian Motion (FBM) using simplex noise
-fn fbm(p: vec3<f32>, octaves: u32) -> f32 {
-    var total = 0.0;
-    var frequency = 1.0;
-    var amplitude = 0.5;
-    let lacunarity = 2.0;
-    let persistence = 0.5;
-
-    for (var i = 0u; i < octaves; i = i + 1u) {
-        total += snoise(p * frequency) * amplitude;
-        frequency *= lacunarity;
-        amplitude *= persistence;
-    }
-    return total;
-}
-
-// Single-pass fractional FBM to reduce snoise calls
-fn fbm_frac(p: vec3<f32>, octaves_f: f32) -> f32 {
-    let o_floor = floor(octaves_f);
-    let oi = u32(o_floor);
-    let frac = octaves_f - o_floor;
-    var total = 0.0;
-    var freq  = 1.0;
-    var amp   = 0.5;
-    for (var i = 0u; i < oi; i = i + 1u) {
-        total += snoise(p * freq) * amp;
-        freq  *= 2.0;
-        amp   *= 0.5;
-    }
-    if (frac > 0.0) {
-        total += snoise(p * freq) * amp * frac;
-    }
-    return total;
-}
-
-fn remap01_any(a: f32, b: f32, x: f32) -> f32 {
-	let t = clamp((x - a) / (b - a), 0.0, 1.0);
-	return select(t, 1.0 - t, a > b);
-}
-
-fn remap01(a: f32, b: f32, x: f32) -> f32 { return clamp((x - a) / (b - a), 0.0, 1.0); }
 fn smin(a: f32, b: f32, k: f32) -> f32 {
     let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
     return mix(b, a, h) - k * h * (1.0 - h);
-}
-
-// Calculates signed terrain height (km) using FBM with stable input domain
-fn h_noise(p_local: vec3<f32>, params: TerrainUniforms, dist_to_surface: f32, camera: CameraUniforms, scene: SceneUniforms) -> f32 {
-    // Stable domain: normalize local position to get a precise direction
-    let dir = normalize(p_local);
-
-    // Smooth LOD: vary octaves with distance to surface
-    let min_oct = 3.0;
-    let max_oct = 7.0;
-    let lod_start = params.base_radius * 2.0;
-    let lod_end = params.base_radius * 0.1;
-    let lod_t = remap01_any(lod_start, lod_end, dist_to_surface);
-    let octaves_f = mix(min_oct, max_oct, lod_t);
-
-    // Domain warp on stable direction
-    let base_frequency = 2.0;
-    let p_warped = warp(dir * base_frequency, params.seed);
-
-    // FBM in [-1,1]
-    let n = fbm_frac(p_warped, octaves_f);
-
-    // Slope-aware amplitude scaling to self-guard when octaves increase
-    let s_max = 0.8;
-    let lipschitz_fbm = base_frequency * octaves_f;
-    let amp_scale = s_max / max(1.0, lipschitz_fbm);
-
-    // Map to [0,1] and scale to kilometers
-    let height_range = params.max_height * params.base_radius * amp_scale;
-    return (n * 0.5 + 0.5) * height_range;
 }
 
 // Calculates a more accurate normal for a displaced heightfield via central differencing.
@@ -107,9 +27,12 @@ fn get_terrain_normal_from_heightfield(
     let tangent = normalize(cross(analytic_normal, up_vec));
     let bitangent = normalize(cross(analytic_normal, tangent));
 
-    let h0 = h_noise(p_on_sphere - planet_center, params, dist_to_surface, camera, scene);
-    let h1 = h_noise(p_on_sphere + tangent * eps - planet_center, params, dist_to_surface + eps, camera, scene);
-    let h2 = h_noise(p_on_sphere + bitangent * eps - planet_center, params, dist_to_surface + eps, camera, scene);
+    let dir0 = normalize(p_on_sphere - planet_center);
+    let dir1 = normalize(p_on_sphere + tangent * eps - planet_center);
+    let dir2 = normalize(p_on_sphere + bitangent * eps - planet_center);
+    let h0 = h_noise(dir0, params, dist_to_surface, params.base_radius, camera, scene);
+    let h1 = h_noise(dir1, params, dist_to_surface + eps, params.base_radius, camera, scene);
+    let h2 = h_noise(dir2, params, dist_to_surface + eps, params.base_radius, camera, scene);
 
     let final_normal = normalize(
         analytic_normal - (tangent * (h1 - h0) / eps + bitangent * (h2 - h0) / eps) * (1.0 / tier_scale)
@@ -149,13 +72,13 @@ fn dWorld(
     let tier_scale = scene.scale_and_flags.x;
     let inv_tier = 1.0 / tier_scale;
     let len_p = length(p_local);
-    let h = h_noise(p_local, params, lod_dist, camera, scene);
+    let dir = normalize(p_local);
+    let h = h_noise(dir, params, lod_dist, params.base_radius, camera, scene);
     let h_scaled = h * inv_tier;
     let R_scaled = params.base_radius * inv_tier;
     let d_terrain = len_p - (R_scaled + h_scaled);
     
     // Dynamic water level from simulation grid
-    let dir = normalize(p_local);
     let water_uv_face = directionToCubeUV(dir);
     let dims = textureDimensions(water_state, 0);
     let water_sample = textureLoad(water_state, vec2<i32>(water_uv_face.xy * vec2<f32>(dims)), i32(water_uv_face.z), 0);

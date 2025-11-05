@@ -1,4 +1,4 @@
-import type { Authority } from './authority';
+import type { Authority } from '@shared/authority';
 import type { InputManager } from './input';
 import type { Renderer } from './renderer/index';
 import type { AppState } from './state';

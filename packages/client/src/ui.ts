@@ -4,7 +4,7 @@ import { spectralResponses } from './spectral';
 import { themes } from './theme';
 import { AppState, CameraMode } from './state';
 import { G } from '@shared/constants';
-import type { Authority } from './authority';
+import type { Authority } from '@shared/authority';
 import { CameraManager } from './camera/manager';
 
 const warpLevels = [

@@ -5,6 +5,7 @@
 #include "coarseGrid.wgsl"
 #include "noise.wgsl"
 #include "f64.wgsl"
+#include "planetHeight.wgsl"
 
 
 const INFINITY: f32 = 1.0e38;

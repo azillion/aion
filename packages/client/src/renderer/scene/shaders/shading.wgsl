@@ -14,7 +14,7 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, sphere_pos_relative: vec
 
     // Recompute procedural terrain height at this location
     let terrain_params = TerrainUniforms(sphere.terrain_params.x, sphere.terrain_params.y, sphere.terrain_params.z, sphere.terrain_params.w);
-    let terrain_height = h_noise(p_local, terrain_params, rec.t, camera, scene);
+    let terrain_height = h_noise(dir, terrain_params, rec.t, R, camera, scene);
 
     // Sample dynamic water level
     let water_uv = directionToCubeUV(dir);
