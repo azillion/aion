@@ -30,10 +30,11 @@ export class ShipRelativePipeline implements IRenderPipeline {
     if (frameData.cameraMode !== CameraMode.SHIP_RELATIVE) return;
 
     if (frameData.dominantLight && frameData.worldCameraEye) {
+      // Update uniforms for lighting, atmosphere etc.
       this.updateSceneUniforms(context.core, frameData, context);
       this.sceneRenderPass.run(encoder, context);
     } else {
-      // Handle case with no light
+      // Handle case with no light (e.g. deep space)
       this.updateSceneUniforms(context.core, frameData, context);
       this.sceneRenderPass.run(encoder, context);
     }

@@ -1,11 +1,4 @@
 // Functions for procedural terrain generation and ray-marching Signed Distance Fields (SDFs).
-// This must match the layout of the terrain_params vec4 in the Sphere struct.
-struct TerrainUniforms {
-    base_radius: f32,
-    sea_level: f32,
-    max_height: f32,
-    seed: f32,
-};
 
 // Domain warping function for more interesting shapes.
 fn warp(p: vec3<f32>, seed: f32) -> vec3<f32> {
@@ -160,7 +153,16 @@ fn dWorld(
     let h_scaled = h * inv_tier;
     let R_scaled = params.base_radius * inv_tier;
     let d_terrain = len_p - (R_scaled + h_scaled);
-    let d_ocean = len_p - (params.base_radius + params.sea_level) * inv_tier;
+    
+    // Dynamic water level from simulation grid
+    let dir = normalize(p_local);
+    let water_uv_face = directionToCubeUV(dir);
+    let dims = textureDimensions(water_state, 0);
+    let water_sample = textureLoad(water_state, vec2<i32>(water_uv_face.xy * vec2<f32>(dims)), i32(water_uv_face.z), 0);
+    let water_depth = water_sample.r; // km
+    let water_radius_scaled = (params.base_radius + params.sea_level + water_depth) * inv_tier;
+    let d_ocean = len_p - water_radius_scaled;
+    
     let k = 0.01 * tier_scale;
     let m = min(d_terrain, d_ocean);
     let sd = smin(d_terrain, d_ocean, k);
@@ -236,86 +238,4 @@ fn ray_march(
 }
 
 
-// --- Phase 3: Shading & Materials ---
-
-struct Material {
-    albedo: vec3<f32>,
-};
-
-// Simple procedural texture returning grayscale variation
-fn tex3(p: vec3<f32>) -> vec3<f32> {
-    let scale = 0.05;
-    let n = snoise(p * scale) * 0.5 + 0.5;
-    return vec3<f32>(n);
-}
-
-// 2D variant used by triplanar projections
-fn tex2(p: vec2<f32>) -> vec3<f32> {
-    let scale = 0.05;
-    let n = snoise(vec3<f32>(p * scale, 0.0)) * 0.5 + 0.5;
-    return vec3<f32>(n);
-}
-
-// Triplanar mapping with normalized blend weights
-fn tex_triplanar(p: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
-    let weights = abs(normal);
-    let denom = max(1e-5, weights.x + weights.y + weights.z);
-    let blend = weights / denom;
-
-    let x_proj = tex2(p.yz);
-    let y_proj = tex2(p.xz);
-    let z_proj = tex2(p.xy);
-
-    return x_proj * blend.x + y_proj * blend.y + z_proj * blend.z;
-}
-
-// --- Lunar material: grayscale, dusty/rocky blend based on slope
-fn get_lunar_material(p_local: vec3<f32>, normal: vec3<f32>) -> Material {
-    let slope = 1.0 - dot(normal, normalize(p_local));
-
-    // Base grayscale colors modulated by triplanar texture
-    let texval = tex_triplanar(p_local, normal);
-    let dust_color = vec3<f32>(0.5) * texval;
-    let rock_color = vec3<f32>(0.3) * texval;
-
-    // Blend between lighter dust and darker rock based on slope
-    let rock_amount = smoothstep(0.2, 0.5, slope);
-    let albedo = mix(dust_color, rock_color, rock_amount);
-    return Material(albedo);
-}
-
-fn get_material(p_local: vec3<f32>, normal: vec3<f32>, params: TerrainUniforms, h_scaled: f32) -> Material {
-    let altitude = h_scaled;
-    let slope = 1.0 - dot(normal, normalize(p_local));
-
-    // Base material colors modulated by triplanar texture
-    let texval = tex_triplanar(p_local, normal);
-    let rock_color = vec3<f32>(0.5, 0.45, 0.4) * texval;
-    let ground_color = vec3<f32>(0.3, 0.4, 0.15) * texval;
-    let snow_color = vec3<f32>(0.9, 0.9, 0.95) * texval;
-
-    // Blends
-    let rock_amount = smoothstep(0.4, 0.6, slope);
-    let snow_start = params.max_height * params.base_radius * 0.6;
-    let snow_end = params.max_height * params.base_radius * 0.8;
-    let snow_amount = smoothstep(snow_start, snow_end, altitude);
-
-    var albedo = mix(ground_color, rock_color, rock_amount);
-    albedo = mix(albedo, snow_color, snow_amount);
-    return Material(albedo);
-}
-
-fn get_ocean_wave_normal(p_local: vec3<f32>, base_normal: vec3<f32>) -> vec3<f32> {
-    let wave_freq = 50.0;
-    let wave_amp = 0.01;
-    let wave_noise = snoise(p_local * wave_freq);
-    return normalize(base_normal + wave_amp * vec3<f32>(wave_noise));
-}
-
-fn get_ocean_material(p_local: vec3<f32>) -> Material {
-    // Base, unlit ocean color
-    let water_albedo = vec3<f32>(0.05, 0.15, 0.2);
-    return Material(water_albedo);
-}
-
-
+// (Material and shading helpers moved to shading.wgsl)

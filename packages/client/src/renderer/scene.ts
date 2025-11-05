@@ -128,6 +128,7 @@ export class Scene {
       this.recreateMapSpheresBuffer(systemState.bodies.length);
     }
     this._hierarchy = buildSystemHierarchy(systemState.bodies);
+    (this as any)._lastBodies = systemState.bodies;
     const sphereData = this.serializeSystemState(bodiesToRender);
     this.device.queue.writeBuffer(this.mapSpheresBuffer, 0, sphereData);
   }
@@ -200,6 +201,11 @@ export class Scene {
     }
     
     return systemRadius > 0 ? VISUAL_SETTINGS.systemViewSize / systemRadius : 1.0;
+  }
+
+  public getPlanets(): Body[] {
+    const bodies: Body[] = (this as any)._lastBodies ?? [];
+    return bodies.filter((b: any) => !!b.terrain);
   }
 
   private serializeStars(stars: Star[]) {

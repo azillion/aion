@@ -26,6 +26,10 @@ export interface RenderContext {
   gridVertexBuffer?: GPUBuffer;
   gridElevationBuffer?: GPUBuffer;
   gridIndexBuffer?: GPUBuffer;
+
+  // Hydraulic state textures
+  waterRead?: GPUTexture;
+  waterWrite?: GPUTexture;
 }
 
 export interface IRenderPass {

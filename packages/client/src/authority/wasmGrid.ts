@@ -22,7 +22,17 @@ export class WasmGridBridge {
   private async initialize(): Promise<void> {
     const response = await fetch('/packages/game-sim/zig-out/bin/game-sim.wasm');
     const bytes = await response.arrayBuffer();
-    const importObject = { env: {} } as any;
+    const importObject = {
+      env: {
+        log_error: (ptr: number, len: number) => {
+          if (!this.instance) return;
+          const mem = (this.instance.exports as any).memory as WebAssembly.Memory;
+          const view = new Uint8Array(mem.buffer, ptr, len);
+          const msg = new TextDecoder().decode(view);
+          console.error(`[Zig WASM Error]: ${msg}`);
+        },
+      }
+    } as any;
     const { instance } = await WebAssembly.instantiate(bytes, importObject);
     this.instance = instance;
     this.exports = instance.exports as unknown as WasmGridExports;

@@ -3,6 +3,7 @@ import type { Scene } from '../scene';
 import type { IRenderPass, RenderContext } from '../types';
 import sceneRenderWGSL from './shaders/sceneRender.wgsl?raw';
 import cameraWGSL from '../shaders/camera.wgsl?raw';
+import cubeSphereWGSL from '../shaders/cubeSphere.wgsl?raw';
 import sceneUniformsWGSL from '../shaders/sceneUniforms.wgsl?raw';
 import coarseGridWGSL from '../shaders/coarseGrid.wgsl?raw';
 import planetSdfWGSL from './shaders/planetSdf.wgsl?raw';
@@ -10,6 +11,7 @@ import noiseWGSL from '../shaders/noise.wgsl?raw';
 import atmosphereWGSL from './shaders/atmosphere.wgsl?raw';
 import raytracingWGSL from './shaders/raytracing.wgsl?raw';
 import shadingWGSL from './shaders/shading.wgsl?raw';
+import terrainCommonWGSL from './shaders/terrainCommon.wgsl?raw';
 import f64WGSL from './shaders/f64.wgsl?raw';
 import { createShaderModule } from '../shaderUtils';
 
@@ -27,8 +29,10 @@ export class SceneRenderPass implements IRenderPass {
       sceneRenderWGSL,
       {
         'camera.wgsl': cameraWGSL,
+        'cubeSphere.wgsl': cubeSphereWGSL,
         'sceneUniforms.wgsl': sceneUniformsWGSL,
         'coarseGrid.wgsl': coarseGridWGSL,
+        'terrainCommon.wgsl': terrainCommonWGSL,
         'planetSdf.wgsl': planetSdfWGSL,
         'noise.wgsl': noiseWGSL,
         'atmosphere.wgsl': atmosphereWGSL,
@@ -52,6 +56,7 @@ export class SceneRenderPass implements IRenderPass {
         { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 10, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' } },
       ]
     });
 
@@ -91,6 +96,7 @@ export class SceneRenderPass implements IRenderPass {
         { binding: 7, resource: { buffer: (context as any).gridVertexBuffer } },
         { binding: 8, resource: { buffer: (context as any).gridElevationBuffer } },
         { binding: 9, resource: { buffer: (context as any).gridIndexBuffer } },
+        { binding: 10, resource: (context as any).waterWrite.createView({ dimension: '2d-array' }) },
       ]
     });
 

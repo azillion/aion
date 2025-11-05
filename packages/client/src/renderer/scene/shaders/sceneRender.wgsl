@@ -1,12 +1,13 @@
 // Main entry point for the scene rendering compute shader.
 #include "camera.wgsl"
 #include "sceneUniforms.wgsl"
+#include "cubeSphere.wgsl"
 #include "coarseGrid.wgsl"
 #include "noise.wgsl"
 #include "f64.wgsl"
 
 
-const INFINITY: f32 = 1e38;
+const INFINITY: f32 = 1.0e38;
 const PI: f32 = 3.1415926535;
 
 fn degreesToRadians(degrees: f32) -> f32 { return degrees * PI / 180.0; }
@@ -50,6 +51,7 @@ fn rayAt(ray: Ray, t: f32) -> vec3<f32> { return ray.origin + ray.direction * t;
 
 #include "planetSdf.wgsl"
 #include "raytracing.wgsl"
+#include "terrainCommon.wgsl"
 #include "atmosphere.wgsl"
 #include "shading.wgsl"
  
@@ -74,6 +76,7 @@ struct ComputeParams { bodyCount: u32 };
 @group(0) @binding(2) var output: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(3) var<uniform> camera: CameraUniforms;
 @group(0) @binding(4) var<uniform> scene: SceneUniforms;
+@group(0) @binding(10) var water_state: texture_2d_array<f32>;
 
 
 @compute @workgroup_size(8, 8)
@@ -138,9 +141,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
         if (dot(hit_sphere.emissive_and_terrain_flag.xyz, hit_sphere.emissive_and_terrain_flag.xyz) > 0.1) {
             surface_color = hit_sphere.emissive_and_terrain_flag.xyz;
-        } else if (hit_sphere.emissive_and_terrain_flag.w > 0.5 && hit_sphere.albedo_and_atmos_flag.w > 0.5) {
-            // Terrain body WITH atmosphere: full atmospheric ground + in-scattering
-            let ground_color = shade_planet_surface(rec, hit_sphere, hit_sphere_pos_relative, ray, scene, camera);
+        } else if (hit_sphere.emissive_and_terrain_flag.w > 0.5) { // has terrain
+            let ground_color = shade_planet_surface(rec, hit_sphere, hit_sphere_pos_relative, ray, scene, camera, water_state);
             let view_atmos = get_sky_color(
                 Ray(ray.origin - hit_sphere_pos_relative, ray.direction),
                 hit_sphere.pos_high_and_radius.w, hit_sphere.terrain_params.x,
@@ -149,16 +151,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                 scene, rec.t, &shadow_casters, shadowParams, camera, hit_sphere_pos_relative
             );
             surface_color = ground_color * view_atmos.transmittance + view_atmos.in_scattering;
-        } else {
-            // Simple sphere OR terrain body WITHOUT atmosphere (e.g., Moon): simple diffuse + shadows
+        } else { // No terrain (simple sphere, e.g. gas giant placeholder)
             let diffuse_intensity = max(dot(rec.normal, light_dir_to_source), 0.0);
             let shadow_ray = Ray(rec.p + rec.normal * 0.2, light_dir_to_source);
             let shadow_rec = hit_spheres_shadow(shadow_ray, createInterval(0.001, INFINITY), &shadow_casters, shadowParams.count, hit_sphere_pos_relative, camera);
             var shadow_multiplier = 1.0;
             if (shadow_rec.hit && dot(shadow_rec.emissive, shadow_rec.emissive) < 0.1) { shadow_multiplier = 0.01; }
-            let ambient_light = 0.00;
-            let final_intensity = ambient_light + diffuse_intensity * shadow_multiplier;
-            surface_color = hit_sphere.albedo_and_atmos_flag.xyz * final_intensity * light_color;
+            surface_color = hit_sphere.albedo_and_atmos_flag.xyz * (0.02 + diffuse_intensity * shadow_multiplier) * light_color;
         }
         
         final_pixel_color = surface_color * total_transmittance + total_in_scattering;
