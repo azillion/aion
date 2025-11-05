@@ -54,9 +54,9 @@ export class ShipRelativePipeline implements IRenderPipeline {
     // Light direction is from world origin towards the dominant light source,
     // since all objects are now in a camera-relative frame.
     let lightDir: [number, number, number] = [
-        light.position[0] - frameData.worldCameraEye[0],
-        light.position[1] - frameData.worldCameraEye[1],
-        light.position[2] - frameData.worldCameraEye[2],
+        light.position[0] as number - frameData.worldCameraEye[0],
+        light.position[1] as number - frameData.worldCameraEye[1],
+        light.position[2] as number - frameData.worldCameraEye[2],
     ];
     const lightDirLen = Math.hypot(lightDir[0], lightDir[1], lightDir[2]);
     if (lightDirLen > 0) {
