@@ -25,6 +25,13 @@ fn get_earth_atmosphere() -> AtmosphereParams {
     );
 }
 
+// Cheap 32-bit integer hash to generate a stable jitter in [0,1)
+fn hash11(n: f32) -> f32 {
+    let x = fract(n * 0.1031);
+    let y = x * (x + 33.33);
+    return fract((x + y) * (y + x));
+}
+
 fn ray_sphere_intersect(r0: vec3<f32>, rd: vec3<f32>, sr: f32) -> vec2<f32> {
     let b = dot(rd, r0);
     let c = dot(r0, r0) - (sr * sr);
@@ -42,33 +49,31 @@ fn calculate_optical_length_to_space(
     atmosphere_radius: f32,
     h_rayleigh: f32,
     h_mie: f32,
-    world_scale: f32 // Always 1.0 now
+    world_scale: f32
 ) -> vec2<f32> {
     let t_atmos_exit = ray_sphere_intersect(p_start, ray_dir, atmosphere_radius).y;
     if (t_atmos_exit <= 0.0) {
         return vec2<f32>(0.0);
     }
-
-    let t_planet_intersect = ray_sphere_intersect(p_start, ray_dir, planet_radius).x;
-    if (t_planet_intersect > 0.0 && t_planet_intersect < t_atmos_exit) {
-        return vec2<f32>(1e9); // Return a huge optical length for full occlusion.
+    let t_planet = ray_sphere_intersect(p_start, ray_dir, planet_radius).x;
+    if (t_planet > 0.0 && t_planet < t_atmos_exit) {
+        return vec2<f32>(1e9);
     }
-    
-    let path_length = t_atmos_exit;
-    let p_mid = p_start + ray_dir * (path_length * 0.5);
 
-    let h_mid_local = length(p_mid) - planet_radius;
-    var h_mid_world = h_mid_local * world_scale;
-    h_mid_world = max(0.0, h_mid_world);
-
-    let up = normalize(p_start);
-    let mu = dot(ray_dir, up);
-    let curvature_correction = min(1.0 / max(mu, 0.001), 40.0); // Keep the stability clamp
-
-    let optical_length_r = exp(-h_mid_world / h_rayleigh) * path_length * curvature_correction;
-    let optical_length_m = exp(-h_mid_world / h_mie) * path_length * curvature_correction;
-
-    return vec2<f32>(optical_length_r, optical_length_m);
+    let num_samples = NUM_IN_SCATTER_SAMPLES;
+    let step_size = t_atmos_exit / f32(num_samples);
+    var tau_r = 0.0;
+    var tau_m = 0.0;
+    for (var i = 0u; i < num_samples; i = i + 1u) {
+        let t = (f32(i) + 0.5) * step_size;
+        let p = p_start + ray_dir * t;
+        let h_world = max(0.0, (length(p) - planet_radius) * world_scale);
+        let rho_r = exp(-h_world / h_rayleigh);
+        let rho_m = exp(-h_world / h_mie);
+        tau_r += rho_r * step_size;
+        tau_m += rho_m * step_size;
+    }
+    return vec2<f32>(tau_r, tau_m);
 }
 
 fn get_sky_color(
@@ -90,52 +95,41 @@ fn get_sky_color(
     let rd = ray.direction;
 
     let t_atmos = ray_sphere_intersect(r0, rd, atmosphere_radius_local);
-    
     let t_planet = ray_sphere_intersect(r0, rd, planet_radius_local);
-    
     let t_start = max(0.0, t_atmos.x);
     var t_end = min(t_atmos.y, max_dist_local);
     if (t_planet.x > t_start) { t_end = min(t_end, t_planet.x); }
-    
-    let ray_length = t_end - t_start;
-    if (ray_length <= 0.0) { return AtmosphereOutput(vec3<f32>(0.0), vec3<f32>(1.0), 0.0); }
 
-    let step_size = ray_length / f32(NUM_IN_SCATTER_SAMPLES);
+    let num_samples = NUM_IN_SCATTER_SAMPLES;
+    let step_size = (t_end - t_start) / f32(num_samples);
     var transmittance = vec3<f32>(1.0);
     var scattered_light = vec3<f32>(0.0);
 
-    for (var i = 0u; i < NUM_IN_SCATTER_SAMPLES; i = i + 1u) {
+    for (var i = 0u; i < num_samples; i = i + 1u) {
         let p_sample = r0 + rd * (t_start + (f32(i) + 0.5) * step_size);
         if (length(p_sample) < planet_radius_local) { continue; }
-        
-        let p_world_sq = dot(p_sample, p_sample) * world_scale * world_scale;
-        let h = (p_world_sq - physical_radius_world*physical_radius_world) / (2.0 * physical_radius_world);
+        let h = max(0.0, (length(p_sample) - planet_radius_local) * world_scale);
 
         if (h > 0.0) {
             let density_r = exp(-h / params.h_rayleigh);
             let density_m = exp(-h / params.h_mie);
             let scattering_coeffs = params.beta_rayleigh * density_r + params.beta_mie * density_m;
             var sun_transmittance = vec3<f32>(0.0);
-            
-            let p_sample_relative = p_sample + planet_center_tier;
-            let p_world = p_sample_relative * world_scale;
+
             let up_dir = normalize(p_sample);
-            let eclipse_shadow_ray = Ray(p_world + up_dir * 0.2, light_dir); 
+            let eclipse_shadow_ray = Ray(p_sample + up_dir * 0.2, light_dir);
             let eclipse_rec = hit_spheres_shadow(eclipse_shadow_ray, createInterval(0.001, INFINITY), shadow_casters_in, shadow_params_in.count, ignore_pos_world, camera);
 
             if (eclipse_rec.hit && dot(eclipse_rec.emissive, eclipse_rec.emissive) < 0.1) { continue; }
 
             let optical_lengths = calculate_optical_length_to_space(
-                p_sample, light_dir, 
-                planet_radius_local,
-                atmosphere_radius_local,
+                p_sample, light_dir,
+                planet_radius_local, atmosphere_radius_local,
                 params.h_rayleigh, params.h_mie,
                 world_scale
             );
-            if (optical_lengths.x < 1e9) {
-                let optical_depth_sun = params.beta_rayleigh * optical_lengths.x + params.beta_mie * optical_lengths.y;
-                sun_transmittance = exp(-optical_depth_sun * world_scale);
-            }
+            let optical_depth_sun = params.beta_rayleigh * optical_lengths.x + params.beta_mie * optical_lengths.y;
+            sun_transmittance = exp(-optical_depth_sun * world_scale);
 
             let mu = dot(rd, light_dir);
             let g = params.g_mie;

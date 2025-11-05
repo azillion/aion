@@ -75,7 +75,7 @@ async function main(): Promise<void> {
     thrust: [0, 0, 0],
   };
 
-  const initial: SystemState = { timestamp: Date.now(), bodies: [sun, earth, moon, alphaCentauri], ships: [playerShip] };
+  const initial: SystemState = { timestamp: Date.now(), bodies: [sun, earth, moon], ships: [playerShip] };
   await authority.initialize(initial);
   // signal readiness
   (self as any).postMessage({ type: 'workerReady' });
