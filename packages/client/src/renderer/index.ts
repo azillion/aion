@@ -13,6 +13,7 @@ import type { Theme } from '@shared/types';
 import { HUDManager } from '../hud';
 import type { SystemState } from '@shared/types';
 import type { IRenderPipeline } from './pipelines/base';
+import { WasmGridBridge } from '../authority/wasmGrid';
  
 import type { RenderPayload } from '@client/orchestration/types';
 import { SceneDataProcessor } from './data/sceneDataProcessor';
@@ -46,6 +47,11 @@ export class Renderer {
   private lastSystemState?: SystemState; // TODO: consider removing if unused
   private sceneDataProcessor: SceneDataProcessor;
 
+  // Coarse grid GPU buffers
+  private gridVertexBuffer!: GPUBuffer;
+  private gridElevationBuffer!: GPUBuffer;
+  private gridIndexBuffer!: GPUBuffer;
+
   constructor(
     canvas: HTMLCanvasElement,
     state: AppState,
@@ -76,6 +82,9 @@ export class Renderer {
       size: 48, // three vec4<f32>
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+
+    // Initialize coarse grid and upload to GPU once
+    await this.initializeGrid(3);
 
     for (const pipeline of Object.values(this.pipelines)) {
       await pipeline.initialize(this.core, this.scene);
@@ -115,6 +124,35 @@ export class Renderer {
     for (const pipeline of Object.values(this.pipelines)) {
       pipeline.onResize(this.textureSize, this.core);
     }
+  }
+
+  private async initializeGrid(size: number): Promise<void> {
+    const bridge = await WasmGridBridge.create();
+    bridge.createGrid(size);
+    const vertices = bridge.getGridVertexBuffer(); // Float32Array of xyz triplets
+    const elevations = bridge.getGridElevationBuffer(); // Float32Array per-vertex
+    const indices = bridge.getGridIndexBuffer(); // Uint32Array triangle indices
+
+    const device = this.core.device;
+    this.gridVertexBuffer = device.createBuffer({
+      label: 'Grid Vertex Buffer',
+      size: Math.max(4, vertices.byteLength),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.gridElevationBuffer = device.createBuffer({
+      label: 'Grid Elevation Buffer',
+      size: Math.max(4, elevations.byteLength),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.gridIndexBuffer = device.createBuffer({
+      label: 'Grid Index Buffer',
+      size: Math.max(4, indices.byteLength),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    device.queue.writeBuffer(this.gridVertexBuffer, 0, vertices.buffer, vertices.byteOffset, vertices.byteLength);
+    device.queue.writeBuffer(this.gridElevationBuffer, 0, elevations.buffer, elevations.byteOffset, elevations.byteLength);
+    device.queue.writeBuffer(this.gridIndexBuffer, 0, indices.buffer, indices.byteOffset, indices.byteLength);
   }
 
   
@@ -187,6 +225,9 @@ export class Renderer {
       themeUniformBuffer: this.themeUniformBuffer,
       sceneUniformBuffer: this.sceneUniformBuffer,
       lastDeltaTime: deltaTime,
+      gridVertexBuffer: this.gridVertexBuffer,
+      gridElevationBuffer: this.gridElevationBuffer,
+      gridIndexBuffer: this.gridIndexBuffer,
     };
 
     const encoder = this.core.device.createCommandEncoder();

@@ -1,6 +1,7 @@
 // Main entry point for the scene rendering compute shader.
 #include "camera.wgsl"
 #include "sceneUniforms.wgsl"
+#include "coarseGrid.wgsl"
 #include "noise.wgsl"
 #include "f64.wgsl"
 
@@ -159,6 +160,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             let final_intensity = ambient_light + diffuse_intensity * shadow_multiplier;
             surface_color = hit_sphere.albedo_and_atmos_flag.xyz * final_intensity * light_color;
         }
+
+        // Coarse grid debug overlay: sample by direction from planet center
+        let grid_dir = normalize(rec.p - hit_sphere_pos_relative);
+        let h_dbg = sampleCoarseGrid(grid_dir);
+        surface_color += vec3<f32>(h_dbg * 0.1);
         
         final_pixel_color = surface_color * total_transmittance + total_in_scattering;
         final_alpha = 1.0;

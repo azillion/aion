@@ -259,3 +259,93 @@ pub export fn free_result_buffer(ptr_addr: u32, len: u32) callconv(.c) void {
 pub export fn destroy_simulator(simulator: *sim.Simulator) callconv(.c) void {
     simulator.destroy();
 }
+
+// --- Coarse Grid Bridge ---
+var active_grid: ?*planet.Grid = null;
+
+pub export fn create_grid(size: u32) callconv(.c) void {
+    const alloc = wasmAllocator();
+    if (active_grid) |g| {
+        g.deinit();
+        alloc.destroy(g);
+        active_grid = null;
+    }
+    const g_ptr = alloc.create(planet.Grid) catch return;
+    g_ptr.* = planet.Grid.init(alloc, @intCast(size)) catch {
+        alloc.destroy(g_ptr);
+        return;
+    };
+    const g = g_ptr;
+    var coord_map = g.populateIndices() catch {
+        g.deinit();
+        alloc.destroy(g);
+        return;
+    };
+    defer coord_map.deinit();
+    g.populateNeighbors(&coord_map) catch {
+        g.deinit();
+        alloc.destroy(g);
+        return;
+    };
+    g.generateMesh() catch {
+        g.deinit();
+        alloc.destroy(g);
+        return;
+    };
+    active_grid = g;
+}
+
+fn asSliceU8(ptr: [*]const u8, len_bytes: usize) SliceU8 {
+    return .{ .ptr = @intCast(@intFromPtr(ptr)), .len = @intCast(len_bytes) };
+}
+
+pub export fn get_grid_vertex_buffer() callconv(.c) SliceU8 {
+    if (active_grid == null) return .{ .ptr = 0, .len = 0 };
+    const g = active_grid.?;
+    if (g.vertices == null) return .{ .ptr = 0, .len = 0 };
+    const verts = g.vertices.?;
+    const bytes: usize = verts.len * @sizeOf(f32);
+    const base: [*]const u8 = @ptrCast(verts.ptr);
+    return asSliceU8(base, bytes);
+}
+
+pub export fn get_grid_vertex_buffer_out(out_ptr: u32) callconv(.c) void {
+    const r = get_grid_vertex_buffer();
+    const out: [*]u32 = @ptrFromInt(out_ptr);
+    out[0] = r.ptr;
+    out[1] = r.len;
+}
+
+pub export fn get_grid_elevation_buffer() callconv(.c) SliceU8 {
+    if (active_grid == null) return .{ .ptr = 0, .len = 0 };
+    const g = active_grid.?;
+    if (g.elevations == null) return .{ .ptr = 0, .len = 0 };
+    const arr = g.elevations.?;
+    const bytes: usize = arr.len * @sizeOf(f32);
+    const base: [*]const u8 = @ptrCast(arr.ptr);
+    return asSliceU8(base, bytes);
+}
+
+pub export fn get_grid_elevation_buffer_out(out_ptr: u32) callconv(.c) void {
+    const r = get_grid_elevation_buffer();
+    const out: [*]u32 = @ptrFromInt(out_ptr);
+    out[0] = r.ptr;
+    out[1] = r.len;
+}
+
+pub export fn get_grid_index_buffer() callconv(.c) SliceU8 {
+    if (active_grid == null) return .{ .ptr = 0, .len = 0 };
+    const g = active_grid.?;
+    if (g.indices == null) return .{ .ptr = 0, .len = 0 };
+    const arr = g.indices.?;
+    const bytes: usize = arr.len * @sizeOf(u32);
+    const base: [*]const u8 = @ptrCast(arr.ptr);
+    return asSliceU8(base, bytes);
+}
+
+pub export fn get_grid_index_buffer_out(out_ptr: u32) callconv(.c) void {
+    const r = get_grid_index_buffer();
+    const out: [*]u32 = @ptrFromInt(out_ptr);
+    out[0] = r.ptr;
+    out[1] = r.len;
+}
