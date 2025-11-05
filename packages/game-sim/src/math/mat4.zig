@@ -47,7 +47,7 @@ pub const Mat4 = struct {
     }
 
     pub fn lookAt(eye: vec3.Vec3, look_at: vec3.Vec3, up: vec3.Vec3) Self {
-        const z_axis = eye.sub(look_at).normalize();
+        const z_axis = look_at.sub(eye).normalize();
         const x_axis = up.cross(z_axis).normalize();
         const y_axis = z_axis.cross(x_axis);
 
@@ -55,19 +55,19 @@ pub const Mat4 = struct {
 
         out.m[0] = x_axis.x;
         out.m[1] = y_axis.x;
-        out.m[2] = z_axis.x;
+        out.m[2] = -z_axis.x;
         out.m[3] = 0;
         out.m[4] = x_axis.y;
         out.m[5] = y_axis.y;
-        out.m[6] = z_axis.y;
+        out.m[6] = -z_axis.y;
         out.m[7] = 0;
         out.m[8] = x_axis.z;
         out.m[9] = y_axis.z;
-        out.m[10] = z_axis.z;
+        out.m[10] = -z_axis.z;
         out.m[11] = 0;
-        out.m[12] = -out.m[0] * eye.x - out.m[4] * eye.y - out.m[8] * eye.z;
-        out.m[13] = -out.m[1] * eye.x - out.m[5] * eye.y - out.m[9] * eye.z;
-        out.m[14] = -out.m[2] * eye.x - out.m[6] * eye.y - out.m[10] * eye.z;
+        out.m[12] = -vec3.Vec3.dot(x_axis, eye);
+        out.m[13] = -vec3.Vec3.dot(y_axis, eye);
+        out.m[14] = vec3.Vec3.dot(z_axis, eye);
         out.m[15] = 1;
 
         return out;
@@ -102,7 +102,7 @@ pub const Mat4 = struct {
     pub fn multiplyVec3(self: Self, v: vec3.Vec3) vec3.Vec3 {
         const v4x = v.x * self.m[0] + v.y * self.m[4] + v.z * self.m[8] + self.m[12];
         const v4y = v.x * self.m[1] + v.y * self.m[5] + v.z * self.m[9] + self.m[13];
-        const v4z = v.x * self.m[2] + v.y * self.m[6] + v.z * self.m[10] + self.m[11];
+        const v4z = v.x * self.m[2] + v.y * self.m[6] + v.z * self.m[10] + self.m[14];
         const v4w = v.x * self.m[3] + v.y * self.m[7] + v.z * self.m[11] + self.m[15];
         const inv_w = 1.0 / v4w;
 
@@ -122,7 +122,7 @@ pub const Mat4 = struct {
                 t.x, t.y, t.z, 1,
             },
         };
-        return self.multiply(translation_matrix);
+        return translation_matrix.multiply(self);
     }
 
     pub fn scale(self: Self, s: vec3.Vec3) Self {
@@ -134,7 +134,7 @@ pub const Mat4 = struct {
                 0,   0,   0,   1,
             },
         };
-        return self.multiply(scale_matrix);
+        return scale_matrix.multiply(self);
     }
 
     pub fn invert(self: Self) Self {

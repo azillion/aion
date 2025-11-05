@@ -4,19 +4,14 @@
 // Algorithm from "Accurate Sum and Dot Product" by T. Ogita, S. Rump, and S. Oishi
 fn two_sum(a: f32, b: f32) -> vec2<f32> {
     let s = a + b;
-    let a_prime = s - b;
-    let b_prime = s - a_prime;
-    let delta_a = a - a_prime;
-    let delta_b = b - b_prime;
-    let t = delta_a + delta_b;
+    let t = (a - (s - b)) + (b - (s - a));
     return vec2<f32>(s, t);
 }
 
 fn two_sub(a: f32, b: f32) -> vec2<f32> {
     let s = a - b;
-    let bb = s - a;
-    let err = (a - (s - bb)) - (b + bb);
-    return vec2<f32>(s, err);
+    let t = (a - (s + b)) + (b - (a - s));
+    return vec2<f32>(s, t);
 }
 
 // Splits a single f32 into two f32s for Dekker multiplication

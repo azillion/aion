@@ -33,10 +33,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let water_h_n = textureLoad(water_state_read, n_coords, n_face, 0).r;
         let terrain_h_n = textureLoad(terrain_height, n_coords, n_face, 0).r;
         let H_n = terrain_h_n + water_h_n;
-        net_flow += max(0.0, H_n - H_me) * flow_speed;
-        net_flow -= max(0.0, H_me - H_n) * flow_speed;
+        net_flow += (H_n - H_me) * flow_speed;
     }
-    var new_water_h = max(0.0, water_h + net_flow * dt);
+    var new_water_h = max(0.0, water_h + (net_flow / 4.0) * dt);
 
     // Light rain input
     let rain_rate: f32 = 0.00001;

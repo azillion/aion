@@ -136,10 +136,21 @@ pub const SimplexNoise = struct {
         const jj_1 = (jj + 1) & 255;
         const kk_1 = (kk + 1) & 255;
 
-        const gi0 = self.perm[ii + @as(usize, self.perm[jj + @as(usize, self.perm[kk])])] % 12;
-        const gi1 = self.perm[ii_i1 + @as(usize, self.perm[jj_j1 + @as(usize, self.perm[kk_k1])])] % 12;
-        const gi2 = self.perm[ii_i2 + @as(usize, self.perm[jj_j2 + @as(usize, self.perm[kk_k2])])] % 12;
-        const gi3 = self.perm[ii_1 + @as(usize, self.perm[jj_1 + @as(usize, self.perm[kk_1])])] % 12;
+        const perm_kk0 = self.perm[kk];
+        const perm_jj_kk0 = self.perm[(jj + @as(usize, perm_kk0)) & 255];
+        const gi0 = self.perm[(ii + @as(usize, perm_jj_kk0)) & 255] % 12;
+
+        const perm_kk1 = self.perm[kk_k1];
+        const perm_jj_kk1 = self.perm[(jj_j1 + @as(usize, perm_kk1)) & 255];
+        const gi1 = self.perm[(ii_i1 + @as(usize, perm_jj_kk1)) & 255] % 12;
+
+        const perm_kk2 = self.perm[kk_k2];
+        const perm_jj_kk2 = self.perm[(jj_j2 + @as(usize, perm_kk2)) & 255];
+        const gi2 = self.perm[(ii_i2 + @as(usize, perm_jj_kk2)) & 255] % 12;
+
+        const perm_kk3 = self.perm[kk_1];
+        const perm_jj_kk3 = self.perm[(jj_1 + @as(usize, perm_kk3)) & 255];
+        const gi3 = self.perm[(ii_1 + @as(usize, perm_jj_kk3)) & 255] % 12;
 
         var n0: f64 = 0.0;
         var n1: f64 = 0.0;

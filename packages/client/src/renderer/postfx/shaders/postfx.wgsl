@@ -45,13 +45,14 @@ fn presentFragment(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 @fragment
 fn fragmentMain(@location(0) uv: vec2<f32>, @builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f32> {
     // Barrel distortion warp
-    var warpedUV = uv;
-    let barrelPower = 0.1 * theme.params.y;
-    let center = vec2<f32>(0.5, 0.5);
-    let radial = warpedUV - center;
-    let r = length(radial);
-    let distortion = 1.0 + barrelPower * r * r;
-    warpedUV = center + radial / distortion;
+	var warpedUV = uv;
+	let k1 = 0.1 * theme.params.y;
+	let k2 = 0.02 * theme.params.y; // second-order term for physical lens model
+	let center = vec2<f32>(0.5, 0.5);
+	let radial = warpedUV - center;
+	let r2 = dot(radial, radial);
+	let distortion = 1.0 + k1 * r2 + k2 * (r2 * r2);
+	warpedUV = center + radial * distortion;
 
     // Sample HDR scene color (raw HDR)
     let currentFrameHdr = textureSample(sceneTexture, sceneSampler, warpedUV).rgb;
