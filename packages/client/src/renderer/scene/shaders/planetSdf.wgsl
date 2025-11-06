@@ -48,8 +48,8 @@ fn get_sdf_normal(
     scene: SceneUniforms,
     lod_dist: f32
 ) -> vec3<f32> {
-    // Stable central differencing with epsilon tied to marched distance
-    let eps = max(0.001, t * 0.0001);
+	// Stable central differencing with epsilon independent of camera distance
+	let eps = length(p_local) * 0.00001;
     let dx = vec3<f32>(eps, 0.0, 0.0);
     let dy = vec3<f32>(0.0, eps, 0.0);
     let dz = vec3<f32>(0.0, 0.0, eps);
@@ -81,15 +81,14 @@ fn dWorld(
     // Dynamic water level from simulation grid
     let water_uv_face = directionToCubeUV(dir);
     let dims = textureDimensions(water_state, 0);
-    let water_sample = textureLoad(water_state, vec2<i32>(water_uv_face.xy * vec2<f32>(dims)), i32(water_uv_face.z), 0);
+    let tex_coords = min(vec2<i32>(water_uv_face.xy * vec2<f32>(dims)), vec2<i32>(dims) - 1);
+    let water_sample = textureLoad(water_state, tex_coords, i32(water_uv_face.z), 0);
     let water_depth = water_sample.r; // km
     let water_radius_scaled = (params.base_radius + params.sea_level + water_depth) * inv_tier;
     let d_ocean = len_p - water_radius_scaled;
     
     let k = 0.01 * tier_scale;
-    let m = min(d_terrain, d_ocean);
-    let sd = smin(d_terrain, d_ocean, k);
-    return select(m, sd, abs(d_terrain - d_ocean) < 2.0 * k);
+    return smin(d_terrain, d_ocean, k);
 }
 
 // Local helper: ray-sphere intersection in planet-local space

@@ -1,5 +1,6 @@
 const std = @import("std");
 const planet = @import("index.zig");
+const gridmod = @import("grid.zig");
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 
@@ -70,10 +71,10 @@ test "grid: edge pos and mirror" {
             var r: isize = -Ni;
             while (r <= Ni) : (r += 1) {
                 if (!g.isValid(q, r) or !g.isEdge(q, r) or g.isPenta(q, r)) continue;
-                const ei_opt = g.testGetEdgeIndex(q, r);
-                try expect(ei_opt != null);
-                const ei = ei_opt.?;
-                const pos = g.testGetEdgePosition(q, r, ei);
+                const ei_face_opt = g.testFaceLocalEdgeIndex(face, q, r);
+                if (ei_face_opt == null) continue; // not a boundary of this face
+                const ei = ei_face_opt.?;
+                const pos = g.testGetEdgePositionFace(q, r, face, ei);
                 try expect(pos < N - 1);
                 const pair_opt = g.testEdgeAliasPair(q, r, face);
                 try expect(pair_opt != null);
@@ -210,6 +211,78 @@ test "grid: generateMesh placeholder" {
     try g.generateMesh();
 }
 
+test "grid: seam assumptions" {
+    var g = try planet.Grid.init(std.testing.allocator, 6);
+    defer g.deinit();
+    var m = try g.populateIndices();
+    defer m.deinit();
+
+    // 1) face_neighbors symmetry and vertex pair equality
+    const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+    var f: usize = 0;
+    while (f < 20) : (f += 1) {
+        var ei: usize = 0;
+        while (ei < 3) : (ei += 1) {
+            const map = g.testNeighborEdgeMap(f, ei);
+            const nf = map.nf;
+            const ne = map.ne;
+            const A = gridmod.icosa_face_vertices[f];
+            const B = gridmod.icosa_face_vertices[nf];
+            const a0 = A[pairs[ei][0]];
+            const a1 = A[pairs[ei][1]];
+            const b0 = B[pairs[ne][0]];
+            const b1 = B[pairs[ne][1]];
+            try expect((a0 == b0 and a1 == b1) or (a0 == b1 and a1 == b0));
+        }
+    }
+
+    // 5/6) edge parameterization direction and seam mirroring
+    const N: isize = 6;
+    f = 0;
+    while (f < 20) : (f += 1) {
+        var ei: usize = 0;
+        while (ei < 3) : (ei += 1) {
+            // probe interior positions along edge
+            var pos: usize = 0;
+            while (pos < @as(usize, @intCast(N - 1))) : (pos += 1) {
+                if (pos >= @as(usize, @intCast(N - 1))) break;
+                // build uvw on edge (face-local): c=0, b = N+1+2*pos, a = 3N - b
+                const a_local = pairs[ei][0];
+                const b_local = pairs[ei][1];
+                const c_local: usize = 3 - a_local - b_local;
+                var uvw_f: [3]isize = .{ 0, 0, 0 };
+                uvw_f[c_local] = 0;
+                uvw_f[b_local] = (N + 1) + 2 * @as(isize, @intCast(pos));
+                uvw_f[a_local] = 3 * N - uvw_f[b_local];
+                const qr = g.testFromBaryFace(f, uvw_f);
+                if (!g.isEdge(qr.q, qr.r) or g.isPenta(qr.q, qr.r)) continue;
+                const pos_check = g.testGetEdgePositionFace(qr.q, qr.r, f, ei);
+                try expectEqual(@as(usize, pos), pos_check);
+                const uvw_back = g.testToBaryFace(f, qr.q, qr.r);
+                try expect((uvw_back[b_local] & 1) == 1);
+                try expect(uvw_back[b_local] >= (N + 1) and uvw_back[b_local] <= (2 * N - 1));
+
+                const map = g.testNeighborEdgeMap(f, ei);
+                // Stepping across: try all dirs and pick any that changes face
+                var dir: usize = 0;
+                var checked = false;
+                while (dir < 6) : (dir += 1) {
+                    const d = g.testStepAcrossOrIn(qr.q, qr.r, f, @intCast(dir));
+                    if (d.face != f) {
+                        const pos_nf = g.testGetEdgePositionFace(d.q, d.r, map.nf, map.ne);
+                        const L: usize = @intCast(N - 1);
+                        const rev_pos: usize = if (map.rev) (L - 1) - pos else pos;
+                        try expectEqual(rev_pos, pos_nf);
+                        checked = true;
+                        break;
+                    }
+                }
+                try expect(checked);
+            }
+        }
+    }
+}
+
 // Edge alias bijection across all faces/edges and sizes
 test "grid: edge alias bijection" {
     const sizes_to_test = [_]usize{ 2, 3, 4, 5, 8 };
@@ -223,11 +296,14 @@ test "grid: edge alias bijection" {
         // We don't need to build indices here; this test checks the topology mapping only
         for (0..20) |face_a| {
             for (0..3) |edge_a| {
-                const map_fwd = planet.Grid.testNeighborEdgeMap(face_a, edge_a);
+                const map_fwd = g.testNeighborEdgeMap(face_a, edge_a);
                 const face_b = map_fwd.nf;
                 const edge_b = map_fwd.ne;
 
-                const map_rev = planet.Grid.testNeighborEdgeMap(face_b, edge_b);
+                const map_rev = g.testNeighborEdgeMap(face_b, edge_b);
+                // Roundtrip should return original (face, edge)
+                try expectEqual(@as(usize, face_a), map_rev.nf);
+                try expectEqual(@as(usize, edge_a), map_rev.ne);
 
                 var pos_a: usize = 0;
                 while (pos_a < edge_len) : (pos_a += 1) {
@@ -235,6 +311,118 @@ test "grid: edge alias bijection" {
                     const pos_c = if (map_rev.rev) (edge_len - 1) - pos_b else pos_b;
                     try expectEqual(pos_a, pos_c);
                 }
+            }
+        }
+    }
+}
+
+// Edge alias equality: both sides of an aliased edge map to the same index
+test "grid: edge alias indices equal across seam" {
+    const sizes = [_]usize{ 3, 4, 5, 8 };
+    for (sizes) |N| {
+        if (N <= 1) continue;
+        var g = try planet.Grid.init(std.testing.allocator, N);
+        defer g.deinit();
+        var m = try g.populateIndices();
+        defer m.deinit();
+
+        for (0..20) |face| {
+            const Ni: isize = @intCast(N);
+            var q: isize = -Ni;
+            while (q <= Ni) : (q += 1) {
+                var r: isize = -Ni;
+                while (r <= Ni) : (r += 1) {
+                    if (!g.isValid(q, r) or !g.isEdge(q, r) or g.isPenta(q, r)) continue;
+                    const ei_opt = g.testGetEdgeIndex(q, r);
+                    if (ei_opt == null) continue;
+                    const pair_opt = g.testEdgeAliasPair(q, r, face);
+                    try expect(pair_opt != null);
+                    const pair = pair_opt.?;
+                    try expect(pair.a == pair.b);
+                }
+            }
+        }
+    }
+}
+
+// Random walk: stepAcrossOrIn keeps destinations valid and reciprocal via neighbors
+test "grid: random walk preserves validity and reciprocity" {
+    var g = try planet.Grid.init(std.testing.allocator, 6);
+    defer g.deinit();
+    var m = try g.populateIndices();
+    defer m.deinit();
+    try g.populateNeighbors(&m);
+
+    const RNG = struct {
+        seed: u64,
+        fn next(self: *@This()) u64 {
+            const mul: u128 = 6364136223846793005;
+            var z: u128 = @intCast(self.seed);
+            z = z * mul + 1;
+            self.seed = @truncate(z);
+            return self.seed;
+        }
+    };
+    var rng = RNG{ .seed = 0xCAFEBABE };
+    var cur: usize = @intCast(rng.next() % g.tile_count);
+
+    var steps: usize = 0;
+    while (steps < 1_000_000) : (steps += 1) {
+        const c = g.coords[cur];
+        const dir: u8 = @intCast(rng.next() % 6);
+        const d = g.testStepAcrossOrIn(c.q, c.r, c.face, dir);
+        // Validity
+        try expect(g.isValid(d.q, d.r));
+        // Look up destination index
+        const h = planet.Grid.hashCoord(d.q, d.r, d.face);
+        const dest_opt = m.get(h);
+        try expect(dest_opt != null);
+        const dest = dest_opt.?;
+        // Reciprocity: neighbors[dest] contains cur
+        var has_back = false;
+        var k: usize = 0;
+        while (k < g.neighbors[dest].count) : (k += 1) {
+            if (g.neighbors[dest].ids[k] == cur) {
+                has_back = true;
+                break;
+            }
+        }
+        try expect(has_back);
+        cur = dest;
+    }
+}
+
+// Neighbor uniqueness and degree invariants across tile classes
+test "grid: neighbor uniqueness and degree invariants" {
+    const sizes = [_]usize{ 3, 4, 6, 8 };
+    for (sizes) |N| {
+        var g = try planet.Grid.init(std.testing.allocator, N);
+        defer g.deinit();
+        var m = try g.populateIndices();
+        defer m.deinit();
+        try g.populateNeighbors(&m);
+
+        var i: usize = 0;
+        while (i < g.tile_count) : (i += 1) {
+            const c = g.coords[i];
+            const is_edge = g.isEdge(c.q, c.r);
+            const is_penta = g.isPenta(c.q, c.r);
+            const expected: u8 = if (is_penta) 5 else 6;
+            const ring = g.neighbors[i];
+            try expectEqual(expected, ring.count);
+            // Uniqueness and non-self
+            var a: usize = 0;
+            while (a < ring.count) : (a += 1) {
+                const va = ring.ids[a];
+                try expect(va != i);
+                var b: usize = a + 1;
+                while (b < ring.count) : (b += 1) {
+                    try expect(ring.ids[b] != va);
+                }
+            }
+            // Edge-interior tiles must still have 6 unique neighbors
+            if (is_edge and !is_penta) {
+                try expectEqual(@as(u8, 6), ring.count);
             }
         }
     }

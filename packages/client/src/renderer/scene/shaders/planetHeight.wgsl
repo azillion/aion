@@ -10,13 +10,12 @@ fn warp_bake(p: vec3<f32>, seed: f32) -> vec3<f32> {
     return p + 0.8 * q;
 }
 
-fn fbm_bake(p: vec3<f32>, seed: f32) -> f32 {
+fn fbm_bake(p: vec3<f32>, seed: f32, octaves: i32) -> f32 {
     var total: f32 = 0.0;
     var frequency: f32 = 4.0;
     var amplitude: f32 = 0.5;
     let persistence: f32 = 0.5;
     let lacunarity: f32 = 2.0;
-    let octaves = 6;
 
     for (var i = 0; i < octaves; i = i + 1) {
         total = total + snoise(p * frequency + seed) * amplitude;
@@ -26,19 +25,20 @@ fn fbm_bake(p: vec3<f32>, seed: f32) -> f32 {
     return total;
 }
 
-// Calculates signed terrain height (km) based on coarse grid + FBM detail.
-fn h_noise(dir: vec3<f32>, params: TerrainUniforms, dist_to_surface: f32, base_radius: f32, camera: CameraUniforms, scene: SceneUniforms) -> f32 {
-    // 1) Base elevation from coarse grid [0,1]
+// Calculates signed terrain height (km) based on coarse grid + FBM detail with LOD.
+fn h_noise(dir: vec3f, params: TerrainUniforms, dist_to_surface: f32, base_radius: f32, camera: CameraUniforms, scene: SceneUniforms) -> f32 {
+    // 1) Base elevation from coarse grid [0,1] - returns a single f32
     let base_elevation_norm = sampleCoarseGrid(dir);
 
-    // 2) Detail noise [-1,1]
-    let detail_noise = fbm_bake(dir, params.seed);
+    // 2) Detail noise with LOD
+    // Smoothly transitions from 1 octave (far) to 8 octaves (very close)
+    let lod_f = clamp(1.0 - (log(dist_to_surface / base_radius) / log(10000.0)), 0.0, 1.0);
+    let num_octaves = i32(1.0 + lod_f * 7.0);
+    let detail_noise = fbm_bake(dir, params.seed, num_octaves);
 
     // 3) Combine
     let max_height_km = params.max_height * params.base_radius;
     let base_height_km = (base_elevation_norm - 0.5) * max_height_km;
-    let detail_height_km = detail_noise * (max_height_km * 0.1);
+    let detail_height_km = detail_noise * (max_height_km * 0.1) * lod_f; // fade detail at distance
     return base_height_km + detail_height_km;
 }
-
-

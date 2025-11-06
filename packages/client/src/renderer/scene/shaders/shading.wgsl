@@ -19,7 +19,8 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, sphere_pos_relative: vec
     // Sample dynamic water level
     let water_uv = directionToCubeUV(dir);
     let dims = textureDimensions(water_state, 0);
-    let water_depth = textureLoad(water_state, vec2<i32>(water_uv.xy * vec2<f32>(dims)), i32(water_uv.z), 0).r;
+    let tex_coords = min(vec2<i32>(water_uv.xy * vec2<f32>(dims)), vec2<i32>(dims) - 1);
+    let water_depth = textureLoad(water_state, tex_coords, i32(water_uv.z), 0).r;
     let water_surface_height = sphere.terrain_params.y + water_depth;
 
     var surface_albedo: vec3<f32>;
@@ -42,7 +43,7 @@ fn shade_planet_surface(rec: HitRecord, sphere: Sphere, sphere_pos_relative: vec
     let inter_body_shadow_rec = hit_spheres_shadow(shadow_ray, createInterval(0.001, INFINITY), &shadow_casters, shadowParams.count, self_pos_world, camera);
     let is_eclipsed = inter_body_shadow_rec.hit && dot(inter_body_shadow_rec.emissive, inter_body_shadow_rec.emissive) < 0.1;
 
-    let has_atmosphere = sphere.albedo_and_atmos_flag.w > 0.5;
+    let has_atmosphere = sphere.albedo_and_atmos_flag.w > 0.5 && scene.scale_and_flags.y > 0.5;
     var lit_color = surface_albedo * 0.05; // modest ambient term
 
     if (has_atmosphere) {

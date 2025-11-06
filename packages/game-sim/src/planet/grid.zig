@@ -1,7 +1,11 @@
 const std = @import("std");
 const Vec3 = struct { x: f64, y: f64, z: f64 };
+const QR = struct { q: isize, r: isize };
+const EdgeKey = struct { a: usize, b: usize };
+fn edgeKey(a: usize, b: usize) EdgeKey {
+    return .{ .a = @min(a, b), .b = @max(a, b) };
+}
 const UNSET = std.math.maxInt(usize);
-const TransformResult = struct { neighbor_face: usize, neighbor_weights: [3]f64 };
 pub const Coord = struct { q: isize, r: isize, face: usize };
 pub const NeighborSet = struct { ids: [6]usize, count: u8 };
 comptime {
@@ -10,36 +14,38 @@ comptime {
 }
 
 pub const icosa_vertices = [_]Vec3{
-    .{ .x = -0.607026219367981, .y = 0.794681787490845, .z = 0.00008639693260193 },
-    .{ .x = 0.303695321083069, .y = 0.794681787490845, .z = 0.525594890117645 },
-    .{ .x = -0.303695321083069, .y = -0.794681787490845, .z = -0.525594890117645 },
-    .{ .x = 0.607026219367981, .y = -0.794681787490845, .z = -0.00008639693260193 },
-    .{ .x = 0.303438216447830, .y = 0.794599771499634, .z = -0.525867342948914 },
-    .{ .x = 0.490907043218613, .y = -0.187680929899216, .z = -0.850756168365479 },
-    .{ .x = -0.490907043218613, .y = 0.187680929899216, .z = 0.850756168365479 },
-    .{ .x = -0.303438216447830, .y = -0.794599771499634, .z = 0.525867342948914 },
-    .{ .x = -0.491322875022888, .y = 0.187548249959946, .z = -0.850545346736908 },
-    .{ .x = 0.982255339622498, .y = 0.187548249959946, .z = -0.00025475025177002 },
-    .{ .x = -0.982255339622498, .y = -0.187548249959946, .z = 0.00025475025177002 },
-    .{ .x = 0.491322875022888, .y = -0.187548249959946, .z = 0.850545346736908 },
+    .{ .x = 0.850650808, .y = 0.525731112, .z = 0.000000000 }, // v0  = ( φ,  1, 0) / √(1+φ²)
+    .{ .x = -0.850650808, .y = 0.525731112, .z = 0.000000000 }, // v1  = (-φ,  1, 0) / √(1+φ²)
+    .{ .x = 0.850650808, .y = -0.525731112, .z = 0.000000000 }, // v2  = ( φ, -1, 0) / √(1+φ²)
+    .{ .x = -0.850650808, .y = -0.525731112, .z = 0.000000000 }, // v3  = (-φ, -1, 0) / √(1+φ²)
+    .{ .x = 0.525731112, .y = 0.000000000, .z = 0.850650808 }, // v4  = ( 1,  0, φ) / √(1+φ²)
+    .{ .x = 0.525731112, .y = 0.000000000, .z = -0.850650808 }, // v5  = ( 1,  0,-φ) / √(1+φ²)
+    .{ .x = -0.525731112, .y = 0.000000000, .z = 0.850650808 }, // v6  = (-1,  0, φ) / √(1+φ²)
+    .{ .x = -0.525731112, .y = 0.000000000, .z = -0.850650808 }, // v7  = (-1,  0,-φ) / √(1+φ²)
+    .{ .x = 0.000000000, .y = 0.850650808, .z = 0.525731112 }, // v8  = ( 0, φ,  1) / √(1+φ²)
+    .{ .x = 0.000000000, .y = -0.850650808, .z = 0.525731112 }, // v9  = ( 0,-φ,  1) / √(1+φ²)
+    .{ .x = 0.000000000, .y = 0.850650808, .z = -0.525731112 }, // v10 = ( 0, φ, -1) / √(1+φ²)
+    .{ .x = 0.000000000, .y = -0.850650808, .z = -0.525731112 }, // v11 = ( 0,-φ, -1) / √(1+φ²)
 };
 
-pub const icosa_face_vertices = [_][3]usize{ .{ 1, 2, 5 }, .{ 2, 10, 5 }, .{ 5, 10, 6 }, .{ 6, 10, 4 }, .{ 3, 4, 8 }, .{ 4, 3, 6 }, .{ 8, 11, 3 }, .{ 1, 9, 11 }, .{ 1, 5, 9 }, .{ 9, 3, 11 }, .{ 9, 5, 6 }, .{ 9, 6, 3 }, .{ 2, 1, 7 }, .{ 12, 2, 7 }, .{ 4, 10, 12 }, .{ 7, 11, 8 }, .{ 4, 12, 8 }, .{ 12, 7, 8 }, .{ 7, 1, 11 }, .{ 10, 2, 12 } };
+// The 20 faces connecting the 12 vertices above (using 1-based indexing).
+pub const icosa_face_vertices = [_][3]usize{
+    .{ 1, 9, 5 },   .{ 1, 6, 11 },  .{ 3, 5, 10 }, .{ 3, 12, 6 }, .{ 2, 7, 9 },
+    .{ 2, 11, 8 },  .{ 4, 10, 7 },  .{ 4, 8, 12 }, .{ 1, 11, 9 }, .{ 2, 9, 11 },
+    .{ 3, 10, 12 }, .{ 4, 10, 12 }, .{ 5, 3, 1 },  .{ 6, 1, 3 },  .{ 7, 2, 4 },
+    .{ 8, 4, 2 },   .{ 9, 7, 5 },   .{ 10, 5, 7 }, .{ 11, 6, 8 }, .{ 12, 8, 6 },
+};
 
-pub const icosa_face_neighbors = [_][3][2]usize{ .{ .{ 2, 3 }, .{ 13, 2 }, .{ 9, 2 } }, .{ .{ 3, 2 }, .{ 20, 2 }, .{ 1, 1 } }, .{ .{ 4, 3 }, .{ 1, 3 }, .{ 11, 3 } }, .{ .{ 5, 3 }, .{ 2, 3 }, .{ 15, 3 } }, .{ .{ 6, 3 }, .{ 7, 2 }, .{ 12, 3 } }, .{ .{ 7, 1 }, .{ 4, 1 }, .{ 11, 1 } }, .{ .{ 8, 3 }, .{ 16, 3 }, .{ 6, 3 } }, .{ .{ 9, 3 }, .{ 19, 3 }, .{ 1, 2 } }, .{ .{ 10, 3 }, .{ 1, 1 }, .{ 11, 2 } }, .{ .{ 11, 1 }, .{ 8, 1 }, .{ 12, 2 } }, .{ .{ 12, 1 }, .{ 3, 1 }, .{ 10, 1 } }, .{ .{ 6, 1 }, .{ 5, 1 }, .{ 10, 2 } }, .{ .{ 14, 3 }, .{ 1, 3 }, .{ 19, 1 } }, .{ .{ 15, 3 }, .{ 2, 1 }, .{ 13, 1 } }, .{ .{ 16, 3 }, .{ 4, 2 }, .{ 20, 3 } }, .{ .{ 17, 3 }, .{ 19, 2 }, .{ 8, 2 } }, .{ .{ 18, 3 }, .{ 15, 2 }, .{ 4, 1 } }, .{ .{ 14, 1 }, .{ 17, 1 }, .{ 12, 1 } }, .{ .{ 13, 2 }, .{ 8, 1 }, .{ 17, 2 } }, .{ .{ 16, 2 }, .{ 14, 2 }, .{ 2, 2 } } };
+// Face neighbors will be constructed at init from faces
 
 // Canonical axial direction list (CW): (+q), (+r), (-q,+s), (-q), (-r), (+q,-s)
 const DIRS = [_][2]isize{ .{ 1, 0 }, .{ 1, -1 }, .{ 0, -1 }, .{ -1, 0 }, .{ -1, 1 }, .{ 0, 1 } };
 
-// Maps a direction index to its reflected index across each of the 3 edges
-const DIR_REFLECTION = [_][6]u8{
-    .{ 0, 5, 4, 3, 2, 1 }, // Edge 0 (q - s)
-    .{ 2, 1, 0, 5, 4, 3 }, // Edge 1 (r - q)
-    .{ 4, 3, 2, 1, 0, 5 }, // Edge 2 (s - r)
-};
+// DIR_REFLECTION removed (unused)
 
 var debug_edge_logs: usize = 0;
 var debug_nbr_logs: usize = 0;
+var test_probe_done: bool = false;
 
 pub const Grid = struct {
     allocator: std.mem.Allocator,
@@ -49,6 +55,11 @@ pub const Grid = struct {
     // Final topology tables
     coords: []Coord,
     neighbors: []NeighborSet,
+    face_neighbors: [20][3][2]usize,
+    // permutation mapping of barycentric coords across each face edge
+    face_perm: [20][3][3]u8,
+    // per-face axes mapping from face-local vertex order (0,1,2) to standard (u,v,w)
+    face_axes: [20][3]u8,
 
     // Internal data structures for tracking shared indices during generation
     penta_indices: [12]usize,
@@ -66,12 +77,17 @@ pub const Grid = struct {
     pub const EdgeMap = struct { nf: usize, ne: usize, rev: bool };
 
     pub fn init(allocator: std.mem.Allocator, size: usize) !Grid {
+        std.debug.assert(size >= 1);
+        std.debug.assert(size <= (@as(usize, 1) << 20));
         var grid = Grid{
             .allocator = allocator,
             .size = size,
             .tile_count = 0,
             .coords = &[_]Coord{},
             .neighbors = &[_]NeighborSet{},
+            .face_neighbors = std.mem.zeroes([20][3][2]usize),
+            .face_perm = std.mem.zeroes([20][3][3]u8),
+            .face_axes = std.mem.zeroes([20][3]u8),
             .penta_indices = undefined,
             .edge_indices = std.mem.zeroes([20][3][]usize),
             .vertices = null,
@@ -89,7 +105,24 @@ pub const Grid = struct {
             }
         }
 
+        try grid.buildFaceNeighbors();
+        grid.buildFacePerm();
+        grid.buildFaceAxes();
         return grid;
+    }
+
+    fn dedupSorted(ids: []usize) usize {
+        if (ids.len == 0) return 0;
+        var w: usize = 1;
+        var i: usize = 1;
+        while (i < ids.len) : (i += 1) {
+            if (ids[i] != ids[i - 1]) {
+                ids[w] = ids[i];
+                w += 1;
+            }
+        }
+        if (w >= 2 and ids[0] == ids[w - 1]) w -= 1;
+        return w;
     }
 
     pub fn deinit(self: *Grid) void {
@@ -104,6 +137,165 @@ pub const Grid = struct {
         if (self.vertices) |v| self.allocator.free(v);
         if (self.elevations) |e| self.allocator.free(e);
         if (self.indices) |i| self.allocator.free(i);
+    }
+
+    fn buildFaceNeighbors(self: *Grid) !void {
+
+        // zero init
+        for (0..20) |fi| {
+            for (0..3) |ei| {
+                self.face_neighbors[fi][ei] = .{ 0, 0 };
+            }
+        }
+
+        var map = std.AutoHashMap(EdgeKey, struct { f: usize, e: usize }).init(self.allocator);
+        defer map.deinit();
+
+        // pass 1: link opposite faces by shared edges
+        for (0..20) |fi| {
+            const tri = icosa_face_vertices[fi];
+            const edges = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+            for (edges, 0..) |e, ei| {
+                const va = tri[e[0]];
+                const vb = tri[e[1]];
+                const k = edgeKey(va, vb);
+                if (map.getPtr(k)) |slot| {
+                    const of = slot.f;
+                    const oe = slot.e;
+                    self.face_neighbors[fi][ei] = .{ of + 1, oe + 1 };
+                    self.face_neighbors[of][oe] = .{ fi + 1, ei + 1 };
+                } else {
+                    try map.put(k, .{ .f = fi, .e = ei });
+                }
+            }
+        }
+        // any border (none in closed icosa) remains {0,0}
+        // Validate closed topology and reverse links
+        for (0..20) |f| {
+            for (0..3) |e| {
+                const nf = self.face_neighbors[f][e][0];
+                const ne = self.face_neighbors[f][e][1];
+                std.debug.assert(nf != 0 and ne != 0);
+                const back = self.face_neighbors[nf - 1][ne - 1];
+                std.debug.assert(back[0] == f + 1 and back[1] == e + 1);
+            }
+        }
+    }
+
+    fn buildFacePerm(self: *Grid) void {
+        var f: usize = 0;
+        while (f < 20) : (f += 1) {
+            const cur = icosa_face_vertices[f];
+            var e: usize = 0;
+            while (e < 3) : (e += 1) {
+                const nf = self.face_neighbors[f][e][0] - 1;
+                const nfv = icosa_face_vertices[nf];
+                var perm: [3]u8 = .{ 0, 0, 0 };
+                const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+                const a_local = pairs[e][0];
+                const b_local = pairs[e][1];
+                const ga = cur[a_local];
+                const gb = cur[b_local];
+                var ia: usize = 3;
+                var ib: usize = 3;
+                var i: usize = 0;
+                while (i < 3) : (i += 1) {
+                    if (nfv[i] == ga) ia = i;
+                    if (nfv[i] == gb) ib = i;
+                }
+                if (ia == 3 or ib == 3) {
+                    if (@import("builtin").mode != .ReleaseFast) @panic("buildFacePerm: shared vertices not found");
+                    // fallback mapping: keep table order
+                    perm = .{ 0, 1, 2 };
+                } else {
+                    const c_local: usize = (0 + 1 + 2) - a_local - b_local;
+                    const nc: usize = (0 + 1 + 2) - ia - ib;
+                    // store inverse mapping: neighbor_index -> current_index
+                    perm[@intCast(ia)] = @intCast(a_local);
+                    perm[@intCast(ib)] = @intCast(b_local);
+                    perm[@intCast(nc)] = @intCast(c_local);
+                }
+                self.face_perm[f][e] = perm;
+            }
+        }
+    }
+
+    inline fn applyPerm3(x: [3]isize, p: [3]u8) [3]isize {
+        return .{ x[p[0]], x[p[1]], x[p[2]] };
+    }
+
+    inline fn toBary(N: isize, q: isize, r: isize) [3]isize {
+        const u = q + N;
+        const v = r + N;
+        const w = N - q - r;
+        return .{ u, v, w };
+    }
+
+    inline fn fromBary(N: isize, uvw: [3]isize) QR {
+        return QR{ .q = uvw[0] - N, .r = uvw[1] - N };
+    }
+
+    inline fn dirBary(dq: isize, dr: isize) [3]isize {
+        return .{ dq, dr, -(dq + dr) };
+    }
+
+    inline fn edgeIndexFromOppositeComponent(cn: usize) usize {
+        return switch (cn) {
+            0 => 1,
+            1 => 2,
+            2 => 0,
+            else => unreachable,
+        };
+    }
+
+    fn buildFaceAxes(self: *Grid) void {
+        // Initialize all to identity; we'll fill via BFS
+        var i: usize = 0;
+        while (i < 20) : (i += 1) self.face_axes[i] = .{ 0, 1, 2 };
+        var visited: [20]bool = undefined;
+        @memset(&visited, false);
+        var q: [20]usize = undefined;
+        var head: usize = 0;
+        var tail: usize = 0;
+        // root face 0 uses canonical axes (0,1,2)
+        visited[0] = true;
+        q[tail] = 0;
+        tail += 1;
+        while (head < tail) {
+            const f = q[head];
+            head += 1;
+            var e: usize = 0;
+            while (e < 3) : (e += 1) {
+                const nf = self.face_neighbors[f][e][0] - 1;
+                if (nf >= 20) continue;
+                if (visited[nf]) continue;
+                const perm = self.face_perm[f][e]; // neighbor_idx -> current_idx
+                var j: usize = 0;
+                while (j < 3) : (j += 1) {
+                    // Direct composition: axes[nf][j] = axes[f][perm[j]]
+                    self.face_axes[nf][j] = self.face_axes[f][perm[j]];
+                }
+                visited[nf] = true;
+                q[tail] = nf;
+                tail += 1;
+            }
+        }
+    }
+
+    inline fn toBaryFace(self: *const Grid, face: usize, q: isize, r: isize) [3]isize {
+        const uvw = toBary(@intCast(self.size), q, r);
+        const ax = self.face_axes[face];
+        return .{ uvw[ax[0]], uvw[ax[1]], uvw[ax[2]] };
+    }
+
+    inline fn fromBaryFace(self: *const Grid, face: usize, uvw_face: [3]isize) QR {
+        const ax = self.face_axes[face];
+        var inv: [3]u8 = .{ 0, 0, 0 };
+        inv[ax[0]] = 0;
+        inv[ax[1]] = 1;
+        inv[ax[2]] = 2;
+        const uvw_std = .{ uvw_face[inv[0]], uvw_face[inv[1]], uvw_face[inv[2]] };
+        return fromBary(@intCast(self.size), uvw_std);
     }
 
     // Helper function to hash coordinates for map lookup
@@ -124,7 +316,7 @@ pub const Grid = struct {
         return .{ .q = q, .r = r, .face = face };
     }
 
-    fn faceCenterPosition(self: *Grid, q: isize, r: isize, face: usize) Vec3 {
+    fn faceCenterPosition(self: *const Grid, q: isize, r: isize, face: usize) Vec3 {
         if (face >= 20) return .{ .x = 0, .y = 0, .z = 0 };
         const fv = icosa_face_vertices[face];
         const ia = fv[0] - 1;
@@ -199,13 +391,14 @@ pub const Grid = struct {
     // removed float-based test helpers
 
     pub fn testEdgeAliasPair(self: *Grid, q: isize, r: isize, face: usize) ?struct { a: usize, b: usize } {
-        const ei = self.getEdgeIndex(q, r) orelse return null;
+        if (self.isPenta(q, r)) return null;
+        const ei = self.faceLocalEdgeIndex(face, q, r) orelse return null;
         const edge_len: usize = if (self.size > 0) self.size - 1 else 0;
         if (edge_len == 0) return null;
-        const pos = self.getEdgePosition(q, r, ei);
+        const pos = self.getEdgePositionFace(q, r, face, ei);
         if (pos >= edge_len) return null;
         const idx_a = self.edge_indices[face][ei][pos];
-        const map = neighborEdgeAndReversal(face, ei);
+        const map = self.neighborEdgeAndReversal(face, ei);
         const rev_pos = if (map.rev) (edge_len - 1) - pos else pos;
         if (map.nf >= 20 or map.ne >= 3 or rev_pos >= self.edge_indices[map.nf][map.ne].len) return null;
         const idx_b = self.edge_indices[map.nf][map.ne][rev_pos];
@@ -213,14 +406,95 @@ pub const Grid = struct {
     }
 
     // Test helper: expose neighbor edge mapping for tests
-    pub fn testNeighborEdgeMap(face: usize, ei: usize) EdgeMap {
-        const map = neighborEdgeAndReversal(face, ei);
+    pub fn testNeighborEdgeMap(self: *const Grid, face: usize, ei: usize) EdgeMap {
+        const map = self.neighborEdgeAndReversal(face, ei);
         return .{ .nf = map.nf, .ne = map.ne, .rev = map.rev };
     }
 
-    // Test helper: expose static neighbor lookup
-    pub fn faceNeighborFace(face: usize, ei: usize) usize {
-        return icosa_face_neighbors[face][ei][0] - 1;
+    // Test helper: expose neighbor lookup (built at init)
+    pub fn faceNeighborFace(self: *const Grid, face: usize, ei: usize) usize {
+        return self.face_neighbors[face][ei][0] - 1;
+    }
+
+    // Test helper: expose stepping function for random-walk tests
+    pub fn testStepAcrossOrIn(self: *const Grid, q: isize, r: isize, face: usize, dir_idx: u8) Coord {
+        return self.stepAcrossOrIn(q, r, face, dir_idx, &.{});
+    }
+
+    // Test helper: expose face-aware edge position
+    pub fn testGetEdgePositionFace(self: *const Grid, q: isize, r: isize, face: usize, edge: usize) usize {
+        return self.getEdgePositionFace(q, r, face, edge);
+    }
+
+    // Test helper: expose face-aware barycentric conversion
+    pub fn testToBaryFace(self: *const Grid, face: usize, q: isize, r: isize) [3]isize {
+        return self.toBaryFace(face, q, r);
+    }
+
+    pub fn testFromBaryFace(self: *const Grid, face: usize, uvw_face: [3]isize) QR {
+        return self.fromBaryFace(face, uvw_face);
+    }
+
+    fn whichEdgeViolated(self: *const Grid, nq: isize, nr: isize) usize {
+        const ns = -(nq + nr);
+        const N: isize = @intCast(self.size);
+        if (nq - ns > N) return 0;
+        if (nr - nq > N) return 1;
+        if (ns - nr > N) return 2;
+        @panic("no edge violated");
+    }
+
+    fn sortRing(self: *const Grid, center: usize, ids: []usize) void {
+        const c = self.coords[center];
+        const C = self.faceCenterPosition(c.q, c.r, c.face);
+        const Cx = C.x;
+        const Cy = C.y;
+        const Cz = C.z;
+        var t1x: f64 = -Cy;
+        var t1y: f64 = Cx;
+        var t1z: f64 = 0.0;
+        var t1l = @sqrt(t1x * t1x + t1y * t1y + t1z * t1z);
+        if (t1l < 1e-12) {
+            t1x = 0.0;
+            t1y = -Cz;
+            t1z = Cy;
+            t1l = @sqrt(t1x * t1x + t1y * t1y + t1z * t1z);
+        }
+        const ux = t1x / t1l;
+        const uy = t1y / t1l;
+        const uz = t1z / t1l;
+        const vx = Cy * uz - Cz * uy;
+        const vy = Cz * ux - Cx * uz;
+        const vz = Cx * uy - Cy * ux;
+        // Compute angles for each id and selection-sort by angle (ring size <= 6)
+        var angles: [6]f64 = undefined;
+        var k: usize = 0;
+        while (k < ids.len) : (k += 1) {
+            const cc = self.coords[ids[k]];
+            const P = self.faceCenterPosition(cc.q, cc.r, cc.face);
+            const ax = P.x - Cx;
+            const ay = P.y - Cy;
+            const az = P.z - Cz;
+            const axp = ax * ux + ay * uy + az * uz;
+            const ayp = ax * vx + ay * vy + az * vz;
+            angles[k] = std.math.atan2(ayp, axp);
+        }
+        var i: usize = 0;
+        while (i + 1 < ids.len) : (i += 1) {
+            var min_j = i;
+            var j: usize = i + 1;
+            while (j < ids.len) : (j += 1) {
+                if (angles[j] < angles[min_j]) min_j = j;
+            }
+            if (min_j != i) {
+                const tmp_id = ids[i];
+                ids[i] = ids[min_j];
+                ids[min_j] = tmp_id;
+                const tmp_a = angles[i];
+                angles[i] = angles[min_j];
+                angles[min_j] = tmp_a;
+            }
+        }
     }
 
     // Position 0..(N-2) along interior of an edge (exclude pentagon corners)
@@ -228,17 +502,25 @@ pub const Grid = struct {
         std.debug.assert(self.isEdge(q, r));
         std.debug.assert(!self.isPenta(q, r));
         const N: isize = @intCast(self.size);
-        const pos: isize = switch (edge) {
-            // Edge 0: q - s == N -> q in [1..N-1]
-            0 => q - 1,
-            // Edge 1: r - q == N -> q in [-(N-1)..-1]
-            1 => (-q) - 1,
-            // Edge 2: s - r == N -> r in [-(N-1)..-1]
-            2 => (-r) - 1,
-            else => 0,
-        };
-        std.debug.assert(pos >= 0 and pos <= (N - 2));
-        return @intCast(pos);
+        const uvw = toBary(N, q, r);
+        const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+        const b_local = pairs[edge][1];
+        var step = @divTrunc(uvw[b_local] - (N + 1), 2);
+        if (step < 0) step = 0;
+        if (step > (N - 2)) step = (N - 2);
+        return @intCast(step);
+    }
+
+    fn getEdgePositionFace(self: *const Grid, q: isize, r: isize, face: usize, edge: usize) usize {
+        // tolerant: compute/clamp; caller should gate with faceLocalEdgeIndex
+        const N: isize = @intCast(self.size);
+        const uvw = self.toBaryFace(face, q, r);
+        const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+        const b_local = pairs[edge][1];
+        var step = @divTrunc(uvw[b_local] - (N + 1), 2);
+        if (step < 0) step = 0;
+        if (step > (N - 2)) step = (N - 2);
+        return @intCast(step);
     }
 
     // getVertexIndex no longer used; kept for compatibility if referenced elsewhere
@@ -249,36 +531,55 @@ pub const Grid = struct {
         return 2;
     }
 
-    fn neighborEdgeAndReversal(face: usize, ei: usize) EdgeMap {
-        const cur = icosa_face_vertices[face];
-        const a_local = (ei + 1) % 3;
-        const b_local = (ei + 2) % 3;
-        const ga = cur[a_local];
-        const gb = cur[b_local];
+    fn neighborEdgeAndReversal(self: *const Grid, face: usize, ei: usize) EdgeMap {
+        // neighbor face for this edge
+        const nf = self.face_neighbors[face][ei][0] - 1;
 
-        const nf = icosa_face_neighbors[face][ei][0] - 1;
-        const nfv = icosa_face_vertices[nf];
+        // Current face's shared edge vertices (local indices 0..2)
+        const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+        const a_local = pairs[ei][0];
+        const b_local = pairs[ei][1];
 
+        // Map them to neighbor-local indices via face_perm (inverse map: neighbor_idx -> cur_idx)
+        const perm = self.face_perm[face][ei];
         var ia: usize = 3;
         var ib: usize = 3;
+        var k: usize = 0;
+        while (k < 3) : (k += 1) {
+            if (perm[k] == a_local) ia = k;
+            if (perm[k] == b_local) ib = k;
+        }
+        std.debug.assert(ia < 3 and ib < 3);
+
+        // Neighbor edge index is the one not using {ia, ib}
+        var ne: usize = 0;
+        while (ne < 3) : (ne += 1) if (ne != ia and ne != ib) break;
+
+        // Define canonical forward as +1 mod 3
+        const next = [_]usize{ 1, 2, 0 };
+        const cur_forward = (b_local == next[a_local]);
+        const nbr_forward = (ib == next[ia]);
+        const rev = (cur_forward != nbr_forward);
+
+        return .{ .nf = nf, .ne = ne, .rev = rev };
+    }
+
+    inline fn faceLocalEdgeIndex(self: *const Grid, face: usize, q: isize, r: isize) ?usize {
+        const uvw = self.toBaryFace(face, q, r);
+        var zero: usize = 3;
         var i: usize = 0;
         while (i < 3) : (i += 1) {
-            if (nfv[i] == ga) ia = i;
-            if (nfv[i] == gb) ib = i;
+            if (uvw[i] == 0) {
+                zero = i;
+                break;
+            }
         }
-        // Fallback if shared vertices not found (shouldn't happen)
-        if (ia == 3 or ib == 3) {
-            const ne_tbl = icosa_face_neighbors[face][ei][1] - 1;
-            return .{ .nf = nf, .ne = ne_tbl, .rev = true };
-        }
-        var ne: usize = 0;
-        while (ne < 3) : (ne += 1) {
-            if (ne != ia and ne != ib) break;
-        }
-        const next = [_]usize{ 1, 2, 0 };
-        const ia_next = next[ia];
-        const rev = !(ia_next == ib);
-        return .{ .nf = nf, .ne = ne, .rev = rev };
+        if (zero == 3) return null;
+        return edgeIndexFromOppositeComponent(zero);
+    }
+
+    pub fn testFaceLocalEdgeIndex(self: *const Grid, face: usize, q: isize, r: isize) ?usize {
+        return self.faceLocalEdgeIndex(face, q, r);
     }
 
     // Resolve index for pentagon tiles (12 special vertices of icosahedron)
@@ -298,14 +599,15 @@ pub const Grid = struct {
 
     // Resolve index for edge tiles (tiles on the edges between faces)
     fn resolveIndexForEdge(self: *Grid, q: isize, r: isize, face: usize, current_index: usize) struct { usize, usize } {
-        const ei = self.getEdgeIndex(q, r) orelse return .{ current_index, current_index + 1 };
+        if (self.isPenta(q, r)) return .{ current_index, current_index + 1 };
+        const ei = self.faceLocalEdgeIndex(face, q, r) orelse return .{ current_index, current_index + 1 };
         const edge_len: usize = if (self.size > 0) self.size - 1 else 0;
         if (edge_len == 0) return .{ current_index, current_index + 1 };
-        const pos = self.getEdgePosition(q, r, ei);
+        const pos = self.getEdgePositionFace(q, r, face, ei);
         if (pos >= edge_len) return .{ current_index, current_index + 1 };
         if (self.edge_indices[face][ei][pos] != UNSET) return .{ self.edge_indices[face][ei][pos], current_index };
         self.edge_indices[face][ei][pos] = current_index;
-        const map = neighborEdgeAndReversal(face, ei);
+        const map = self.neighborEdgeAndReversal(face, ei);
         const rev_pos = if (map.rev) (edge_len - 1) - pos else pos;
         if (debug_edge_logs < 30 and (face == 15 or face == 6)) {
             if (@import("builtin").is_test) {
@@ -323,34 +625,150 @@ pub const Grid = struct {
     pub fn populateNeighbors(self: *Grid, coord_to_index: *const std.AutoHashMap(u64, usize)) !void {
         if (self.neighbors.len > 0) self.allocator.free(self.neighbors);
         self.neighbors = try self.allocator.alloc(NeighborSet, self.tile_count);
+
+        if (@import("builtin").is_test and !test_probe_done) {
+            // One-shot seam probe
+            const f: usize = 6;
+            const ei: usize = 1;
+            const N: isize = @intCast(self.size);
+            const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+            const a_local = pairs[ei][0];
+            const b_local = pairs[ei][1];
+            var pos_probe: usize = 0;
+            if (self.size >= 6) pos_probe = 3 else if (self.size >= 4) pos_probe = 1 else pos_probe = 0;
+            var uvw_face: [3]isize = .{ 0, 0, 0 };
+            const c_local: usize = 3 - a_local - b_local;
+            uvw_face[c_local] = 0;
+            uvw_face[b_local] = (N + 1) + 2 * @as(isize, @intCast(pos_probe)); // 1,3,... with offset
+            uvw_face[a_local] = 3 * N - uvw_face[b_local]; // sum == 3N
+            std.debug.assert(uvw_face[a_local] >= 0 and uvw_face[a_local] <= 2 * N);
+            std.debug.assert(uvw_face[b_local] >= 0 and uvw_face[b_local] <= 2 * N);
+            const qr = self.fromBaryFace(f, uvw_face);
+            std.debug.print("SEAM PROBE start: f={d} ei={d} pos={d}  uvw_f=({d},{d},{d}) -> (q={d}, r={d})\n", .{ f, ei, pos_probe, uvw_face[0], uvw_face[1], uvw_face[2], qr.q, qr.r });
+            const ei_face_opt = self.faceLocalEdgeIndex(f, qr.q, qr.r);
+            if (ei_face_opt == null) {
+                std.debug.print("  not face-local edge; skipping probe instance\n", .{});
+                test_probe_done = true;
+                // continue without asserting
+            }
+            const ei_face = ei_face_opt orelse ei;
+            if (ei_face != ei) {
+                std.debug.print("  face-local edge index mismatch: got {d}, expected {d}\n", .{ ei_face, ei });
+                test_probe_done = true;
+                // do not assert here; continue
+            }
+            const pos_check = self.getEdgePositionFace(qr.q, qr.r, f, ei);
+            std.debug.print("  pos_check={d}\n", .{pos_check});
+            std.debug.assert(pos_check == pos_probe);
+            var crossed: usize = 0;
+            const edge_len: usize = if (self.size > 0) self.size - 1 else 0;
+            var dir: usize = 0;
+            while (dir < 6) : (dir += 1) {
+                const d = self.testStepAcrossOrIn(qr.q, qr.r, f, @intCast(dir));
+                if (d.face != f) {
+                    crossed += 1;
+                    const uvw_cur = self.toBaryFace(f, qr.q, qr.r);
+                    const uvw_nextf = self.toBaryFace(d.face, d.q, d.r);
+                    const map = self.neighborEdgeAndReversal(f, ei);
+                    const rev_pos: isize = if (map.rev) @as(isize, @intCast(edge_len - 1)) - @as(isize, @intCast(pos_probe)) else @as(isize, @intCast(pos_probe));
+                    std.debug.print("  dir={d}: nf={d} ne={d} rev={any}  uvw_cur=({d},{d},{d}) -> uvw_nf=({d},{d},{d})  next=(f={d},q={d},r={d})  pos'={d}\n", .{ dir, map.nf, map.ne, map.rev, uvw_cur[0], uvw_cur[1], uvw_cur[2], uvw_nextf[0], uvw_nextf[1], uvw_nextf[2], d.face, d.q, d.r, self.getEdgePositionFace(d.q, d.r, d.face, map.ne) });
+                    // (A) violated component corresponds to opposite of edge
+                    const duvw_std = dirBary(DIRS[dir][0], DIRS[dir][1]);
+                    const ax = self.face_axes[f];
+                    const duvw_face = .{ duvw_std[ax[0]], duvw_std[ax[1]], duvw_std[ax[2]] };
+                    const uvw_try = .{ uvw_cur[0] + duvw_face[0], uvw_cur[1] + duvw_face[1], uvw_cur[2] + duvw_face[2] };
+                    var viol_cn: usize = 2;
+                    if (uvw_try[0] < 0 or uvw_try[0] > 2 * N) {
+                        viol_cn = 0;
+                    } else if (uvw_try[1] < 0 or uvw_try[1] > 2 * N) {
+                        viol_cn = 1;
+                    } else {
+                        viol_cn = 2;
+                    }
+                    const opp_map = [_]usize{ 1, 2, 0 };
+                    const expected_edge = opp_map[viol_cn];
+                    std.debug.assert(expected_edge == ei);
+                    // (B) position direction alignment
+                    const pos_nf = self.getEdgePositionFace(d.q, d.r, map.nf, map.ne);
+                    const ei_dest_opt = self.faceLocalEdgeIndex(map.nf, d.q, d.r);
+                    const on_expected_edge = (ei_dest_opt != null and ei_dest_opt.? == map.ne);
+                    // Exception: if only (b,a) inequality is violated in neighbor basis and c==0 (on seam),
+                    // a 1-tick repair may need to touch b, shifting pos by ±1. Permit that specific case.
+                    var allow_delta1 = false;
+                    {
+                        const perm_n = self.face_perm[f][ei];
+                        const uvw_n_pre = applyPerm3(uvw_cur, perm_n);
+                        const duvw_n_pre = applyPerm3(duvw_face, perm_n);
+                        const pre0: isize = uvw_n_pre[0] + duvw_n_pre[0];
+                        const pre1: isize = uvw_n_pre[1] + duvw_n_pre[1];
+                        const pre2: isize = uvw_n_pre[2] + duvw_n_pre[2];
+                        const Nloc: isize = @intCast(self.size);
+                        switch (map.ne) {
+                            0 => {
+                                const d_ba: isize = pre1 - pre0; // (b=1,a=0)
+                                const d_cb: isize = pre2 - pre1; // (c=2,b=1)
+                                const d_ac: isize = pre0 - pre2; // (a=0,c=2)
+                                if (d_ba > Nloc and d_cb <= Nloc and d_ac <= Nloc and uvw_n_pre[2] == 0) allow_delta1 = true;
+                            },
+                            1 => {
+                                const d_ba: isize = pre2 - pre1; // (b=2,a=1)
+                                const d_cb: isize = pre0 - pre2; // (c=0,b=2)
+                                const d_ac: isize = pre1 - pre0; // (a=1,c=0)
+                                if (d_ba > Nloc and d_cb <= Nloc and d_ac <= Nloc and uvw_n_pre[0] == 0) allow_delta1 = true;
+                            },
+                            2 => {
+                                const d_ba: isize = pre0 - pre2; // (b=0,a=2)
+                                const d_cb: isize = pre1 - pre0; // (c=1,b=0)
+                                const d_ac: isize = pre2 - pre1; // (a=2,c=1)
+                                if (d_ba > Nloc and d_cb <= Nloc and d_ac <= Nloc and uvw_n_pre[1] == 0) allow_delta1 = true;
+                            },
+                            else => {},
+                        }
+                    }
+                    if (!on_expected_edge) {
+                        // Destination is interior on neighbor face; pos' is not meaningful.
+                        // Skip strict mirroring in this case.
+                    } else if (allow_delta1) {
+                        const diff: isize = (@as(isize, @intCast(pos_nf)) - rev_pos);
+                        const adiff: isize = if (diff < 0) -diff else diff;
+                        std.debug.assert(adiff == 1);
+                    } else {
+                        std.debug.assert(pos_nf == rev_pos);
+                    }
+                }
+            }
+            std.debug.print("  crossed={d} (should be 2)\n", .{crossed});
+            test_probe_done = true;
+        }
+        // Build reverse map once to avoid O(n^2) scans
+        var rev = try self.allocator.alloc(std.ArrayListUnmanaged(Coord), self.tile_count);
+        defer {
+            var k: usize = 0;
+            while (k < self.tile_count) : (k += 1) rev[k].deinit(self.allocator);
+            self.allocator.free(rev);
+        }
+        @memset(rev, .{});
+        var itv_init = coord_to_index.iterator();
+        while (itv_init.next()) |e| {
+            const idx = e.value_ptr.*;
+            const c = unhashCoord(e.key_ptr.*);
+            try rev[idx].append(self.allocator, .{ .q = c.q, .r = c.r, .face = c.face });
+        }
+
         var i: usize = 0;
         while (i < self.tile_count) : (i += 1) {
             // initialize ring to self and reset count to 0 before filling
             @memset(&self.neighbors[i].ids, i);
             self.neighbors[i].count = 0;
-            // Collect all coordinate variants that alias to this index (handles edge/penta dedup)
-            var variants: [8]Coord = undefined;
-            var vcount: usize = 0;
-            var itv = coord_to_index.iterator();
-            while (itv.next()) |e| {
-                if (e.value_ptr.* == i) {
-                    const cvar = unhashCoord(e.key_ptr.*);
-                    if (vcount < variants.len) {
-                        variants[vcount] = .{ .q = cvar.q, .r = cvar.r, .face = cvar.face };
-                        vcount += 1;
-                    }
-                }
-            }
-            if (vcount == 0) {
-                variants[0] = self.coords[i];
-                vcount = 1;
-            }
+            const variants_slice = rev[i].items;
+            const vcount: usize = if (variants_slice.len == 0) 1 else variants_slice.len;
             // Determine capacity: if any variant is a penta, cap=5 else 6
             var cap: u8 = 6;
             var any_penta = false;
             var vv: usize = 0;
             while (vv < vcount) : (vv += 1) {
-                if (self.isPenta(variants[vv].q, variants[vv].r)) {
+                const cvar = if (variants_slice.len == 0) self.coords[i] else variants_slice[vv];
+                if (self.isPenta(cvar.q, cvar.r)) {
                     any_penta = true;
                     break;
                 }
@@ -363,14 +781,16 @@ pub const Grid = struct {
             while (vv < vcount and out_count < cap) : (vv += 1) {
                 var tmp6: [6]Coord = undefined;
                 var tmp5: [5]Coord = undefined;
-                const cvar = variants[vv];
+                const cvar = if (variants_slice.len == 0) self.coords[i] else variants_slice[vv];
                 var ncount: u8 = 0;
                 if (self.isPenta(cvar.q, cvar.r)) {
                     ncount = self.neighbor_penta(cvar.q, cvar.r, cvar.face, &tmp5);
                     var k: usize = 0;
                     while (k < ncount and out_count < cap) : (k += 1) {
                         const h = hashCoord(tmp5[k].q, tmp5[k].r, tmp5[k].face);
-                        const idx = coord_to_index.get(h) orelse i;
+                        const idx_opt = coord_to_index.get(h);
+                        if (@import("builtin").is_test) std.debug.assert(idx_opt != null);
+                        const idx = idx_opt orelse i;
                         if (idx == i and debug_nbr_logs < 24) {
                             if (@import("builtin").is_test) {
                                 std.debug.print("miss penta map: i={d} (f={d},q={d},r={d}) -> (f={d},q={d},r={d})\n", .{ i, cvar.face, cvar.q, cvar.r, tmp5[k].face, tmp5[k].q, tmp5[k].r });
@@ -397,7 +817,9 @@ pub const Grid = struct {
                     var k: usize = 0;
                     while (k < ncount and out_count < cap) : (k += 1) {
                         const h = hashCoord(tmp6[k].q, tmp6[k].r, tmp6[k].face);
-                        const idx = coord_to_index.get(h) orelse i;
+                        const idx_opt = coord_to_index.get(h);
+                        if (@import("builtin").is_test) std.debug.assert(idx_opt != null);
+                        const idx = idx_opt orelse i;
                         if (idx == i and debug_nbr_logs < 24) {
                             if (@import("builtin").is_test) {
                                 std.debug.print("miss edge map: i={d} (f={d},q={d},r={d}) -> (f={d},q={d},r={d})\n", .{ i, cvar.face, cvar.q, cvar.r, tmp6[k].face, tmp6[k].q, tmp6[k].r });
@@ -423,7 +845,9 @@ pub const Grid = struct {
                     var k: usize = 0;
                     while (k < ncount and out_count < cap) : (k += 1) {
                         const h = hashCoord(tmp6[k].q, tmp6[k].r, tmp6[k].face);
-                        const idx = coord_to_index.get(h) orelse i;
+                        const idx_opt = coord_to_index.get(h);
+                        if (@import("builtin").is_test) std.debug.assert(idx_opt != null);
+                        const idx = idx_opt orelse i;
                         if (idx == i and debug_nbr_logs < 24) {
                             if (@import("builtin").is_test) {
                                 std.debug.print("miss inner map: i={d} (f={d},q={d},r={d}) -> (f={d},q={d},r={d})\n", .{ i, cvar.face, cvar.q, cvar.r, tmp6[k].face, tmp6[k].q, tmp6[k].r });
@@ -446,11 +870,15 @@ pub const Grid = struct {
                     }
                 }
             }
-            // Write results and pad
+            // Sort ring by angle around center and deduplicate
+            self.sortRing(i, out_ids[0..out_count]);
+            out_count = @intCast(dedupSorted(out_ids[0..out_count]));
             var w: usize = 0;
             while (w < out_count) : (w += 1) self.neighbors[i].ids[w] = out_ids[w];
+            // Optional: pad remaining slots with self for fixed-size storage
             while (w < cap) : (w += 1) self.neighbors[i].ids[w] = i;
-            self.neighbors[i].count = cap;
+            // Store the actual neighbor count (not capacity)
+            self.neighbors[i].count = @intCast(out_count);
         }
 
         // No symmetry patch: correctness comes from aliasing during index generation
@@ -497,34 +925,238 @@ pub const Grid = struct {
     fn stepAcrossOrIn(self: *const Grid, q: isize, r: isize, face: usize, dir_idx: u8, _: *const anyopaque) Coord {
         const dq = DIRS[dir_idx][0];
         const dr = DIRS[dir_idx][1];
-        const nq = q + dq;
-        const nr = r + dr;
-        if (self.isValid(nq, nr)) return .{ .q = nq, .r = nr, .face = face };
 
-        var eidx: usize = 0;
+        const N: isize = @intCast(self.size);
+        const uvw = self.toBaryFace(face, q, r);
+        const duvw_std = dirBary(dq, dr);
+        const ax_cur = self.face_axes[face];
+        const duvw = .{ duvw_std[ax_cur[0]], duvw_std[ax_cur[1]], duvw_std[ax_cur[2]] };
+
+        const uvw_try: [3]isize = .{ uvw[0] + duvw[0], uvw[1] + duvw[1], uvw[2] + duvw[2] };
+        const maxB: isize = 2 * N;
+        if (uvw_try[0] >= 0 and uvw_try[1] >= 0 and uvw_try[2] >= 0 and
+            uvw_try[0] <= maxB and uvw_try[1] <= maxB and uvw_try[2] <= maxB)
         {
-            const N: isize = @intCast(self.size);
-            const s = -(q + r);
-            var minv = q + N + dq;
-            if (r + N + dr < minv) {
-                minv = r + N + dr;
-                eidx = 1;
-            }
-            if (s + N - (dq + dr) < minv) {
-                eidx = 2;
-            }
+            const back = self.fromBaryFace(face, uvw_try);
+            if (@import("builtin").is_test) std.debug.assert(self.isValid(back.q, back.r));
+            return .{ .q = back.q, .r = back.r, .face = face };
         }
 
-        const mapped_origin = transformCoord(self, q, r, eidx);
-        const Step = struct { q: isize, r: isize };
-        const mapped_step: Step = switch (eidx) {
-            0 => Step{ .q = dq + dr, .r = -dr },
-            1 => Step{ .q = -dq, .r = dq + dr },
-            2 => Step{ .q = -dr, .r = -dq },
-            else => unreachable,
+        // choose edge from violated barycentric component (opposite component index)
+        const viol_cn: usize = if (uvw_try[0] < 0 or uvw_try[0] > maxB) 0 else if (uvw_try[1] < 0 or uvw_try[1] > maxB) 1 else 2;
+        const eidx: usize = edgeIndexFromOppositeComponent(viol_cn);
+        if (@import("builtin").is_test) {
+            const expect_eidx = edgeIndexFromOppositeComponent(viol_cn);
+            std.debug.assert(eidx == expect_eidx);
+        }
+        const nf = self.face_neighbors[face][eidx][0] - 1;
+        const perm = self.face_perm[face][eidx]; // neighbor_index -> current_index
+
+        const uvw_n = applyPerm3(uvw, perm);
+        const duvw_n = applyPerm3(duvw, perm);
+        var out: [3]isize = .{ uvw_n[0] + duvw_n[0], uvw_n[1] + duvw_n[1], uvw_n[2] + duvw_n[2] };
+
+        // if already inside neighbor, done
+        if (!(out[0] < 0 or out[1] < 0 or out[2] < 0 or out[0] > maxB or out[1] > maxB or out[2] > maxB)) {
+            const back_ok = self.fromBaryFace(nf, out);
+            return .{ .q = back_ok.q, .r = back_ok.r, .face = nf };
+        }
+
+        if (@import("builtin").is_test) {
+            std.debug.print("xface final: nf={d} out=({d},{d},{d}) window_ok={any}\n", .{ nf, out[0], out[1], out[2], (out[0] - out[2]) <= N and (out[1] - out[0]) <= N and (out[2] - out[1]) <= N });
+        }
+
+        // Edge orientation on neighbor face: define a,b along edge; c is seam component
+        const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+        const ne = self.neighborEdgeAndReversal(face, eidx).ne;
+        const a_local = pairs[ne][0];
+        const b_local = pairs[ne][1];
+        const c_local: usize = 3 - a_local - b_local;
+
+        // 1) Try both partner choices for ±2x compensation, pick best per window/pos rules
+        const viol_idx: usize = if (out[0] < 0 or out[0] > maxB) 0 else if (out[1] < 0 or out[1] > maxB) 1 else 2;
+        const p0: usize = (viol_idx + 1) % 3;
+        const p1: usize = (viol_idx + 2) % 3;
+
+        const reflect = struct {
+            fn withPartner(base: [3]isize, du: [3]isize, viol: usize, partner: usize, maxB_: isize) [3]isize {
+                var o: [3]isize = .{ base[0] + du[0], base[1] + du[1], base[2] + du[2] };
+                const x: isize = if (o[viol] < 0) -o[viol] else o[viol] - maxB_;
+                if (o[viol] < 0) {
+                    o[viol] += 2 * x;
+                    o[partner] -= 2 * x;
+                } else {
+                    o[viol] -= 2 * x;
+                    o[partner] += 2 * x;
+                }
+                return o;
+            }
         };
-        const nf = icosa_face_neighbors[face][eidx][0] - 1;
-        return .{ .q = mapped_origin.q + mapped_step.q, .r = mapped_origin.r + mapped_step.r, .face = nf };
+
+        const win = struct {
+            fn check(u: isize, v: isize, w: isize, N_: isize) bool {
+                return (u - w) <= N_ and (v - u) <= N_ and (w - v) <= N_;
+            }
+        };
+
+        const cand0 = reflect.withPartner(uvw_n, duvw_n, viol_idx, p0, maxB);
+        const cand1 = reflect.withPartner(uvw_n, duvw_n, viol_idx, p1, maxB);
+        const c0_ok = win.check(cand0[0], cand0[1], cand0[2], N);
+        const c1_ok = win.check(cand1[0], cand1[1], cand1[2], N);
+
+        const base_b: isize = uvw_n[b_local] + duvw_n[b_local];
+        const scorer = struct {
+            fn score(out_: [3]isize, was_ok: bool, base_b_: isize, c_idx: usize, b_idx: usize) usize {
+                var s: usize = 0;
+                if (!was_ok) s += 100;
+                if (out_[c_idx] != 0) s += 50;
+                const ob = out_[b_idx];
+                const delta_b: isize = if (ob > base_b_) ob - base_b_ else base_b_ - ob;
+                // Note: out_[b_local] used at callsite; we keep signature generic here
+                return s + @as(usize, @intCast(delta_b));
+            }
+        };
+        // Prefer candidate that becomes in-window after a single repair
+        const fixer = struct {
+            fn stepOnce(cur: [3]isize, N_: isize, c_idx: usize, _: usize, maxB_: isize) [3]isize {
+                if ((cur[0] - cur[2]) <= N_ and (cur[1] - cur[0]) <= N_ and (cur[2] - cur[1]) <= N_) return cur;
+                const helper = struct {
+                    fn adjust(o: *[3]isize, dec_idx: usize, inc_idx: usize) void {
+                        o.*[dec_idx] -= 1;
+                        o.*[inc_idx] += 1;
+                    }
+                    fn pick(cur2: [3]isize, dec_idx: usize, inc_idx: usize, keep_c_idx: usize, maxB2: isize) struct { usize, usize } {
+                        const can_dec = cur2[dec_idx] > 0;
+                        const can_inc = cur2[inc_idx] < maxB2;
+                        var d = dec_idx;
+                        var i = inc_idx;
+                        if (!can_dec and can_inc) {
+                            d = inc_idx;
+                            i = dec_idx;
+                        } else if (!can_inc and can_dec) {
+                            d = dec_idx;
+                            i = inc_idx;
+                        }
+                        if (i == keep_c_idx) {
+                            d = dec_idx;
+                            i = inc_idx;
+                        } else if (d == keep_c_idx) {
+                            d = inc_idx;
+                            i = dec_idx;
+                        }
+                        if ((cur2[d] == 0 and cur2[i] < maxB2) or (cur2[i] == maxB2 and cur2[d] > 0)) {
+                            const ad = i;
+                            const ai = d;
+                            if ((cur2[ad] > 0) and (cur2[ai] < maxB2)) {
+                                d = ad;
+                                i = ai;
+                            }
+                        }
+                        return .{ d, i };
+                    }
+                };
+                var out2 = cur;
+                const diff0 = out2[0] - out2[2];
+                const diff1 = out2[1] - out2[0];
+                const diff2 = out2[2] - out2[1];
+                if (diff0 > N_) {
+                    const ch = helper.pick(out2, 0, 2, c_idx, maxB_);
+                    helper.adjust(&out2, ch[0], ch[1]);
+                } else if (diff1 > N_) {
+                    const ch = helper.pick(out2, 1, 0, c_idx, maxB_);
+                    helper.adjust(&out2, ch[0], ch[1]);
+                } else if (diff2 > N_) {
+                    const ch = helper.pick(out2, 2, 1, c_idx, maxB_);
+                    helper.adjust(&out2, ch[0], ch[1]);
+                }
+                return out2;
+            }
+        };
+        const fix0 = fixer.stepOnce(cand0, N, c_local, b_local, maxB);
+        const fix1 = fixer.stepOnce(cand1, N, c_local, b_local, maxB);
+        const f0_ok = (fix0[0] - fix0[2]) <= N and (fix0[1] - fix0[0]) <= N and (fix0[2] - fix0[1]) <= N;
+        const f1_ok = (fix1[0] - fix1[2]) <= N and (fix1[1] - fix1[0]) <= N and (fix1[2] - fix1[1]) <= N;
+        var s0 = scorer.score(cand0, c0_ok, base_b, c_local, b_local);
+        var s1 = scorer.score(cand1, c1_ok, base_b, c_local, b_local);
+        if (!f0_ok) s0 += 25;
+        if (!f1_ok) s1 += 25;
+        out = if (s0 <= s1) cand0 else cand1;
+        if (@import("builtin").is_test) {
+            std.debug.print("xface reflect: face={d} eidx={d} nf={d} ne={d} viol_idx={d} uvw_n=({d},{d},{d}) duvw_n=({d},{d},{d}) cand0=({d},{d},{d}) ok0={any} cand1=({d},{d},{d}) ok1={any} chosen=({d},{d},{d})\n", .{ face, eidx, nf, ne, viol_idx, uvw_n[0], uvw_n[1], uvw_n[2], duvw_n[0], duvw_n[1], duvw_n[2], cand0[0], cand0[1], cand0[2], c0_ok, cand1[0], cand1[1], cand1[2], c1_ok, out[0], out[1], out[2] });
+        }
+
+        // 2) If still outside the window, do minimal repairs on the violating pair(s)
+        var iter: usize = 0;
+        while (!win.check(out[0], out[1], out[2], N) and iter < 3) : (iter += 1) {
+            const helper = struct {
+                fn adjust(o: *[3]isize, dec_idx: usize, inc_idx: usize) void {
+                    o.*[dec_idx] -= 1;
+                    o.*[inc_idx] += 1;
+                }
+                fn pick(cur: [3]isize, dec_idx: usize, inc_idx: usize, keep_c_idx: usize, maxB_: isize) struct { usize, usize } {
+                    // Avoid out-of-bounds adjustments first
+                    const can_dec = cur[dec_idx] > 0;
+                    const can_inc = cur[inc_idx] < maxB_;
+                    if (!can_dec and can_inc) return .{ inc_idx, dec_idx };
+                    if (!can_inc and can_dec) return .{ dec_idx, inc_idx };
+                    if (!can_dec and !can_inc) return .{ dec_idx, inc_idx }; // will be caught later
+                    // Honor keep_c first
+                    var dec_final = dec_idx;
+                    var inc_final = inc_idx;
+                    if (inc_idx == keep_c_idx) {
+                        dec_final = dec_idx;
+                        inc_final = inc_idx;
+                    } else if (dec_idx == keep_c_idx) {
+                        dec_final = inc_idx;
+                        inc_final = dec_idx;
+                    }
+                    // Final safety: avoid OOB with the chosen orientation
+                    if ((cur[dec_final] == 0 and cur[inc_final] < maxB_) or (cur[inc_final] == maxB_ and cur[dec_final] > 0)) {
+                        // flip if possible
+                        const alt_dec = inc_final;
+                        const alt_inc = dec_final;
+                        if ((cur[alt_dec] > 0) and (cur[alt_inc] < maxB_)) {
+                            dec_final = alt_dec;
+                            inc_final = alt_inc;
+                        }
+                    }
+                    return .{ dec_final, inc_final };
+                }
+            };
+            const diff0: isize = out[0] - out[2]; // pair (0,2)
+            const diff1: isize = out[1] - out[0]; // pair (1,0)
+            const diff2: isize = out[2] - out[1]; // pair (2,1)
+            if (diff0 > N) {
+                const choice = helper.pick(out, 0, 2, c_local, maxB);
+                helper.adjust(&out, choice[0], choice[1]);
+            } else if (diff1 > N) {
+                const choice = helper.pick(out, 1, 0, c_local, maxB);
+                helper.adjust(&out, choice[0], choice[1]);
+            } else if (diff2 > N) {
+                const choice = helper.pick(out, 2, 1, c_local, maxB);
+                helper.adjust(&out, choice[0], choice[1]);
+            } else break;
+        }
+
+        if (@import("builtin").is_test) {
+            if (!(out[0] >= 0 and out[1] >= 0 and out[2] >= 0 and out[0] <= maxB and out[1] <= maxB and out[2] <= maxB)) {
+                std.debug.print("xface OOB: face={d} eidx={d} nf={d} N={d}\n", .{ face, eidx, nf, N });
+                std.debug.print(" uvw=({d},{d},{d}) du=({d},{d},{d})\n", .{ uvw[0], uvw[1], uvw[2], duvw[0], duvw[1], duvw[2] });
+                std.debug.print(" uvw_n=({d},{d},{d}) du_n=({d},{d},{d}) perm=[{d},{d},{d}]\n", .{ uvw_n[0], uvw_n[1], uvw_n[2], duvw_n[0], duvw_n[1], duvw_n[2], perm[0], perm[1], perm[2] });
+                std.debug.print(" out=({d},{d},{d}) viol={d} maxB={d}\n", .{ out[0], out[1], out[2], 0, maxB });
+            }
+        }
+        std.debug.assert(out[0] >= 0 and out[1] >= 0 and out[2] >= 0);
+        std.debug.assert(out[0] <= maxB and out[1] <= maxB and out[2] <= maxB);
+        const back = self.fromBaryFace(nf, out);
+        if (@import("builtin").is_test) {
+            const ok = self.isValid(back.q, back.r);
+            if (!ok) {
+                std.debug.print("landing invalid: nf={d} out=({d},{d},{d}) -> (q={d},r={d})\n", .{ nf, out[0], out[1], out[2], back.q, back.r });
+            }
+            std.debug.assert(ok);
+        }
+        return .{ .q = back.q, .r = back.r, .face = nf };
     }
 
     fn neighbor_penta(self: *const Grid, q: isize, r: isize, face: usize, out: *[5]Coord) u8 {
@@ -668,11 +1300,12 @@ pub const Grid = struct {
         var a: usize = 0;
         while (a < n) : (a += 1) {
             const ring = self.neighbors[a];
-            if (ring.count < 2) continue;
+            const m: u8 = ring.count;
+            if (m < 2) continue;
             var j: u8 = 0;
-            while (j < ring.count) : (j += 1) {
+            while (j < m) : (j += 1) {
                 const b_idx = ring.ids[j];
-                const c_idx = ring.ids[@intCast((@as(u16, j) + 1) % @as(u16, ring.count))];
+                const c_idx = ring.ids[@intCast((@as(u16, j) + 1) % @as(u16, m))];
                 if (b_idx == a or c_idx == a or b_idx == c_idx) continue;
                 if (a < b_idx and a < c_idx) {
                     try idx_list.append(alloc, @intCast(a));

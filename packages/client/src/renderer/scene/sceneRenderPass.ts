@@ -22,6 +22,8 @@ export class SceneRenderPass implements IRenderPass {
   private pipeline!: GPUComputePipeline;
   private bindGroupLayout!: GPUBindGroupLayout;
   private bodyCountBuffer!: GPUBuffer;
+  private bindGroupCache!: WeakMap<GPUTexture, GPUBindGroup>;
+  private currentSceneTexture?: GPUTexture;
 
   public async initialize(core: WebGPUCore, _scene: Scene): Promise<void> {
     const module = await createShaderModule(
@@ -77,6 +79,10 @@ export class SceneRenderPass implements IRenderPass {
       size: 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+
+    // Cache bind groups keyed by the current water write texture.
+    // Cache will be cleared when the scene texture changes (e.g., resize).
+    this.bindGroupCache = new WeakMap();
   }
 
   public run(encoder: GPUCommandEncoder, context: RenderContext): void {
@@ -84,23 +90,34 @@ export class SceneRenderPass implements IRenderPass {
 
     core.device.queue.writeBuffer(this.bodyCountBuffer, 0, new Uint32Array([scene.sceneObjectCount]));
 
-    const bindGroup = core.device.createBindGroup({
-      label: 'Scene Render Bind Group',
-      layout: this.bindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.bodyCountBuffer } },
-        { binding: 1, resource: { buffer: scene.sceneObjectsBuffer } },
-        { binding: 2, resource: mainSceneTexture.createView() },
-        { binding: 3, resource: { buffer: scene.sharedCameraUniformBuffer } },
-        { binding: 4, resource: { buffer: context.sceneUniformBuffer! } },
-        { binding: 5, resource: { buffer: scene.shadowCasterBuffer } },
-        { binding: 6, resource: { buffer: scene.shadowCasterCountBuffer } },
-        { binding: 7, resource: { buffer: (context as any).gridVertexBuffer } },
-        { binding: 8, resource: { buffer: (context as any).gridElevationBuffer } },
-        { binding: 9, resource: { buffer: (context as any).gridIndexBuffer } },
-        { binding: 10, resource: (context as any).waterWrite.createView({ dimension: '2d-array' }) },
-      ]
-    });
+    // If the main scene texture changed (e.g., window resize), clear the cache.
+    if (this.currentSceneTexture !== mainSceneTexture) {
+      this.currentSceneTexture = mainSceneTexture;
+      this.bindGroupCache = new WeakMap();
+    }
+
+    const waterWriteTex = (context as any).waterWrite as GPUTexture;
+    let bindGroup = this.bindGroupCache.get(waterWriteTex);
+    if (!bindGroup) {
+      bindGroup = core.device.createBindGroup({
+        label: 'Scene Render Bind Group',
+        layout: this.bindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: this.bodyCountBuffer } },
+          { binding: 1, resource: { buffer: scene.sceneObjectsBuffer } },
+          { binding: 2, resource: mainSceneTexture.createView() },
+          { binding: 3, resource: { buffer: scene.sharedCameraUniformBuffer } },
+          { binding: 4, resource: { buffer: context.sceneUniformBuffer! } },
+          { binding: 5, resource: { buffer: scene.shadowCasterBuffer } },
+          { binding: 6, resource: { buffer: scene.shadowCasterCountBuffer } },
+          { binding: 7, resource: { buffer: (context as any).gridVertexBuffer } },
+          { binding: 8, resource: { buffer: (context as any).gridElevationBuffer } },
+          { binding: 9, resource: { buffer: (context as any).gridIndexBuffer } },
+          { binding: 10, resource: waterWriteTex.createView({ dimension: '2d-array' }) },
+        ]
+      });
+      this.bindGroupCache.set(waterWriteTex, bindGroup);
+    }
 
     const pass = encoder.beginComputePass();
     pass.setPipeline(this.pipeline);

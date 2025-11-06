@@ -142,16 +142,22 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
         if (dot(hit_sphere.emissive_and_terrain_flag.xyz, hit_sphere.emissive_and_terrain_flag.xyz) > 0.1) {
             surface_color = hit_sphere.emissive_and_terrain_flag.xyz;
-        } else if (hit_sphere.emissive_and_terrain_flag.w > 0.5) { // has terrain
-            let ground_color = shade_planet_surface(rec, hit_sphere, hit_sphere_pos_relative, ray, scene, camera, water_state);
-            let view_atmos = get_sky_color(
-                Ray(ray.origin - hit_sphere_pos_relative, ray.direction),
-                hit_sphere.pos_high_and_radius.w, hit_sphere.terrain_params.x,
-                hit_sphere_pos_relative,
-                light_dir_to_source, light_color,
-                scene, rec.t, &shadow_casters, shadowParams, camera, hit_sphere_pos_relative
-            );
-            surface_color = ground_color * view_atmos.transmittance + view_atmos.in_scattering;
+		} else if (hit_sphere.emissive_and_terrain_flag.w > 0.5) { // has terrain
+			let ground_color = shade_planet_surface(rec, hit_sphere, hit_sphere_pos_relative, ray, scene, camera, water_state);
+
+			let canHaveAtmosphere = hit_sphere.albedo_and_atmos_flag.w > 0.5;
+			if (atmosphereEnabled && canHaveAtmosphere) {
+				let view_atmos = get_sky_color(
+					Ray(ray.origin - hit_sphere_pos_relative, ray.direction),
+					hit_sphere.pos_high_and_radius.w, hit_sphere.terrain_params.x,
+					hit_sphere_pos_relative,
+					light_dir_to_source, light_color,
+					scene, rec.t, &shadow_casters, shadowParams, camera, hit_sphere_pos_relative
+				);
+				surface_color = ground_color * view_atmos.transmittance + view_atmos.in_scattering;
+			} else {
+				surface_color = ground_color;
+			}
         } else { // No terrain (simple sphere, e.g. gas giant placeholder)
             let diffuse_intensity = max(dot(rec.normal, light_dir_to_source), 0.0);
             let shadow_ray = Ray(rec.p + rec.normal * 0.2, light_dir_to_source);

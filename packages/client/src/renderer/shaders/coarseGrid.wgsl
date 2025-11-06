@@ -14,37 +14,41 @@ struct GridIndices {
 @group(0) @binding(8) var<storage, read> grid_elevations: GridElevations;
 @group(0) @binding(9) var<storage, read> grid_indices: GridIndices;
 
-fn barycentric_weights(p: vec3f, a: vec3f, b: vec3f, c: vec3f) -> vec3f {
-  let v0 = b - a;
-  let v1 = c - a;
-  let v2 = p - a;
-  let d00 = dot(v0, v0);
-  let d01 = dot(v0, v1);
-  let d11 = dot(v1, v1);
-  let d20 = dot(v2, v0);
-  let d21 = dot(v2, v1);
-  let denom = d00 * d11 - d01 * d01;
-  let v = (d11 * d20 - d01 * d21) / denom;
-  let w = (d00 * d21 - d01 * d20) / denom;
-  let u = 1.0 - v - w;
-  return vec3f(u, v, w);
+// NEW Barycentric weights for a point p inside a spherical triangle (a,b,c)
+// All vectors are assumed to be normalized (directions from the sphere center).
+fn barycentric_weights_spherical(p: vec3f, a: vec3f, b: vec3f, c: vec3f) -> vec3f {
+  let n = cross(b - a, c - a); // Normal of the planar triangle
+  // Areas of the sub-triangles
+  let area_pbc = dot(n, cross(b - p, c - p));
+  let area_pca = dot(n, cross(c - p, a - p));
+  let area_pab = dot(n, cross(a - p, b - p));
+  // The total area is the sum of the sub-areas.
+  let total_area_inv = 1.0 / (area_pbc + area_pca + area_pab);
+  // The weights are the ratio of the sub-areas to the total area.
+  return vec3f(area_pbc, area_pca, area_pab) * total_area_inv;
 }
 
-fn project_point_to_triangle_plane(p: vec3f, a: vec3f, b: vec3f, c: vec3f) -> vec3f {
-  let n = normalize(cross(b - a, c - a));
-  let d = dot(n, p - a);
-  return p - d * n;
-}
-
-fn inside_barycentric(bc: vec3f) -> bool {
-  return bc.x >= 0.0 && bc.y >= 0.0 && bc.z >= 0.0 && (abs(bc.x + bc.y + bc.z - 1.0) <= 1e-3);
-}
-
-// Returns interpolated elevation sampled from the coarse grid
+// NEW interpolation function using spherical logic.
 fn interpolate_triangle(p: vec3f, a: vec3f, b: vec3f, c: vec3f, ea: f32, eb: f32, ec: f32) -> f32 {
-  let proj = project_point_to_triangle_plane(p, a, b, c);
-  let bc = barycentric_weights(proj, a, b, c);
-  if (!inside_barycentric(bc)) { return -1.0; }
+  // Determine the triangle's winding order. The cross product of two edges
+  // gives us a vector that points "outward" from the triangle's plane.
+  let outward_normal = normalize(cross(b - a, c - a));
+
+  // A point is inside the spherical triangle if it is "behind" all three
+  // of the great-circle planes defined by the edges. We can test this by
+  // checking the sign of the dot product between the point and the plane's normal.
+  // The plane normal for a great-circle arc (e.g., from A to B) is simply cross(A, B).
+
+  // We determine the correct "sign" by checking which way the outward_normal points
+  // relative to the center of the sphere. The vectors a,b,c point from the center.
+  let winding = sign(dot(outward_normal, a));
+
+  if (sign(dot(cross(a, b), p)) != winding) { return -1.0; }
+  if (sign(dot(cross(b, c), p)) != winding) { return -1.0; }
+  if (sign(dot(cross(c, a), p)) != winding) { return -1.0; }
+
+  // If all checks pass, the point is unambiguously inside.
+  let bc = barycentric_weights_spherical(p, a, b, c);
   return bc.x * ea + bc.y * eb + bc.z * ec;
 }
 
@@ -62,9 +66,9 @@ fn sampleCoarseGrid(world_pos: vec3f) -> f32 {
     let eb = grid_elevations.data[ib];
     let ec = grid_elevations.data[ic];
     let h = interpolate_triangle(world_pos, a, b, c, ea, eb, ec);
-    if (h >= 0.0) { return h; }
+    if (h >= 0.0) { 
+        return h; // Return just the height
+    }
   }
-  return 0.0;
+  return 0.0; // Fallback
 }
-
-

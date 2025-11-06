@@ -104,6 +104,18 @@ export class Renderer {
 
     this.handleResize();
     
+    // Create fixed-size simulation textures once and bake/init simulation state
+    const simGridSize = { width: 1024, height: 1024, depthOrArrayLayers: 6 } as const;
+    const simTextureUsage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
+    this.terrainHeightTexture = this.core.device.createTexture({ size: simGridSize, format: 'r32float', usage: simTextureUsage });
+    this.waterStateTextureA = this.core.device.createTexture({ size: simGridSize, format: 'rgba16float', usage: simTextureUsage });
+    this.waterStateTextureB = this.core.device.createTexture({ size: simGridSize, format: 'rgba16float', usage: simTextureUsage });
+
+    const tempContext = this.createTemporaryRenderContext();
+    this.terrainBakePass.run(tempContext, this.terrainHeightTexture);
+    this.hydraulicsPass.initializeState(this.waterStateTextureA, tempContext, this.terrainHeightTexture);
+    this.hydraulicsPass.initializeState(this.waterStateTextureB, tempContext, this.terrainHeightTexture);
+    
     new ResizeObserver(this.handleResize).observe(this.canvas);
   }
 
@@ -122,7 +134,7 @@ export class Renderer {
     this.textureSize = { width, height };
     this.core.context.configure({ device: this.core.device, format: this.core.presentationFormat });
 
-    [this.mainSceneTexture, this.postFxTextureA, this.postFxTextureB, this.orbitsTexture, this.terrainHeightTexture, this.waterStateTextureA, this.waterStateTextureB]
+    [this.mainSceneTexture, this.postFxTextureA, this.postFxTextureB, this.orbitsTexture]
         .forEach(tex => tex?.destroy());
 
     this.mainSceneTexture = this.core.device.createTexture({ size: this.textureSize, format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT });
@@ -130,18 +142,19 @@ export class Renderer {
     this.postFxTextureB = this.core.device.createTexture({ size: this.textureSize, format: 'rgba16float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
     this.orbitsTexture = this.core.device.createTexture({ size: this.textureSize, format: this.core.presentationFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
 
-    // Simulation grid textures are fixed size, independent of screen resolution
-    const simGridSize = { width: 1024, height: 1024, depthOrArrayLayers: 6 } as const;
-    const simTextureUsage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
-    this.terrainHeightTexture = this.core.device.createTexture({ size: simGridSize, format: 'r32float', usage: simTextureUsage });
-    this.waterStateTextureA = this.core.device.createTexture({ size: simGridSize, format: 'rgba16float', usage: simTextureUsage });
-    this.waterStateTextureB = this.core.device.createTexture({ size: simGridSize, format: 'rgba16float', usage: simTextureUsage });
+    PostFXPass.clearTexture(this.core.device, this.postFxTextureA);
+    PostFXPass.clearTexture(this.core.device, this.postFxTextureB);
+    
+    for (const pipeline of Object.values(this.pipelines)) {
+      pipeline.onResize(this.textureSize, this.core);
+    }
+  }
 
-    // Bake terrain and initialize water based on sea level
-    const tempContext: RenderContext = {
+  private createTemporaryRenderContext(): RenderContext {
+    return {
       core: this.core,
       scene: this.scene,
-      camera: undefined as unknown as Camera, // not used by bake/init
+      camera: undefined as unknown as Camera,
       systemScale: 1.0,
       textureSize: this.textureSize,
       sourceTexture: this.postFxTextureA,
@@ -158,16 +171,6 @@ export class Renderer {
       waterRead: this.waterStateTextureA,
       waterWrite: this.waterStateTextureB,
     } as unknown as RenderContext;
-    this.terrainBakePass.run(tempContext, this.terrainHeightTexture);
-    this.hydraulicsPass.initializeState(this.waterStateTextureA, tempContext, this.terrainHeightTexture);
-    this.hydraulicsPass.initializeState(this.waterStateTextureB, tempContext, this.terrainHeightTexture);
-
-    PostFXPass.clearTexture(this.core.device, this.postFxTextureA);
-    PostFXPass.clearTexture(this.core.device, this.postFxTextureB);
-    
-    for (const pipeline of Object.values(this.pipelines)) {
-      pipeline.onResize(this.textureSize, this.core);
-    }
   }
 
   private async initializeGrid(size: number): Promise<void> {

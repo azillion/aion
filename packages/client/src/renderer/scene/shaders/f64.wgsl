@@ -68,10 +68,6 @@ fn sub_f64_to_f32(a_h: vec3<f32>, a_l: vec3<f32>, b_h: vec3<f32>, b_l: vec3<f32>
 
 // Adds an emulated f64 (a) and a standard f32 (b)
 fn add_f64_f32(a: vec2<f32>, b: f32) -> vec2<f32> {
-    // Fast path when high part is small enough that plain addition is safe
-    if (abs(a.x) < 10000.0) {
-        return vec2<f32>(a.x + b, a.y);
-    }
     let s = two_sum(a.x, b);
     let vh = s.x;
     let vl = a.y + s.y;
