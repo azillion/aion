@@ -392,6 +392,42 @@ test "grid: random walk preserves validity and reciprocity" {
     }
 }
 
+// Invariant: every stepAcrossOrIn output is indexable
+test "grid: step outputs are always indexable" {
+    var g = try planet.Grid.init(std.testing.allocator, 6);
+    defer g.deinit();
+    var m = try g.populateIndices();
+    defer m.deinit();
+
+    for (0..20) |face| {
+        const Ni: isize = @intCast(g.size);
+        var q: isize = -Ni;
+        while (q <= Ni) : (q += 1) {
+            var r: isize = -Ni;
+            while (r <= Ni) : (r += 1) {
+                if (!g.isValid(q, r)) continue;
+                var d: u8 = 0;
+                while (d < 6) : (d += 1) {
+                    const out = g.testStepAcrossOrIn(q, r, face, d);
+                    try expect(g.isValid(out.q, out.r));
+                    const h = planet.Grid.hashCoord(out.q, out.r, out.face);
+                    if (m.get(h) == null) {
+                        const uvw_in = g.testToBaryFace(face, q, r);
+                        const uvw_out = g.testToBaryFace(out.face, out.q, out.r);
+                        std.debug.print("MISS at face={d} q={d} r={d} dir={d} -> nf={d} oq={d} or={d}\n", .{ face, q, r, d, out.face, out.q, out.r });
+                        std.debug.print("  uvw_in =({d},{d},{d})  uvw_out=({d},{d},{d})\n", .{ uvw_in[0], uvw_in[1], uvw_in[2], uvw_out[0], uvw_out[1], uvw_out[2] });
+                        std.debug.print("  axes[f]=[{d},{d},{d}] axes[nf]=[{d},{d},{d}]\n", .{
+                            g.face_axes[face][0],     g.face_axes[face][1],     g.face_axes[face][2],
+                            g.face_axes[out.face][0], g.face_axes[out.face][1], g.face_axes[out.face][2],
+                        });
+                        return error.TestUnexpectedResult;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Neighbor uniqueness and degree invariants across tile classes
 test "grid: neighbor uniqueness and degree invariants" {
     const sizes = [_]usize{ 3, 4, 6, 8 };
@@ -496,6 +532,41 @@ test "grid: pentagon ring closes consistently across seams" {
                 }
                 try expect(has_back);
             }
+        }
+    }
+}
+
+// Projection central-symmetry property: proj(C+d) + proj(C-d) == 2*C
+test "grid: enforceHexWindow symmetry" {
+    const N: isize = 8;
+    const center: [3]isize = .{ N, N, N };
+
+    const displacements = [_][3]isize{
+        .{ 1, 0, -1 },
+        .{ 0, 1, -1 },
+        .{ 1, -1, 0 },
+        .{ -1, 0, 1 },
+        .{ 0, -1, 1 },
+        .{ -1, 1, 0 },
+        .{ 2, -1, -1 },
+        .{ N, -N, 0 },
+        .{ N + 1, -N, -1 },
+        .{ N, 1, -(N + 1) },
+    };
+
+    for (displacements) |d| {
+        const p_fwd: [3]isize = .{ center[0] + d[0], center[1] + d[1], center[2] + d[2] };
+        const p_bwd: [3]isize = .{ center[0] - d[0], center[1] - d[1], center[2] - d[2] };
+
+        const proj_fwd = gridmod.Grid.testEnforceHexWindow(p_fwd, N);
+        const proj_bwd = gridmod.Grid.testEnforceHexWindow(p_bwd, N);
+
+        const sum: [3]isize = .{ proj_fwd[0] + proj_bwd[0], proj_fwd[1] + proj_bwd[1], proj_fwd[2] + proj_bwd[2] };
+        const expected: [3]isize = .{ 2 * N, 2 * N, 2 * N };
+
+        if (!(sum[0] == expected[0] and sum[1] == expected[1] and sum[2] == expected[2])) {
+            std.debug.print("Symmetry failed N={d} d=({d},{d},{d}) sum=({d},{d},{d})\n", .{ N, d[0], d[1], d[2], sum[0], sum[1], sum[2] });
+            try expect(false);
         }
     }
 }

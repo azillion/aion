@@ -248,8 +248,16 @@ pub const Grid = struct {
         };
     }
 
+    inline fn edgeIndexForPair(a: usize, b: usize) usize {
+        const x = if (a < b) a else b;
+        const y = if (a < b) b else a;
+        if (x == 0 and y == 1) return 0;
+        if (x == 1 and y == 2) return 1;
+        return 2; // {0,2}
+    }
+
     fn buildFaceAxes(self: *Grid) void {
-        // Initialize all to identity; we'll fill via BFS
+        // Initialize all to identity; we'll fill via BFS from face 0
         var i: usize = 0;
         while (i < 20) : (i += 1) self.face_axes[i] = .{ 0, 1, 2 };
         var visited: [20]bool = undefined;
@@ -257,7 +265,6 @@ pub const Grid = struct {
         var q: [20]usize = undefined;
         var head: usize = 0;
         var tail: usize = 0;
-        // root face 0 uses canonical axes (0,1,2)
         visited[0] = true;
         q[tail] = 0;
         tail += 1;
@@ -270,10 +277,15 @@ pub const Grid = struct {
                 if (nf >= 20) continue;
                 if (visited[nf]) continue;
                 const perm = self.face_perm[f][e]; // neighbor_idx -> current_idx
+                // inv_perm: current_idx -> neighbor_idx
+                var inv: [3]u8 = .{ 0, 0, 0 };
+                inv[perm[0]] = 0;
+                inv[perm[1]] = 1;
+                inv[perm[2]] = 2;
                 var j: usize = 0;
                 while (j < 3) : (j += 1) {
-                    // Direct composition: axes[nf][j] = axes[f][perm[j]]
-                    self.face_axes[nf][j] = self.face_axes[f][perm[j]];
+                    // axes[nf] = axes[f] ∘ inv_perm  (Pn[j] = Pf[ inv[j] ])
+                    self.face_axes[nf][j] = self.face_axes[f][inv[j]];
                 }
                 visited[nf] = true;
                 q[tail] = nf;
@@ -296,6 +308,103 @@ pub const Grid = struct {
         inv[ax[2]] = 2;
         const uvw_std = .{ uvw_face[inv[0]], uvw_face[inv[1]], uvw_face[inv[2]] };
         return fromBary(@intCast(self.size), uvw_std);
+    }
+
+    inline fn clamp01(x: isize, lo: isize, hi: isize) isize {
+        return if (x < lo) lo else if (x > hi) hi else x;
+    }
+
+    inline fn iabs(x: isize) isize {
+        return if (x < 0) -x else x;
+    }
+
+    inline fn argmin3(a: isize, b: isize, c: isize) usize {
+        if (a <= b and a <= c) return 0;
+        if (b <= a and b <= c) return 1;
+        return 2;
+    }
+
+    inline fn argmax3(a: isize, b: isize, c: isize) usize {
+        if (a >= b and a >= c) return 0;
+        if (b >= a and b >= c) return 1;
+        return 2;
+    }
+
+    inline fn ceil_half_pos(e: isize) isize {
+        return @divTrunc(e + 1, 2);
+    }
+
+    inline fn enforceHexWindow(uvw_in: [3]isize, N: isize) [3]isize {
+        var u: isize = uvw_in[0];
+        var v: isize = uvw_in[1];
+        var w: isize = uvw_in[2];
+        // Fix sum to exactly 3N by nudging smallest/largest as needed.
+        var d: isize = 3 * N - (u + v + w);
+        while (d != 0) {
+            if (d > 0) {
+                const t = argmin3(u, v, w);
+                switch (t) {
+                    0 => u += 1,
+                    1 => v += 1,
+                    else => w += 1,
+                }
+                d -= 1;
+            } else {
+                const t = argmax3(u, v, w);
+                switch (t) {
+                    0 => u -= 1,
+                    1 => v -= 1,
+                    else => w -= 1,
+                }
+                d += 1;
+            }
+        }
+        // Symmetric deviation-space shrink: move extreme deviations toward center until spread <= N
+        var d0: isize = u - N;
+        var d1: isize = v - N;
+        var d2: isize = w - N;
+        // Invariants: d0 + d1 + d2 == 0 always holds
+        while (true) {
+            // find indices of min and max
+            var lo_idx: usize = 0;
+            var hi_idx: usize = 0;
+            var lo_val: isize = d0;
+            var hi_val: isize = d0;
+            if (d1 < lo_val) {
+                lo_val = d1;
+                lo_idx = 1;
+            }
+            if (d2 < lo_val) {
+                lo_val = d2;
+                lo_idx = 2;
+            }
+            if (d1 > hi_val) {
+                hi_val = d1;
+                hi_idx = 1;
+            }
+            if (d2 > hi_val) {
+                hi_val = d2;
+                hi_idx = 2;
+            }
+
+            const spread: isize = hi_val - lo_val;
+            if (spread <= N) break;
+            const t: isize = ceil_half_pos(spread - N);
+            switch (lo_idx) {
+                0 => d0 += t,
+                1 => d1 += t,
+                else => d2 += t,
+            }
+            switch (hi_idx) {
+                0 => d0 -= t,
+                1 => d1 -= t,
+                else => d2 -= t,
+            }
+        }
+        u = N + d0;
+        v = N + d1;
+        w = N + d2;
+        return .{ u, v, w };
     }
 
     // Helper function to hash coordinates for map lookup
@@ -346,15 +455,11 @@ pub const Grid = struct {
         return Vec3{ .x = px, .y = py, .z = pz };
     }
 
-    // removed float-based helpers
-
-    // computeNeighborFaceMapping no longer needed with direct integer transform
-
     // Helper function to check if a hex coordinate is valid for a given size
     pub fn isValid(self: *const Grid, q: isize, r: isize) bool {
         const s = -(q + r);
-        const size_i = @as(isize, @intCast(self.size));
-        return q - s <= size_i and r - q <= size_i and s - r <= size_i;
+        const N = @as(isize, @intCast(self.size));
+        return iabs(q) <= N and iabs(r) <= N and iabs(s) <= N;
     }
 
     // Helper function to check if a tile is on the main icosahedron edge
@@ -364,11 +469,25 @@ pub const Grid = struct {
         return q - s == size_i or r - q == size_i or s - r == size_i;
     }
 
-    // Helper function to check if a tile is a pentagon corner
+    // Helper function to check if a tile is a pentagon corner (face-local)
     pub fn isPenta(self: *const Grid, q: isize, r: isize) bool {
-        const s = -(q + r);
-        const size_i = @as(isize, @intCast(self.size));
-        return q == size_i or r == size_i or s == size_i;
+        // This function remains for existing call sites but is ambiguous without face.
+        // Prefer using isPentaFace where possible.
+        const face: usize = 0;
+        return self.isPentaFace(face, q, r);
+    }
+
+    inline fn isPentaFace(self: *const Grid, face: usize, q: isize, r: isize) bool {
+        const N: isize = @intCast(self.size);
+        const uvw = self.toBaryFace(face, q, r);
+        var zero_count: usize = 0;
+        var has_2N = false;
+        var has_N = false;
+        var i: usize = 0;
+        while (i < 3) : (i += 1) {
+            if (uvw[i] == 0) zero_count += 1 else if (uvw[i] == 2 * N) has_2N = true else if (uvw[i] == N) has_N = true;
+        }
+        return zero_count == 1 and has_2N and has_N;
     }
 
     // Helper function to get which edge a coordinate is on (0..2)
@@ -409,6 +528,11 @@ pub const Grid = struct {
     pub fn testNeighborEdgeMap(self: *const Grid, face: usize, ei: usize) EdgeMap {
         const map = self.neighborEdgeAndReversal(face, ei);
         return .{ .nf = map.nf, .ne = map.ne, .rev = map.rev };
+    }
+
+    // Test helper: expose enforceHexWindow for property-based tests
+    pub fn testEnforceHexWindow(uvw_in: [3]isize, N: isize) [3]isize {
+        return enforceHexWindow(uvw_in, N);
     }
 
     // Test helper: expose neighbor lookup (built at init)
@@ -551,9 +675,8 @@ pub const Grid = struct {
         }
         std.debug.assert(ia < 3 and ib < 3);
 
-        // Neighbor edge index is the one not using {ia, ib}
-        var ne: usize = 0;
-        while (ne < 3) : (ne += 1) if (ne != ia and ne != ib) break;
+        // Neighbor edge index is the edge whose pair is {ia, ib}
+        const ne: usize = edgeIndexForPair(ia, ib);
 
         // Define canonical forward as +1 mod 3
         const next = [_]usize{ 1, 2, 0 };
@@ -586,8 +709,10 @@ pub const Grid = struct {
     fn resolveIndexForPenta(self: *Grid, q: isize, r: isize, face: usize, current_index: usize) struct { usize, usize } {
         const N: isize = @intCast(self.size);
         if (face >= 20) return .{ current_index, current_index + 1 };
+        // Determine local corner by which barycentric component equals 2N
+        const uvw = self.toBaryFace(face, q, r);
         var local: usize = 0; // 0..2
-        if (q == N) local = 0 else if (r == N) local = 1 else local = 2;
+        if (uvw[0] == 2 * N) local = 0 else if (uvw[1] == 2 * N) local = 1 else local = 2;
         const fv = icosa_face_vertices[face];
         const global_1 = fv[local];
         const gv = global_1 - 1; // 0..11
@@ -626,120 +751,7 @@ pub const Grid = struct {
         if (self.neighbors.len > 0) self.allocator.free(self.neighbors);
         self.neighbors = try self.allocator.alloc(NeighborSet, self.tile_count);
 
-        if (@import("builtin").is_test and !test_probe_done) {
-            // One-shot seam probe
-            const f: usize = 6;
-            const ei: usize = 1;
-            const N: isize = @intCast(self.size);
-            const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
-            const a_local = pairs[ei][0];
-            const b_local = pairs[ei][1];
-            var pos_probe: usize = 0;
-            if (self.size >= 6) pos_probe = 3 else if (self.size >= 4) pos_probe = 1 else pos_probe = 0;
-            var uvw_face: [3]isize = .{ 0, 0, 0 };
-            const c_local: usize = 3 - a_local - b_local;
-            uvw_face[c_local] = 0;
-            uvw_face[b_local] = (N + 1) + 2 * @as(isize, @intCast(pos_probe)); // 1,3,... with offset
-            uvw_face[a_local] = 3 * N - uvw_face[b_local]; // sum == 3N
-            std.debug.assert(uvw_face[a_local] >= 0 and uvw_face[a_local] <= 2 * N);
-            std.debug.assert(uvw_face[b_local] >= 0 and uvw_face[b_local] <= 2 * N);
-            const qr = self.fromBaryFace(f, uvw_face);
-            std.debug.print("SEAM PROBE start: f={d} ei={d} pos={d}  uvw_f=({d},{d},{d}) -> (q={d}, r={d})\n", .{ f, ei, pos_probe, uvw_face[0], uvw_face[1], uvw_face[2], qr.q, qr.r });
-            const ei_face_opt = self.faceLocalEdgeIndex(f, qr.q, qr.r);
-            if (ei_face_opt == null) {
-                std.debug.print("  not face-local edge; skipping probe instance\n", .{});
-                test_probe_done = true;
-                // continue without asserting
-            }
-            const ei_face = ei_face_opt orelse ei;
-            if (ei_face != ei) {
-                std.debug.print("  face-local edge index mismatch: got {d}, expected {d}\n", .{ ei_face, ei });
-                test_probe_done = true;
-                // do not assert here; continue
-            }
-            const pos_check = self.getEdgePositionFace(qr.q, qr.r, f, ei);
-            std.debug.print("  pos_check={d}\n", .{pos_check});
-            std.debug.assert(pos_check == pos_probe);
-            var crossed: usize = 0;
-            const edge_len: usize = if (self.size > 0) self.size - 1 else 0;
-            var dir: usize = 0;
-            while (dir < 6) : (dir += 1) {
-                const d = self.testStepAcrossOrIn(qr.q, qr.r, f, @intCast(dir));
-                if (d.face != f) {
-                    crossed += 1;
-                    const uvw_cur = self.toBaryFace(f, qr.q, qr.r);
-                    const uvw_nextf = self.toBaryFace(d.face, d.q, d.r);
-                    const map = self.neighborEdgeAndReversal(f, ei);
-                    const rev_pos: isize = if (map.rev) @as(isize, @intCast(edge_len - 1)) - @as(isize, @intCast(pos_probe)) else @as(isize, @intCast(pos_probe));
-                    std.debug.print("  dir={d}: nf={d} ne={d} rev={any}  uvw_cur=({d},{d},{d}) -> uvw_nf=({d},{d},{d})  next=(f={d},q={d},r={d})  pos'={d}\n", .{ dir, map.nf, map.ne, map.rev, uvw_cur[0], uvw_cur[1], uvw_cur[2], uvw_nextf[0], uvw_nextf[1], uvw_nextf[2], d.face, d.q, d.r, self.getEdgePositionFace(d.q, d.r, d.face, map.ne) });
-                    // (A) violated component corresponds to opposite of edge
-                    const duvw_std = dirBary(DIRS[dir][0], DIRS[dir][1]);
-                    const ax = self.face_axes[f];
-                    const duvw_face = .{ duvw_std[ax[0]], duvw_std[ax[1]], duvw_std[ax[2]] };
-                    const uvw_try = .{ uvw_cur[0] + duvw_face[0], uvw_cur[1] + duvw_face[1], uvw_cur[2] + duvw_face[2] };
-                    var viol_cn: usize = 2;
-                    if (uvw_try[0] < 0 or uvw_try[0] > 2 * N) {
-                        viol_cn = 0;
-                    } else if (uvw_try[1] < 0 or uvw_try[1] > 2 * N) {
-                        viol_cn = 1;
-                    } else {
-                        viol_cn = 2;
-                    }
-                    const opp_map = [_]usize{ 1, 2, 0 };
-                    const expected_edge = opp_map[viol_cn];
-                    std.debug.assert(expected_edge == ei);
-                    // (B) position direction alignment
-                    const pos_nf = self.getEdgePositionFace(d.q, d.r, map.nf, map.ne);
-                    const ei_dest_opt = self.faceLocalEdgeIndex(map.nf, d.q, d.r);
-                    const on_expected_edge = (ei_dest_opt != null and ei_dest_opt.? == map.ne);
-                    // Exception: if only (b,a) inequality is violated in neighbor basis and c==0 (on seam),
-                    // a 1-tick repair may need to touch b, shifting pos by ±1. Permit that specific case.
-                    var allow_delta1 = false;
-                    {
-                        const perm_n = self.face_perm[f][ei];
-                        const uvw_n_pre = applyPerm3(uvw_cur, perm_n);
-                        const duvw_n_pre = applyPerm3(duvw_face, perm_n);
-                        const pre0: isize = uvw_n_pre[0] + duvw_n_pre[0];
-                        const pre1: isize = uvw_n_pre[1] + duvw_n_pre[1];
-                        const pre2: isize = uvw_n_pre[2] + duvw_n_pre[2];
-                        const Nloc: isize = @intCast(self.size);
-                        switch (map.ne) {
-                            0 => {
-                                const d_ba: isize = pre1 - pre0; // (b=1,a=0)
-                                const d_cb: isize = pre2 - pre1; // (c=2,b=1)
-                                const d_ac: isize = pre0 - pre2; // (a=0,c=2)
-                                if (d_ba > Nloc and d_cb <= Nloc and d_ac <= Nloc and uvw_n_pre[2] == 0) allow_delta1 = true;
-                            },
-                            1 => {
-                                const d_ba: isize = pre2 - pre1; // (b=2,a=1)
-                                const d_cb: isize = pre0 - pre2; // (c=0,b=2)
-                                const d_ac: isize = pre1 - pre0; // (a=1,c=0)
-                                if (d_ba > Nloc and d_cb <= Nloc and d_ac <= Nloc and uvw_n_pre[0] == 0) allow_delta1 = true;
-                            },
-                            2 => {
-                                const d_ba: isize = pre0 - pre2; // (b=0,a=2)
-                                const d_cb: isize = pre1 - pre0; // (c=1,b=0)
-                                const d_ac: isize = pre2 - pre1; // (a=2,c=1)
-                                if (d_ba > Nloc and d_cb <= Nloc and d_ac <= Nloc and uvw_n_pre[1] == 0) allow_delta1 = true;
-                            },
-                            else => {},
-                        }
-                    }
-                    if (!on_expected_edge) {
-                        // Destination is interior on neighbor face; pos' is not meaningful.
-                        // Skip strict mirroring in this case.
-                    } else if (allow_delta1) {
-                        const diff: isize = (@as(isize, @intCast(pos_nf)) - rev_pos);
-                        const adiff: isize = if (diff < 0) -diff else diff;
-                        std.debug.assert(adiff == 1);
-                    } else {
-                        std.debug.assert(pos_nf == rev_pos);
-                    }
-                }
-            }
-            std.debug.print("  crossed={d} (should be 2)\n", .{crossed});
-            test_probe_done = true;
-        }
+        // (tests) seam probe removed
         // Build reverse map once to avoid O(n^2) scans
         var rev = try self.allocator.alloc(std.ArrayListUnmanaged(Coord), self.tile_count);
         defer {
@@ -768,7 +780,7 @@ pub const Grid = struct {
             var vv: usize = 0;
             while (vv < vcount) : (vv += 1) {
                 const cvar = if (variants_slice.len == 0) self.coords[i] else variants_slice[vv];
-                if (self.isPenta(cvar.q, cvar.r)) {
+                if (self.isPentaFace(cvar.face, cvar.q, cvar.r)) {
                     any_penta = true;
                     break;
                 }
@@ -779,94 +791,39 @@ pub const Grid = struct {
             var out_count: u8 = 0;
             vv = 0;
             while (vv < vcount and out_count < cap) : (vv += 1) {
-                var tmp6: [6]Coord = undefined;
-                var tmp5: [5]Coord = undefined;
                 const cvar = if (variants_slice.len == 0) self.coords[i] else variants_slice[vv];
-                var ncount: u8 = 0;
-                if (self.isPenta(cvar.q, cvar.r)) {
-                    ncount = self.neighbor_penta(cvar.q, cvar.r, cvar.face, &tmp5);
-                    var k: usize = 0;
-                    while (k < ncount and out_count < cap) : (k += 1) {
-                        const h = hashCoord(tmp5[k].q, tmp5[k].r, tmp5[k].face);
-                        const idx_opt = coord_to_index.get(h);
-                        if (@import("builtin").is_test) std.debug.assert(idx_opt != null);
-                        const idx = idx_opt orelse i;
-                        if (idx == i and debug_nbr_logs < 24) {
-                            if (@import("builtin").is_test) {
-                                std.debug.print("miss penta map: i={d} (f={d},q={d},r={d}) -> (f={d},q={d},r={d})\n", .{ i, cvar.face, cvar.q, cvar.r, tmp5[k].face, tmp5[k].q, tmp5[k].r });
-                                debug_nbr_logs += 1;
-                            }
-                        }
-                        if (idx == i) continue;
-                        // dedup
-                        var seen = false;
-                        var s: usize = 0;
-                        while (s < out_count) : (s += 1) {
-                            if (out_ids[s] == idx) {
-                                seen = true;
-                                break;
-                            }
-                        }
-                        if (!seen) {
-                            out_ids[out_count] = idx;
-                            out_count += 1;
+                const is_penta = self.isPentaFace(cvar.face, cvar.q, cvar.r);
+                const start_dir: u8 = if (is_penta) pentaStartDir(cvar.q, cvar.r, @intCast(self.size)) else 0;
+                const limit: u8 = if (is_penta) 5 else 6;
+
+                var k: u8 = 0;
+                while (k < limit and out_count < cap) : (k += 1) {
+                    const dir: u8 = (start_dir + k) % 6;
+                    const cand = self.stepAcrossOrIn(cvar.q, cvar.r, cvar.face, dir, &.{});
+                    const h = hashCoord(cand.q, cand.r, cand.face);
+                    const idx_opt = coord_to_index.get(h);
+                    if (@import("builtin").is_test and idx_opt == null) {
+                        const uvw_dbg2 = self.toBaryFace(cand.face, cand.q, cand.r);
+                        const round2 = self.fromBaryFace(cand.face, uvw_dbg2);
+                        const valid2 = self.isValid(cand.q, cand.r);
+                        std.debug.print("IDX MISS {s}: i={d} src(f={d},q={d},r={d}) -> out(f={d},q={d},r={d}) valid={any}\n", .{ if (is_penta) "penta" else if (self.isEdge(cvar.q, cvar.r)) "edge" else "inner", i, cvar.face, cvar.q, cvar.r, cand.face, cand.q, cand.r, valid2 });
+                        std.debug.print("  uvw_out=({d},{d},{d}) round=(q={d},r={d})\n", .{ uvw_dbg2[0], uvw_dbg2[1], uvw_dbg2[2], round2.q, round2.r });
+                        std.debug.assert(idx_opt != null);
+                    }
+                    const idx = idx_opt orelse i;
+                    if (idx == i) continue;
+                    // dedup
+                    var seen = false;
+                    var s: usize = 0;
+                    while (s < out_count) : (s += 1) {
+                        if (out_ids[s] == idx) {
+                            seen = true;
+                            break;
                         }
                     }
-                } else if (self.isEdge(cvar.q, cvar.r)) {
-                    ncount = self.neighbor_edge(cvar.q, cvar.r, cvar.face, &tmp6);
-                    var k: usize = 0;
-                    while (k < ncount and out_count < cap) : (k += 1) {
-                        const h = hashCoord(tmp6[k].q, tmp6[k].r, tmp6[k].face);
-                        const idx_opt = coord_to_index.get(h);
-                        if (@import("builtin").is_test) std.debug.assert(idx_opt != null);
-                        const idx = idx_opt orelse i;
-                        if (idx == i and debug_nbr_logs < 24) {
-                            if (@import("builtin").is_test) {
-                                std.debug.print("miss edge map: i={d} (f={d},q={d},r={d}) -> (f={d},q={d},r={d})\n", .{ i, cvar.face, cvar.q, cvar.r, tmp6[k].face, tmp6[k].q, tmp6[k].r });
-                                debug_nbr_logs += 1;
-                            }
-                        }
-                        if (idx == i) continue;
-                        var seen = false;
-                        var s: usize = 0;
-                        while (s < out_count) : (s += 1) {
-                            if (out_ids[s] == idx) {
-                                seen = true;
-                                break;
-                            }
-                        }
-                        if (!seen) {
-                            out_ids[out_count] = idx;
-                            out_count += 1;
-                        }
-                    }
-                } else {
-                    ncount = self.neighbor_inner(cvar.q, cvar.r, cvar.face, &tmp6);
-                    var k: usize = 0;
-                    while (k < ncount and out_count < cap) : (k += 1) {
-                        const h = hashCoord(tmp6[k].q, tmp6[k].r, tmp6[k].face);
-                        const idx_opt = coord_to_index.get(h);
-                        if (@import("builtin").is_test) std.debug.assert(idx_opt != null);
-                        const idx = idx_opt orelse i;
-                        if (idx == i and debug_nbr_logs < 24) {
-                            if (@import("builtin").is_test) {
-                                std.debug.print("miss inner map: i={d} (f={d},q={d},r={d}) -> (f={d},q={d},r={d})\n", .{ i, cvar.face, cvar.q, cvar.r, tmp6[k].face, tmp6[k].q, tmp6[k].r });
-                                debug_nbr_logs += 1;
-                            }
-                        }
-                        if (idx == i) continue;
-                        var seen = false;
-                        var s: usize = 0;
-                        while (s < out_count) : (s += 1) {
-                            if (out_ids[s] == idx) {
-                                seen = true;
-                                break;
-                            }
-                        }
-                        if (!seen) {
-                            out_ids[out_count] = idx;
-                            out_count += 1;
-                        }
+                    if (!seen) {
+                        out_ids[out_count] = idx;
+                        out_count += 1;
                     }
                 }
             }
@@ -884,16 +841,6 @@ pub const Grid = struct {
         // No symmetry patch: correctness comes from aliasing during index generation
     }
 
-    fn neighbor_inner(self: *const Grid, q: isize, r: isize, face: usize, out: *[6]Coord) u8 {
-        _ = self;
-        const dirs = [_][2]isize{ .{ 1, 0 }, .{ 1, -1 }, .{ 0, -1 }, .{ -1, 0 }, .{ -1, 1 }, .{ 0, 1 } };
-        var k: usize = 0;
-        while (k < 6) : (k += 1) {
-            out.*[k] = .{ .q = q + dirs[k][0], .r = r + dirs[k][1], .face = face };
-        }
-        return 6;
-    }
-
     // _rotate60ccw_n removed; rotate direction index instead
 
     fn transformCoord(_: *const Grid, q: isize, r: isize, edge_idx: usize) struct { q: isize, r: isize } {
@@ -904,16 +851,6 @@ pub const Grid = struct {
             2 => .{ .q = -r, .r = -q },
             else => .{ .q = q, .r = r },
         };
-    }
-
-    fn neighbor_edge(self: *const Grid, q: isize, r: isize, face: usize, out: *[6]Coord) u8 {
-        var count: u8 = 0;
-        var i: usize = 0;
-        while (i < 6) : (i += 1) {
-            out.*[count] = self.stepAcrossOrIn(q, r, face, @intCast(i), &.{});
-            count += 1;
-        }
-        return count;
     }
 
     fn pentaStartDir(q: isize, r: isize, N: isize) u8 {
@@ -937,255 +874,61 @@ pub const Grid = struct {
         if (uvw_try[0] >= 0 and uvw_try[1] >= 0 and uvw_try[2] >= 0 and
             uvw_try[0] <= maxB and uvw_try[1] <= maxB and uvw_try[2] <= maxB)
         {
-            const back = self.fromBaryFace(face, uvw_try);
-            if (@import("builtin").is_test) std.debug.assert(self.isValid(back.q, back.r));
+            // Check triangle half-plane constraints in STANDARD basis; only enforce if outside
+            const Pf_loc = ax_cur; // std->face
+            var Pfi_loc: [3]u8 = .{ 0, 0, 0 };
+            Pfi_loc[Pf_loc[0]] = 0;
+            Pfi_loc[Pf_loc[1]] = 1;
+            Pfi_loc[Pf_loc[2]] = 2;
+            const uvw_std_try = applyPerm3(uvw_try, Pfi_loc);
+            const d_uw = uvw_std_try[0] - uvw_std_try[2];
+            const d_vu = uvw_std_try[1] - uvw_std_try[0];
+            const d_wv = uvw_std_try[2] - uvw_std_try[1];
+            if (d_uw <= N and d_vu <= N and d_wv <= N) {
+                const back_same = self.fromBaryFace(face, uvw_try);
+                return .{ .q = back_same.q, .r = back_same.r, .face = face };
+            }
+            const uvw_std_enf = enforceHexWindow(uvw_std_try, N);
+            const uvw_face_out = applyPerm3(uvw_std_enf, Pf_loc);
+            const back = self.fromBaryFace(face, uvw_face_out);
             return .{ .q = back.q, .r = back.r, .face = face };
         }
 
-        // choose edge from violated barycentric component (opposite component index)
-        const viol_cn: usize = if (uvw_try[0] < 0 or uvw_try[0] > maxB) 0 else if (uvw_try[1] < 0 or uvw_try[1] > maxB) 1 else 2;
-        const eidx: usize = edgeIndexFromOppositeComponent(viol_cn);
-        if (@import("builtin").is_test) {
-            const expect_eidx = edgeIndexFromOppositeComponent(viol_cn);
-            std.debug.assert(eidx == expect_eidx);
-        }
+        // Determine violated component in STANDARD basis and corresponding edge
+        // Pf : std->face, Pfi : face->std (for current face)
+        const Pf = ax_cur;
+        var Pfi: [3]u8 = .{ 0, 0, 0 };
+        Pfi[Pf[0]] = 0;
+        Pfi[Pf[1]] = 1;
+        Pfi[Pf[2]] = 2;
+        const uvw_std_stepped = applyPerm3(uvw_try, Pfi);
+        const std_viol_cn: usize = if (uvw_std_stepped[0] < 0 or uvw_std_stepped[0] > maxB) 0 else if (uvw_std_stepped[1] < 0 or uvw_std_stepped[1] > maxB) 1 else 2;
+        const eidx: usize = edgeIndexFromOppositeComponent(std_viol_cn);
         const nf = self.face_neighbors[face][eidx][0] - 1;
-        const perm = self.face_perm[face][eidx]; // neighbor_index -> current_index
-
-        const uvw_n = applyPerm3(uvw, perm);
-        const duvw_n = applyPerm3(duvw, perm);
-        var out: [3]isize = .{ uvw_n[0] + duvw_n[0], uvw_n[1] + duvw_n[1], uvw_n[2] + duvw_n[2] };
-
-        // if already inside neighbor, done
-        if (!(out[0] < 0 or out[1] < 0 or out[2] < 0 or out[0] > maxB or out[1] > maxB or out[2] > maxB)) {
-            const back_ok = self.fromBaryFace(nf, out);
-            return .{ .q = back_ok.q, .r = back_ok.r, .face = nf };
-        }
-
+        const perm = self.face_perm[face][eidx]; // neighbor_idx -> current_idx
         if (@import("builtin").is_test) {
-            std.debug.print("xface final: nf={d} out=({d},{d},{d}) window_ok={any}\n", .{ nf, out[0], out[1], out[2], (out[0] - out[2]) <= N and (out[1] - out[0]) <= N and (out[2] - out[1]) <= N });
+            std.debug.print("SEAM STEP: face={d} eidx={d} nf={d} uvw_try=({d},{d},{d}) std=({d},{d},{d})\n", .{
+                face, eidx, nf, uvw_try[0], uvw_try[1], uvw_try[2], uvw_std_stepped[0], uvw_std_stepped[1], uvw_std_stepped[2],
+            });
         }
-
-        // Edge orientation on neighbor face: define a,b along edge; c is seam component
-        const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
-        const ne = self.neighborEdgeAndReversal(face, eidx).ne;
-        const a_local = pairs[ne][0];
-        const b_local = pairs[ne][1];
-        const c_local: usize = 3 - a_local - b_local;
-
-        // 1) Try both partner choices for ±2x compensation, pick best per window/pos rules
-        const viol_idx: usize = if (out[0] < 0 or out[0] > maxB) 0 else if (out[1] < 0 or out[1] > maxB) 1 else 2;
-        const p0: usize = (viol_idx + 1) % 3;
-        const p1: usize = (viol_idx + 2) % 3;
-
-        const reflect = struct {
-            fn withPartner(base: [3]isize, du: [3]isize, viol: usize, partner: usize, maxB_: isize) [3]isize {
-                var o: [3]isize = .{ base[0] + du[0], base[1] + du[1], base[2] + du[2] };
-                const x: isize = if (o[viol] < 0) -o[viol] else o[viol] - maxB_;
-                if (o[viol] < 0) {
-                    o[viol] += 2 * x;
-                    o[partner] -= 2 * x;
-                } else {
-                    o[viol] -= 2 * x;
-                    o[partner] += 2 * x;
-                }
-                return o;
-            }
-        };
-
-        const win = struct {
-            fn check(u: isize, v: isize, w: isize, N_: isize) bool {
-                return (u - w) <= N_ and (v - u) <= N_ and (w - v) <= N_;
-            }
-        };
-
-        const cand0 = reflect.withPartner(uvw_n, duvw_n, viol_idx, p0, maxB);
-        const cand1 = reflect.withPartner(uvw_n, duvw_n, viol_idx, p1, maxB);
-        const c0_ok = win.check(cand0[0], cand0[1], cand0[2], N);
-        const c1_ok = win.check(cand1[0], cand1[1], cand1[2], N);
-
-        const base_b: isize = uvw_n[b_local] + duvw_n[b_local];
-        const scorer = struct {
-            fn score(out_: [3]isize, was_ok: bool, base_b_: isize, c_idx: usize, b_idx: usize) usize {
-                var s: usize = 0;
-                if (!was_ok) s += 100;
-                if (out_[c_idx] != 0) s += 50;
-                const ob = out_[b_idx];
-                const delta_b: isize = if (ob > base_b_) ob - base_b_ else base_b_ - ob;
-                // Note: out_[b_local] used at callsite; we keep signature generic here
-                return s + @as(usize, @intCast(delta_b));
-            }
-        };
-        // Prefer candidate that becomes in-window after a single repair
-        const fixer = struct {
-            fn stepOnce(cur: [3]isize, N_: isize, c_idx: usize, _: usize, maxB_: isize) [3]isize {
-                if ((cur[0] - cur[2]) <= N_ and (cur[1] - cur[0]) <= N_ and (cur[2] - cur[1]) <= N_) return cur;
-                const helper = struct {
-                    fn adjust(o: *[3]isize, dec_idx: usize, inc_idx: usize) void {
-                        o.*[dec_idx] -= 1;
-                        o.*[inc_idx] += 1;
-                    }
-                    fn pick(cur2: [3]isize, dec_idx: usize, inc_idx: usize, keep_c_idx: usize, maxB2: isize) struct { usize, usize } {
-                        const can_dec = cur2[dec_idx] > 0;
-                        const can_inc = cur2[inc_idx] < maxB2;
-                        var d = dec_idx;
-                        var i = inc_idx;
-                        if (!can_dec and can_inc) {
-                            d = inc_idx;
-                            i = dec_idx;
-                        } else if (!can_inc and can_dec) {
-                            d = dec_idx;
-                            i = inc_idx;
-                        }
-                        if (i == keep_c_idx) {
-                            d = dec_idx;
-                            i = inc_idx;
-                        } else if (d == keep_c_idx) {
-                            d = inc_idx;
-                            i = dec_idx;
-                        }
-                        if ((cur2[d] == 0 and cur2[i] < maxB2) or (cur2[i] == maxB2 and cur2[d] > 0)) {
-                            const ad = i;
-                            const ai = d;
-                            if ((cur2[ad] > 0) and (cur2[ai] < maxB2)) {
-                                d = ad;
-                                i = ai;
-                            }
-                        }
-                        return .{ d, i };
-                    }
-                };
-                var out2 = cur;
-                const diff0 = out2[0] - out2[2];
-                const diff1 = out2[1] - out2[0];
-                const diff2 = out2[2] - out2[1];
-                if (diff0 > N_) {
-                    const ch = helper.pick(out2, 0, 2, c_idx, maxB_);
-                    helper.adjust(&out2, ch[0], ch[1]);
-                } else if (diff1 > N_) {
-                    const ch = helper.pick(out2, 1, 0, c_idx, maxB_);
-                    helper.adjust(&out2, ch[0], ch[1]);
-                } else if (diff2 > N_) {
-                    const ch = helper.pick(out2, 2, 1, c_idx, maxB_);
-                    helper.adjust(&out2, ch[0], ch[1]);
-                }
-                return out2;
-            }
-        };
-        const fix0 = fixer.stepOnce(cand0, N, c_local, b_local, maxB);
-        const fix1 = fixer.stepOnce(cand1, N, c_local, b_local, maxB);
-        const f0_ok = (fix0[0] - fix0[2]) <= N and (fix0[1] - fix0[0]) <= N and (fix0[2] - fix0[1]) <= N;
-        const f1_ok = (fix1[0] - fix1[2]) <= N and (fix1[1] - fix1[0]) <= N and (fix1[2] - fix1[1]) <= N;
-        var s0 = scorer.score(cand0, c0_ok, base_b, c_local, b_local);
-        var s1 = scorer.score(cand1, c1_ok, base_b, c_local, b_local);
-        if (!f0_ok) s0 += 25;
-        if (!f1_ok) s1 += 25;
-        out = if (s0 <= s1) cand0 else cand1;
-        if (@import("builtin").is_test) {
-            std.debug.print("xface reflect: face={d} eidx={d} nf={d} ne={d} viol_idx={d} uvw_n=({d},{d},{d}) duvw_n=({d},{d},{d}) cand0=({d},{d},{d}) ok0={any} cand1=({d},{d},{d}) ok1={any} chosen=({d},{d},{d})\n", .{ face, eidx, nf, ne, viol_idx, uvw_n[0], uvw_n[1], uvw_n[2], duvw_n[0], duvw_n[1], duvw_n[2], cand0[0], cand0[1], cand0[2], c0_ok, cand1[0], cand1[1], cand1[2], c1_ok, out[0], out[1], out[2] });
-        }
-
-        // 2) If still outside the window, do minimal repairs on the violating pair(s)
-        var iter: usize = 0;
-        while (!win.check(out[0], out[1], out[2], N) and iter < 3) : (iter += 1) {
-            const helper = struct {
-                fn adjust(o: *[3]isize, dec_idx: usize, inc_idx: usize) void {
-                    o.*[dec_idx] -= 1;
-                    o.*[inc_idx] += 1;
-                }
-                fn pick(cur: [3]isize, dec_idx: usize, inc_idx: usize, keep_c_idx: usize, maxB_: isize) struct { usize, usize } {
-                    // Avoid out-of-bounds adjustments first
-                    const can_dec = cur[dec_idx] > 0;
-                    const can_inc = cur[inc_idx] < maxB_;
-                    if (!can_dec and can_inc) return .{ inc_idx, dec_idx };
-                    if (!can_inc and can_dec) return .{ dec_idx, inc_idx };
-                    if (!can_dec and !can_inc) return .{ dec_idx, inc_idx }; // will be caught later
-                    // Honor keep_c first
-                    var dec_final = dec_idx;
-                    var inc_final = inc_idx;
-                    if (inc_idx == keep_c_idx) {
-                        dec_final = dec_idx;
-                        inc_final = inc_idx;
-                    } else if (dec_idx == keep_c_idx) {
-                        dec_final = inc_idx;
-                        inc_final = dec_idx;
-                    }
-                    // Final safety: avoid OOB with the chosen orientation
-                    if ((cur[dec_final] == 0 and cur[inc_final] < maxB_) or (cur[inc_final] == maxB_ and cur[dec_final] > 0)) {
-                        // flip if possible
-                        const alt_dec = inc_final;
-                        const alt_inc = dec_final;
-                        if ((cur[alt_dec] > 0) and (cur[alt_inc] < maxB_)) {
-                            dec_final = alt_dec;
-                            inc_final = alt_inc;
-                        }
-                    }
-                    return .{ dec_final, inc_final };
-                }
-            };
-            const diff0: isize = out[0] - out[2]; // pair (0,2)
-            const diff1: isize = out[1] - out[0]; // pair (1,0)
-            const diff2: isize = out[2] - out[1]; // pair (2,1)
-            if (diff0 > N) {
-                const choice = helper.pick(out, 0, 2, c_local, maxB);
-                helper.adjust(&out, choice[0], choice[1]);
-            } else if (diff1 > N) {
-                const choice = helper.pick(out, 1, 0, c_local, maxB);
-                helper.adjust(&out, choice[0], choice[1]);
-            } else if (diff2 > N) {
-                const choice = helper.pick(out, 2, 1, c_local, maxB);
-                helper.adjust(&out, choice[0], choice[1]);
-            } else break;
-        }
-
-        if (@import("builtin").is_test) {
-            if (!(out[0] >= 0 and out[1] >= 0 and out[2] >= 0 and out[0] <= maxB and out[1] <= maxB and out[2] <= maxB)) {
-                std.debug.print("xface OOB: face={d} eidx={d} nf={d} N={d}\n", .{ face, eidx, nf, N });
-                std.debug.print(" uvw=({d},{d},{d}) du=({d},{d},{d})\n", .{ uvw[0], uvw[1], uvw[2], duvw[0], duvw[1], duvw[2] });
-                std.debug.print(" uvw_n=({d},{d},{d}) du_n=({d},{d},{d}) perm=[{d},{d},{d}]\n", .{ uvw_n[0], uvw_n[1], uvw_n[2], duvw_n[0], duvw_n[1], duvw_n[2], perm[0], perm[1], perm[2] });
-                std.debug.print(" out=({d},{d},{d}) viol={d} maxB={d}\n", .{ out[0], out[1], out[2], 0, maxB });
-            }
-        }
-        std.debug.assert(out[0] >= 0 and out[1] >= 0 and out[2] >= 0);
-        std.debug.assert(out[0] <= maxB and out[1] <= maxB and out[2] <= maxB);
-        const back = self.fromBaryFace(nf, out);
-        if (@import("builtin").is_test) {
-            const ok = self.isValid(back.q, back.r);
-            if (!ok) {
-                std.debug.print("landing invalid: nf={d} out=({d},{d},{d}) -> (q={d},r={d})\n", .{ nf, out[0], out[1], out[2], back.q, back.r });
-            }
-            std.debug.assert(ok);
-        }
+        // Build inv(perm): current_idx -> neighbor_idx
+        var invp: [3]u8 = .{ 0, 0, 0 };
+        invp[perm[0]] = 0;
+        invp[perm[1]] = 1;
+        invp[perm[2]] = 2;
+        // Neighbor face axes Pn : std->neighbor_face
+        const Pn = self.face_axes[nf];
+        // Full transform: T = Pn ∘ invp ∘ Pfi
+        // Transform base position and step vector separately, enforce in STANDARD basis
+        const uvw_std = applyPerm3(uvw, Pfi);
+        const duvw_std_local = applyPerm3(duvw, Pfi);
+        const uvw_nb_std = applyPerm3(uvw_std, invp);
+        const duvw_nb_std = applyPerm3(duvw_std_local, invp);
+        const out_nb_std_try = .{ uvw_nb_std[0] + duvw_nb_std[0], uvw_nb_std[1] + duvw_nb_std[1], uvw_nb_std[2] + duvw_nb_std[2] };
+        const out_nb_std = enforceHexWindow(out_nb_std_try, N);
+        const uvw_nf = applyPerm3(out_nb_std, Pn);
+        const back = self.fromBaryFace(nf, uvw_nf);
         return .{ .q = back.q, .r = back.r, .face = nf };
-    }
-
-    fn neighbor_penta(self: *const Grid, q: isize, r: isize, face: usize, out: *[5]Coord) u8 {
-        const N: isize = @intCast(self.size);
-        var tmp: [6]Coord = undefined;
-        const start: u8 = pentaStartDir(q, r, N);
-        var i: u8 = 0;
-        while (i < 6) : (i += 1) {
-            const dir: u8 = (start + i) % 6;
-            tmp[i] = stepAcrossOrIn(self, q, r, face, dir, &.{});
-        }
-        var used: usize = 0;
-        var k: usize = 0;
-        while (k < 6 and used < 5) : (k += 1) {
-            const cand = tmp[k];
-            var dup = false;
-            var j: usize = 0;
-            while (j < used) : (j += 1) {
-                if (out.*[j].q == cand.q and out.*[j].r == cand.r and out.*[j].face == cand.face) {
-                    dup = true;
-                    break;
-                }
-            }
-            if (!dup) {
-                out.*[used] = cand;
-                used += 1;
-            }
-        }
-        return @intCast(used);
     }
 
     pub fn populateIndices(self: *Grid) !std.AutoHashMap(u64, usize) {
@@ -1204,8 +947,9 @@ pub const Grid = struct {
                     const coord_hash = hashCoord(q, r, face);
                     var resolved_index: usize = undefined;
                     var next_index: usize = undefined;
-                    if (self.isEdge(q, r)) {
-                        if (self.isPenta(q, r)) {
+                    const ei_opt = self.faceLocalEdgeIndex(face, q, r);
+                    if (ei_opt != null) {
+                        if (self.isPentaFace(face, q, r)) {
                             const result = self.resolveIndexForPenta(q, r, face, index);
                             resolved_index = result[0];
                             next_index = result[1];
