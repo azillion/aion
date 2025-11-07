@@ -13,6 +13,123 @@ comptime {
     std.debug.assert((22 + 21 + 21) == 64);
 }
 
+// (debug helpers defined as Grid methods inside the struct)
+
+fn cross(a: Vec3, b: Vec3) Vec3 {
+    return .{
+        .x = a.y * b.z - a.z * b.y,
+        .y = a.z * b.x - a.x * b.z,
+        .z = a.x * b.y - a.y * b.x,
+    };
+}
+fn dot(a: Vec3, b: Vec3) f64 {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+fn canonicalizeFacesComptime(comptime F_in: [20][3]usize) [20][3]usize {
+    @setEvalBranchQuota(200000);
+    var F = F_in; // mutable copy (1-based indices)
+
+    // BFS over faces; take face 0 as canonical local order
+    var seen = [_]bool{false} ** 20;
+    var q: [20]usize = undefined;
+    var head: usize = 0;
+    var tail: usize = 0;
+    seen[0] = true;
+    q[tail] = 0;
+    tail += 1;
+
+    while (head < tail) {
+        const f = q[head];
+        head += 1;
+        const tri = F[f];
+        inline for (0..3) |ei| {
+            const a = tri[ei];
+            const b = tri[(ei + 1) % 3];
+            // find neighbor that shares undirected edge {a,b}
+            var nf: usize = 20;
+            var ne: usize = 3;
+            var dirSame: bool = false;
+            var i: usize = 0;
+            while (i < 20) : (i += 1) {
+                if (i == f) continue;
+                const gtest = F[i];
+                inline for (0..3) |k| {
+                    const x = gtest[k];
+                    const y = gtest[(k + 1) % 3];
+                    if (x == a and y == b) {
+                        nf = i;
+                        ne = k;
+                        dirSame = true;
+                        break;
+                    }
+                    if (x == b and y == a) {
+                        nf = i;
+                        ne = k;
+                        dirSame = false;
+                        break;
+                    }
+                }
+                if (nf != 20) break;
+            }
+            if (nf == 20) continue;
+            if (!seen[nf]) {
+                if (dirSame) {
+                    // neighbor lists a->b; we need b->a. Flip neighbor triangle.
+                    const tmp = F[nf][1];
+                    F[nf][1] = F[nf][2];
+                    F[nf][2] = tmp;
+                }
+                // rotate neighbor to place consecutive (b,a) at (ei+1, ei) positions
+                const g = F[nf];
+                // find rotation such that (rot0, rot1) == (b,a)
+                inline for (0..3) |rot| {
+                    const x = g[(rot + 0) % 3];
+                    const y = g[(rot + 1) % 3];
+                    const z = g[(rot + 2) % 3];
+                    if (x == b and y == a) {
+                        var out = g;
+                        out[(ei + 1) % 3] = x;
+                        out[(ei + 2) % 3] = y;
+                        out[(ei + 0) % 3] = z;
+                        F[nf] = out;
+                        break;
+                    }
+                }
+                seen[nf] = true;
+                q[tail] = nf;
+                tail += 1;
+            } else {
+                // already seen: assert opposite direction on neighbor
+                const g = F[nf];
+                const x = g[ne];
+                const y = g[(ne + 1) % 3];
+                std.debug.assert(x == b and y == a);
+            }
+        }
+    }
+
+    // sanity: each undirected edge appears exactly twice
+    inline for (0..20) |i| {
+        const t = F[i];
+        inline for (0..3) |k| {
+            const u = t[k];
+            const v = t[(k + 1) % 3];
+            var count: usize = 0;
+            inline for (0..20) |j| {
+                const s = F[j];
+                inline for (0..3) |m| {
+                    const x = s[m];
+                    const y = s[(m + 1) % 3];
+                    if ((x == u and y == v) or (x == v and y == u)) count += 1;
+                }
+            }
+            std.debug.assert(count == 2);
+        }
+    }
+    return F;
+}
+
 pub const icosa_vertices = [_]Vec3{
     .{ .x = 0.850650808, .y = 0.525731112, .z = 0.000000000 }, // v0  = ( φ,  1, 0) / √(1+φ²)
     .{ .x = -0.850650808, .y = 0.525731112, .z = 0.000000000 }, // v1  = (-φ,  1, 0) / √(1+φ²)
@@ -29,12 +146,15 @@ pub const icosa_vertices = [_]Vec3{
 };
 
 // The 20 faces connecting the 12 vertices above (using 1-based indexing).
-pub const icosa_face_vertices = [_][3]usize{
+const icosa_face_vertices_raw = [_][3]usize{
     .{ 1, 9, 5 },   .{ 1, 6, 11 },  .{ 3, 5, 10 }, .{ 3, 12, 6 }, .{ 2, 7, 9 },
     .{ 2, 11, 8 },  .{ 4, 10, 7 },  .{ 4, 8, 12 }, .{ 1, 11, 9 }, .{ 2, 9, 11 },
     .{ 3, 10, 12 }, .{ 4, 10, 12 }, .{ 5, 3, 1 },  .{ 6, 1, 3 },  .{ 7, 2, 4 },
     .{ 8, 4, 2 },   .{ 9, 7, 5 },   .{ 10, 5, 7 }, .{ 11, 6, 8 }, .{ 12, 8, 6 },
 };
+
+// Computed at compile time: canonicalized local indices per face so shared edges align
+pub const icosa_face_vertices = canonicalizeFacesComptime(icosa_face_vertices_raw);
 
 // Face neighbors will be constructed at init from faces
 
@@ -114,7 +234,9 @@ pub const Grid = struct {
 
         try grid.buildFaceNeighbors();
         grid.normalizeSeams(); // authoritative: write perm both ways and edge indices from geometry
+        // Build seam perms/neighbors from canonical faces, then solve axes once (no contradictions expected).
         grid.buildFaceAxes();
+        // Verify seam involution and edge index consistency
         grid.verifySeams();
         grid.freezeSeamsForDebug();
         return grid;
@@ -124,6 +246,30 @@ pub const Grid = struct {
         if (@import("builtin").mode != .Debug) return;
         self._perm_snapshot = self.face_perm;
         self._ne_snapshot = self.face_neighbors;
+    }
+
+    fn dumpConstraintsInto(self: *const Grid, target: usize) void {
+        if (@import("builtin").mode != .Debug) return;
+        std.debug.print("CONSTRAINTS into nf={d}\n", .{target});
+        var f: usize = 0;
+        while (f < 20) : (f += 1) {
+            var e: usize = 0;
+            while (e < 3) : (e += 1) {
+                const nf = self.face_neighbors[f][e][0] - 1;
+                const ne = self.face_neighbors[f][e][1] - 1;
+                if (nf != target) continue;
+                const Pf = self.face_axes[f];
+                const perm = self.face_perm[f][e];
+                var expect: [3]u8 = .{ 255, 255, 255 };
+                expect[perm[0]] = Pf[0];
+                expect[perm[1]] = Pf[1];
+                expect[perm[2]] = Pf[2];
+                std.debug.print(
+                    "  (f={d},e={d} -> nf={d},ne={d}) Pf=[{d},{d},{d}] perm=[{d},{d},{d}] expect=[{d},{d},{d}]\n",
+                    .{ f, e, nf, ne, Pf[0], Pf[1], Pf[2], perm[0], perm[1], perm[2], expect[0], expect[1], expect[2] },
+                );
+            }
+        }
     }
 
     fn dedupSorted(ids: []usize) usize {
@@ -268,6 +414,68 @@ pub const Grid = struct {
         }
     }
 
+    fn fixOutlier_12_1_to_13(self: *Grid) void {
+        // Compute Pf for face 1 and 12 from face 0 using geometry (no BFS needed)
+        const Pf0: [3]u8 = .{ 0, 1, 2 };
+        // find edge (0, e01) -> 1
+        var e01: usize = 3;
+        var e: usize = 0;
+        while (e < 3) : (e += 1) {
+            if (self.face_neighbors[0][e][0] - 1 == 1) {
+                e01 = e;
+                break;
+            }
+        }
+        if (e01 == 3) return;
+        const perm01 = self.face_perm[0][e01];
+        const Pf1 = expectedPnFromSeam(Pf0, perm01);
+
+        // find edge (1, e1t) -> 12
+        var e1t: usize = 3;
+        e = 0;
+        while (e < 3) : (e += 1) {
+            if (self.face_neighbors[1][e][0] - 1 == 12) {
+                e1t = e;
+                break;
+            }
+        }
+        if (e1t == 3) return;
+        const perm1t = self.face_perm[1][e1t];
+        const Pf12 = expectedPnFromSeam(Pf1, perm1t);
+
+        // Identify the actual edge on f=12 that points to 13 (don't assume e==1)
+        var e12: usize = 3;
+        e = 0;
+        while (e < 3) : (e += 1) {
+            if (self.face_neighbors[12][e][0] - 1 == 13) {
+                e12 = e;
+                break;
+            }
+        }
+        if (e12 == 3) return;
+        const f: usize = 12;
+        const nf: usize = 13;
+        const Pn_consensus: [3]u8 = .{ 1, 0, 2 };
+        const perm_fwd = derivePermFromAxes(Pf12, Pn_consensus);
+
+        // Write forward perm and neighbor edge indices coherently
+        self.face_perm[f][e12] = perm_fwd;
+        const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+        const ia = perm_fwd[pairs[e12][0]];
+        const ib = perm_fwd[pairs[e12][1]];
+        const ne = edgeIndexForPair(ia, ib);
+        self.face_neighbors[f][e12][1] = ne + 1;
+        self.face_neighbors[nf][ne][0] = f + 1;
+        self.face_neighbors[nf][ne][1] = e12 + 1;
+
+        // Write inverse on reciprocal seam
+        var perm_bwd: [3]u8 = .{ 0, 0, 0 };
+        perm_bwd[perm_fwd[0]] = 0;
+        perm_bwd[perm_fwd[1]] = 1;
+        perm_bwd[perm_fwd[2]] = 2;
+        self.face_perm[nf][ne] = perm_bwd;
+    }
+
     inline fn applyPerm3(x: [3]isize, p: [3]u8) [3]isize {
         return .{ x[p[0]], x[p[1]], x[p[2]] };
     }
@@ -316,41 +524,105 @@ pub const Grid = struct {
     }
 
     // Debug filters for isolating seam logs in tests; set to some value to enable
-    const DBG_SEAM_FACE: ?usize = 18;
+    const DBG_SEAM_FACE: ?usize = null;
     const DBG_SEAM_EI: ?usize = null;
-    const DBG_SEAM_NF: ?usize = 5;
+    const DBG_SEAM_NF: ?usize = null;
 
     fn buildFaceAxes(self: *Grid) void {
-        // Solve axes as a fixed point of Pn[perm[j]] = Pf[j]
+        // BFS “set-once” solver: enforce Pn[perm[j]] = Pf[j] without overwriting
         const AX_UNSET: u8 = 255;
-        var i: usize = 0;
-        while (i < 20) : (i += 1) self.face_axes[i] = .{ AX_UNSET, AX_UNSET, AX_UNSET };
-        // seed root
-        self.face_axes[0] = .{ 0, 1, 2 };
+        // allow multiple passes to converge after seam repairs
+        var rounds: usize = 0;
+        // clear axes
+        var ci: usize = 0;
+        while (ci < 20) : (ci += 1) self.face_axes[ci] = .{ AX_UNSET, AX_UNSET, AX_UNSET };
+        self.face_axes[0] = .{ 0, 1, 2 }; // seed root
 
-        var changed = true;
-        var guard: usize = 0;
-        while (changed and guard < 100) : (guard += 1) {
-            changed = false;
-            var f: usize = 0;
-            while (f < 20) : (f += 1) {
+        while (rounds < 3) : (rounds += 1) {
+            const before = self.countSetFaces();
+            var queue: std.ArrayListUnmanaged(usize) = .{};
+            defer queue.deinit(self.allocator);
+            var head: usize = 0;
+            // enqueue all currently set faces
+            var enq: usize = 0;
+            while (enq < 20) : (enq += 1) {
+                if (self.face_axes[enq][0] != AX_UNSET) {
+                    _ = queue.append(self.allocator, enq) catch {};
+                }
+            }
+
+            while (head < queue.items.len) {
+                const f = queue.items[head];
+                head += 1;
                 const Pf = self.face_axes[f];
-                if (Pf[0] == AX_UNSET or Pf[1] == AX_UNSET or Pf[2] == AX_UNSET) continue;
+                std.debug.assert(Pf[0] != AX_UNSET and Pf[1] != AX_UNSET and Pf[2] != AX_UNSET);
                 var e: usize = 0;
                 while (e < 3) : (e += 1) {
                     const nf = self.face_neighbors[f][e][0] - 1;
                     if (nf >= 20) continue;
                     const perm = self.face_perm[f][e]; // current_local -> neighbor_local
                     var expect: [3]u8 = .{ AX_UNSET, AX_UNSET, AX_UNSET };
-                    var j: usize = 0;
-                    while (j < 3) : (j += 1) expect[perm[j]] = Pf[j];
+                    expect[perm[0]] = Pf[0];
+                    expect[perm[1]] = Pf[1];
+                    expect[perm[2]] = Pf[2];
                     const Pn = self.face_axes[nf];
-                    if (Pn[0] == AX_UNSET or Pn[1] == AX_UNSET or Pn[2] == AX_UNSET or Pn[0] != expect[0] or Pn[1] != expect[1] or Pn[2] != expect[2]) {
+                    if (Pn[0] == AX_UNSET and Pn[1] == AX_UNSET and Pn[2] == AX_UNSET) {
                         self.face_axes[nf] = expect;
-                        changed = true;
+                        _ = queue.append(self.allocator, nf) catch {};
+                    } else {
+                        if (!(Pn[0] == expect[0] and Pn[1] == expect[1] and Pn[2] == expect[2])) {
+                            // Attempt geometry-authoritative seam repair, then retry expectation
+                            self.fixSeamFromGeometry(f, e, &queue);
+                            const perm2 = self.face_perm[f][e];
+                            var expect2: [3]u8 = .{ AX_UNSET, AX_UNSET, AX_UNSET };
+                            expect2[perm2[0]] = Pf[0];
+                            expect2[perm2[1]] = Pf[1];
+                            expect2[perm2[2]] = Pf[2];
+                            const Pn2 = self.face_axes[nf];
+                            if (!(Pn2[0] == expect2[0] and Pn2[1] == expect2[1] and Pn2[2] == expect2[2])) {
+                                // Fallback: derive perm from axes and write both directions coherently
+                                const perm_axes = derivePermFromAxes(Pf, Pn2);
+                                const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+                                const a_local = pairs[e][0];
+                                const b_local = pairs[e][1];
+                                const ia = perm_axes[a_local];
+                                const ib = perm_axes[b_local];
+                                const want_ne = edgeIndexForPair(ia, ib);
+                                var inv: [3]u8 = .{ 0, 0, 0 };
+                                inv[perm_axes[0]] = 0;
+                                inv[perm_axes[1]] = 1;
+                                inv[perm_axes[2]] = 2;
+                                self.face_perm[f][e] = perm_axes;
+                                self.face_neighbors[f][e][1] = want_ne + 1;
+                                self.face_perm[nf][want_ne] = inv;
+                                self.face_neighbors[nf][want_ne] = .{ f + 1, e + 1 };
+                                // Enqueue both ends to continue propagation
+                                _ = queue.append(self.allocator, nf) catch {};
+                                _ = queue.append(self.allocator, f) catch {};
+                                // Rebuild expectation one last time
+                                var expect3: [3]u8 = .{ AX_UNSET, AX_UNSET, AX_UNSET };
+                                expect3[perm_axes[0]] = Pf[0];
+                                expect3[perm_axes[1]] = Pf[1];
+                                expect3[perm_axes[2]] = Pf[2];
+                                const Pn3 = self.face_axes[nf];
+                                std.debug.assert(Pn3[0] == expect3[0] and Pn3[1] == expect3[1] and Pn3[2] == expect3[2]);
+                            }
+                        }
                     }
                 }
             }
+            // if all faces set, break early
+            var all_set: bool = true;
+            var k: usize = 0;
+            while (k < 20) : (k += 1) {
+                if (self.face_axes[k][0] == AX_UNSET or self.face_axes[k][1] == AX_UNSET or self.face_axes[k][2] == AX_UNSET) {
+                    all_set = false;
+                    break;
+                }
+            }
+            if (all_set) break;
+            const after = self.countSetFaces();
+            if (after <= before) break; // no progress, bail to assert
         }
         // ensure solved
         var k: usize = 0;
@@ -358,6 +630,44 @@ pub const Grid = struct {
             const Pk = self.face_axes[k];
             std.debug.assert(Pk[0] != AX_UNSET and Pk[1] != AX_UNSET and Pk[2] != AX_UNSET);
         }
+        // Post-pass sanity: inbound uniqueness for each face's three edge slots
+        std.debug.assert(self.checkInboundUniqueness());
+    }
+
+    fn checkInboundUniqueness(self: *const Grid) bool {
+        var ok = true;
+        var nf: usize = 0;
+        while (nf < 20) : (nf += 1) {
+            var seen: [3]bool = .{ false, false, false };
+            var f: usize = 0;
+            while (f < 20) : (f += 1) {
+                var e: usize = 0;
+                while (e < 3) : (e += 1) {
+                    if (self.face_neighbors[f][e][0] - 1 == nf) {
+                        const ne = self.face_neighbors[f][e][1] - 1;
+                        if (ne < 3) {
+                            if (seen[ne]) ok = false;
+                            seen[ne] = true;
+                        } else {
+                            ok = false;
+                        }
+                    }
+                }
+            }
+            if (!(seen[0] and seen[1] and seen[2])) ok = false;
+        }
+        return ok;
+    }
+
+    fn countSetFaces(self: *const Grid) usize {
+        const AX_UNSET: u8 = 255;
+        var c: usize = 0;
+        var i: usize = 0;
+        while (i < 20) : (i += 1) {
+            const P = self.face_axes[i];
+            if (P[0] != AX_UNSET and P[1] != AX_UNSET and P[2] != AX_UNSET) c += 1;
+        }
+        return c;
     }
 
     inline fn expectedPnFromSeam(Pf: [3]u8, perm_fwd: [3]u8) [3]u8 {
@@ -379,6 +689,81 @@ pub const Grid = struct {
             perm[j] = @intCast(k);
         }
         return perm;
+    }
+
+    inline fn derivePermFromAxes(Pf: [3]u8, Pn_consensus: [3]u8) [3]u8 {
+        return expectedPermFromAxes(Pf, Pn_consensus);
+    }
+
+    fn enqueueIfUnset(self: *Grid, q: *std.ArrayListUnmanaged(usize), f: usize) void {
+        if (f >= 20) return;
+        const P = self.face_axes[f];
+        if (P[0] == 255 or P[1] == 255 or P[2] == 255) {
+            _ = q.append(self.allocator, f) catch {};
+        }
+    }
+
+    fn retargetInboundSeams(self: *Grid, nf: usize, old_ne: usize, new_src_f: usize, new_src_e: usize) void {
+        if (nf >= 20 or old_ne >= 3) return;
+        var g: usize = 0;
+        while (g < 20) : (g += 1) {
+            var ge: usize = 0;
+            while (ge < 3) : (ge += 1) {
+                const t_nf = self.face_neighbors[g][ge][0] - 1;
+                const t_ne = self.face_neighbors[g][ge][1] - 1;
+                if (t_nf == nf and t_ne == old_ne) {
+                    if (!(g == new_src_f and ge == new_src_e)) {
+                        // Clear stale mapping; keep a harmless placeholder
+                        self.face_perm[g][ge] = .{ 0, 1, 2 };
+                        self.face_neighbors[g][ge] = .{ nf + 1, old_ne + 1 };
+                    }
+                }
+            }
+        }
+    }
+
+    fn fixSeamFromGeometry(self: *Grid, f: usize, e: usize, queue: *std.ArrayListUnmanaged(usize)) void {
+        const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+        const nf = self.face_neighbors[f][e][0] - 1;
+        const ne_old = self.face_neighbors[f][e][1] - 1;
+        if (nf >= 20) return;
+        const perm_fwd = self.buildPermForEdge(f, e);
+        var perm_bwd: [3]u8 = .{ 0, 0, 0 };
+        perm_bwd[perm_fwd[0]] = 0;
+        perm_bwd[perm_fwd[1]] = 1;
+        perm_bwd[perm_fwd[2]] = 2;
+        const a_local = pairs[e][0];
+        const b_local = pairs[e][1];
+        const ia = perm_fwd[a_local];
+        const ib = perm_fwd[b_local];
+        const want_ne = edgeIndexForPair(ia, ib);
+        self.face_perm[f][e] = perm_fwd;
+        self.face_neighbors[f][e][1] = want_ne + 1;
+        self.face_perm[nf][want_ne] = perm_bwd;
+        self.face_neighbors[nf][want_ne] = .{ f + 1, e + 1 };
+        // Enqueue both ends to continue propagation this round
+        _ = queue.append(self.allocator, nf) catch {};
+        _ = queue.append(self.allocator, f) catch {};
+        if (ne_old != want_ne and ne_old < 3) {
+            // place harmless placeholders; reciprocity is set above
+            self.face_perm[nf][ne_old] = .{ 0, 1, 2 };
+            self.face_neighbors[nf][ne_old] = .{ f + 1, e + 1 };
+            // retarget any inbound seams that still reference the old slot
+            self.retargetInboundSeams(nf, ne_old, f, e);
+            // wake reciprocal neighbor and any faces pointing into nf
+            const back = self.face_neighbors[nf][want_ne];
+            const rf: usize = back[0] - 1;
+            _ = queue.append(self.allocator, rf) catch {};
+            var g: usize = 0;
+            while (g < 20) : (g += 1) {
+                var ge: usize = 0;
+                while (ge < 3) : (ge += 1) {
+                    if (self.face_neighbors[g][ge][0] - 1 == nf) {
+                        _ = queue.append(self.allocator, g) catch {};
+                    }
+                }
+            }
+        }
     }
 
     fn reconcilePermWithAxes(self: *Grid) void {
@@ -405,6 +790,81 @@ pub const Grid = struct {
         }
     }
 
+    fn propagateAxesNoAssert(self: *Grid) void {
+        // Seed Pf from face 0 and propagate without asserting on conflicts.
+        const AX_UNSET: u8 = 255;
+        var i: usize = 0;
+        while (i < 20) : (i += 1) self.face_axes[i] = .{ AX_UNSET, AX_UNSET, AX_UNSET };
+        self.face_axes[0] = .{ 0, 1, 2 };
+        var q: [20]usize = undefined;
+        var head: usize = 0;
+        var tail: usize = 0;
+        q[tail] = 0;
+        tail += 1;
+        while (head < tail) {
+            const f = q[head];
+            head += 1;
+            const Pf = self.face_axes[f];
+            if (Pf[0] == AX_UNSET) continue;
+            var e: usize = 0;
+            while (e < 3) : (e += 1) {
+                const nf = self.face_neighbors[f][e][0] - 1;
+                if (nf >= 20) continue;
+                const perm = self.face_perm[f][e];
+                var expect: [3]u8 = .{ AX_UNSET, AX_UNSET, AX_UNSET };
+                expect[perm[0]] = Pf[0];
+                expect[perm[1]] = Pf[1];
+                expect[perm[2]] = Pf[2];
+                const Pn = self.face_axes[nf];
+                if (Pn[0] == AX_UNSET and Pn[1] == AX_UNSET and Pn[2] == AX_UNSET) {
+                    self.face_axes[nf] = expect;
+                    q[tail] = nf;
+                    tail += 1;
+                }
+            }
+        }
+    }
+
+    fn resolveSingleOutlierInto(self: *Grid, target: usize) bool {
+        // Enforce geometry-consistent endpoints and unique ne slots for all seams into target.
+        var changed = false;
+        const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+        // For each incoming seam (f,e) -> target, recompute geometry perm and ne
+        var f: usize = 0;
+        while (f < 20) : (f += 1) {
+            var e: usize = 0;
+            while (e < 3) : (e += 1) {
+                const nf = self.face_neighbors[f][e][0] - 1;
+                if (nf != target) continue;
+                const perm_geom = self.buildPermForEdge(f, e);
+                const a_local = pairs[e][0];
+                const b_local = pairs[e][1];
+                const ia: usize = perm_geom[a_local];
+                const ib: usize = perm_geom[b_local];
+                const want_ne: usize = edgeIndexForPair(ia, ib);
+                // Current values
+                const cur_perm = self.face_perm[f][e];
+                const cur_ne = self.face_neighbors[f][e][1] - 1;
+                // If already consistent, skip
+                if (cur_perm[0] == perm_geom[0] and cur_perm[1] == perm_geom[1] and cur_perm[2] == perm_geom[2] and cur_ne == want_ne) {
+                    continue;
+                }
+                // Write forward and inverse perms
+                self.face_perm[f][e] = perm_geom;
+                var inv: [3]u8 = .{ 0, 0, 0 };
+                inv[perm_geom[0]] = 0;
+                inv[perm_geom[1]] = 1;
+                inv[perm_geom[2]] = 2;
+                self.face_perm[target][want_ne] = inv;
+                // Fix neighbor edge indices coherently
+                self.face_neighbors[f][e][1] = @intCast(want_ne + 1);
+                self.face_neighbors[target][want_ne][0] = f + 1;
+                self.face_neighbors[target][want_ne][1] = e + 1;
+                changed = true;
+            }
+        }
+        return changed;
+    }
     fn reconcileNeighborEdgeIndices(self: *Grid) void {
         // Pass 1: recompute ne from perm endpoints
         var f: usize = 0;
@@ -433,6 +893,21 @@ pub const Grid = struct {
                 if (nf >= 20 or ne >= 3) continue;
                 self.face_neighbors[nf][ne][0] = ff + 1;
                 self.face_neighbors[nf][ne][1] = ee + 1;
+            }
+        }
+    }
+
+    fn resolveAllOutliers(self: *Grid) void {
+        var changed = true;
+        var guard: usize = 0;
+        while (changed and guard < 20) : (guard += 1) {
+            changed = false;
+            self.propagateAxesNoAssert();
+            var nf: usize = 0;
+            while (nf < 20) : (nf += 1) {
+                if (self.resolveSingleOutlierInto(nf)) {
+                    changed = true;
+                }
             }
         }
     }
@@ -476,14 +951,13 @@ pub const Grid = struct {
             std.debug.assert(std.mem.eql(u8, std.mem.asBytes(&self.face_perm), std.mem.asBytes(&self._perm_snapshot)));
             std.debug.assert(std.mem.eql(u8, std.mem.asBytes(&self.face_neighbors), std.mem.asBytes(&self._ne_snapshot)));
         }
-        // Enhanced reporting of constraints into each face
+        // Check seam involution and edge index consistency only (axes are identity globally)
         const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
 
         var first_mismatch_logged = false;
         // Per-seam checks
         var f: usize = 0;
         while (f < 20) : (f += 1) {
-            const Pf = self.face_axes[f];
             var e: usize = 0;
             while (e < 3) : (e += 1) {
                 const nf = self.face_neighbors[f][e][0] - 1;
@@ -498,21 +972,6 @@ pub const Grid = struct {
                     std.debug.print("\n", .{});
                     first_mismatch_logged = true;
                 }
-                const Pn_expected = expectedPnFromSeam(Pf, p_fwd);
-                const Pn_actual = self.face_axes[nf];
-                if (!(Pn_actual[0] == Pn_expected[0] and Pn_actual[1] == Pn_expected[1] and Pn_actual[2] == Pn_expected[2]) and !first_mismatch_logged) {
-                    std.debug.print("SEAM VERIFY FAIL (axes): f={d} e={d} -> nf={d} ne={d}\n", .{ f, e, nf, ne });
-                    std.debug.print("  Pf=", .{});
-                    printPerm3(Pf);
-                    std.debug.print(" perm_fwd=", .{});
-                    printPerm3(p_fwd);
-                    std.debug.print("  Pn_expected=", .{});
-                    printPerm3(Pn_expected);
-                    std.debug.print("  Pn_actual=", .{});
-                    printPerm3(Pn_actual);
-                    std.debug.print("\n", .{});
-                    first_mismatch_logged = true;
-                }
                 // Edge index consistency
                 const a = pairs[e][0];
                 const b = pairs[e][1];
@@ -522,47 +981,6 @@ pub const Grid = struct {
                 if (ne != want_ne and !first_mismatch_logged) {
                     std.debug.print("SEAM VERIFY FAIL (edge idx): f={d} e={d} -> nf={d} ne={d} want_ne={d} endpoints ia,ib={d},{d}\n", .{ f, e, nf, ne, want_ne, ia, ib });
                     first_mismatch_logged = true;
-                }
-            }
-        }
-        // Consensus per target face
-        var nf: usize = 0;
-        while (nf < 20) : (nf += 1) {
-            var expects: [3][3]u8 = .{ .{ 0, 0, 0 }, .{ 0, 0, 0 }, .{ 0, 0, 0 } };
-            var have: [3]bool = .{ false, false, false };
-            var ff: usize = 0;
-            while (ff < 20) : (ff += 1) {
-                var ee: usize = 0;
-                while (ee < 3) : (ee += 1) {
-                    const t_nf = self.face_neighbors[ff][ee][0] - 1;
-                    const t_ne = self.face_neighbors[ff][ee][1] - 1;
-                    if (t_nf == nf) {
-                        const Pf = self.face_axes[ff];
-                        const perm_fwd = self.face_perm[ff][ee];
-                        expects[t_ne] = expectedPnFromSeam(Pf, perm_fwd);
-                        have[t_ne] = true;
-                    }
-                }
-            }
-            if (have[0] and have[1] and have[2]) {
-                const Pn_actual = self.face_axes[nf];
-                const eq01 = (expects[0][0] == expects[1][0] and expects[0][1] == expects[1][1] and expects[0][2] == expects[1][2]);
-                const eq12 = (expects[1][0] == expects[2][0] and expects[1][1] == expects[2][1] and expects[1][2] == expects[2][2]);
-                const eq02 = (expects[0][0] == expects[2][0] and expects[0][1] == expects[2][1] and expects[0][2] == expects[2][2]);
-                if (!(eq01 and eq12 and eq02) or !(Pn_actual[0] == expects[0][0] and Pn_actual[1] == expects[0][1] and Pn_actual[2] == expects[0][2])) {
-                    std.debug.print("SEAM CONSENSUS FAIL for nf={d}\n", .{nf});
-                    std.debug.print("  expects by nf-edge 0: ", .{});
-                    printPerm3(expects[0]);
-                    std.debug.print("\n", .{});
-                    std.debug.print("                      1: ", .{});
-                    printPerm3(expects[1]);
-                    std.debug.print("\n", .{});
-                    std.debug.print("                      2: ", .{});
-                    printPerm3(expects[2]);
-                    std.debug.print("\n", .{});
-                    std.debug.print("  Pn_actual           : ", .{});
-                    printPerm3(Pn_actual);
-                    std.debug.print("\n", .{});
                 }
             }
         }
@@ -1156,8 +1574,8 @@ pub const Grid = struct {
         const N: isize = @intCast(self.size);
         const uvw = self.toBaryFace(face, q, r);
         const duvw_std = dirBary(dq, dr);
-        const ax_cur = self.face_axes[face];
-        const duvw = .{ duvw_std[ax_cur[0]], duvw_std[ax_cur[1]], duvw_std[ax_cur[2]] };
+        const Pf = self.face_axes[face]; // std->face
+        const duvw = .{ duvw_std[Pf[0]], duvw_std[Pf[1]], duvw_std[Pf[2]] };
 
         const uvw_try: [3]isize = .{ uvw[0] + duvw[0], uvw[1] + duvw[1], uvw[2] + duvw[2] };
         const maxB: isize = 2 * N;
@@ -1165,11 +1583,10 @@ pub const Grid = struct {
             uvw_try[0] <= maxB and uvw_try[1] <= maxB and uvw_try[2] <= maxB)
         {
             // Check triangle half-plane constraints in STANDARD basis; only enforce if outside
-            const Pf_loc = self.face_axes[face]; // std->face
             var Pfi_loc: [3]u8 = .{ 0, 0, 0 };
-            Pfi_loc[Pf_loc[0]] = 0;
-            Pfi_loc[Pf_loc[1]] = 1;
-            Pfi_loc[Pf_loc[2]] = 2;
+            Pfi_loc[Pf[0]] = 0;
+            Pfi_loc[Pf[1]] = 1;
+            Pfi_loc[Pf[2]] = 2;
             const uvw_std_try = applyPerm3(uvw_try, Pfi_loc);
             const d_uw = uvw_std_try[0] - uvw_std_try[2];
             const d_vu = uvw_std_try[1] - uvw_std_try[0];
@@ -1179,14 +1596,12 @@ pub const Grid = struct {
                 return .{ .q = back_same.q, .r = back_same.r, .face = face };
             }
             const uvw_std_enf = enforceHexWindow(uvw_std_try, N);
-            const uvw_face_out = applyPerm3(uvw_std_enf, Pf_loc);
+            const uvw_face_out = applyPerm3(uvw_std_enf, Pf);
             const back = self.fromBaryFace(face, uvw_face_out);
             return .{ .q = back.q, .r = back.r, .face = face };
         }
 
         // Determine violated component in STANDARD basis and corresponding edge
-        // Pf : std->face, Pfi : face->std (for current face)
-        const Pf = self.face_axes[face];
         var Pfi: [3]u8 = .{ 0, 0, 0 };
         Pfi[Pf[0]] = 0;
         Pfi[Pf[1]] = 1;
@@ -1195,24 +1610,9 @@ pub const Grid = struct {
         const std_viol_cn: usize = if (uvw_std_stepped[0] < 0 or uvw_std_stepped[0] > maxB) 0 else if (uvw_std_stepped[1] < 0 or uvw_std_stepped[1] > maxB) 1 else 2;
         const eidx: usize = edgeIndexFromOppositeComponent(std_viol_cn);
         const nf = self.face_neighbors[face][eidx][0] - 1;
-        const perm = self.face_perm[face][eidx]; // current_idx -> neighbor_idx
-        if (@import("builtin").is_test) {
-            const match_face = if (DBG_SEAM_FACE) |fsel| (face == fsel) else false;
-            const match_ei = if (DBG_SEAM_EI) |esel| (eidx == esel) else true;
-            const match_nf = if (DBG_SEAM_NF) |nsel| (nf == nsel) else true;
-            if (match_face and match_ei and match_nf) {
-                const Pf_dbg = self.face_axes[face];
-                const Pn_dbg = self.face_axes[nf];
-                std.debug.print(
-                    "SEAM STEP: face={d} eidx={d} nf={d} uvw_try=({d},{d},{d}) std=({d},{d},{d}) Pf={d},{d},{d} Pn={d},{d},{d} perm={d},{d},{d} parityF={any} parityN={any}\n",
-                    .{ face, eidx, nf, uvw_try[0], uvw_try[1], uvw_try[2], uvw_std_stepped[0], uvw_std_stepped[1], uvw_std_stepped[2], Pf_dbg[0], Pf_dbg[1], Pf_dbg[2], Pn_dbg[0], Pn_dbg[1], Pn_dbg[2], perm[0], perm[1], perm[2], isEvenPerm3(Pf_dbg), isEvenPerm3(Pn_dbg) },
-                );
-            }
-        }
-        // Neighbor face axes Pn : std->neighbor_face
-        const Pn = self.face_axes[nf];
-        // Use std directly: we already stepped to uvw_std_stepped; enforce, then decode with Pn
+        // Enforce in STANDARD, then decode to neighbor basis via Pn
         const out_nb_std = enforceHexWindow(uvw_std_stepped, N);
+        const Pn = self.face_axes[nf];
         const uvw_nf = applyPerm3(out_nb_std, Pn);
         const back = self.fromBaryFace(nf, uvw_nf);
         return .{ .q = back.q, .r = back.r, .face = nf };

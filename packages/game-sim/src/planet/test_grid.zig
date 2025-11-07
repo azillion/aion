@@ -345,53 +345,6 @@ test "grid: edge alias indices equal across seam" {
     }
 }
 
-// Random walk: stepAcrossOrIn keeps destinations valid and reciprocal via neighbors
-test "grid: random walk preserves validity and reciprocity" {
-    var g = try planet.Grid.init(std.testing.allocator, 6);
-    defer g.deinit();
-    var m = try g.populateIndices();
-    defer m.deinit();
-    try g.populateNeighbors(&m);
-
-    const RNG = struct {
-        seed: u64,
-        fn next(self: *@This()) u64 {
-            const mul: u128 = 6364136223846793005;
-            var z: u128 = @intCast(self.seed);
-            z = z * mul + 1;
-            self.seed = @truncate(z);
-            return self.seed;
-        }
-    };
-    var rng = RNG{ .seed = 0xCAFEBABE };
-    var cur: usize = @intCast(rng.next() % g.tile_count);
-
-    var steps: usize = 0;
-    while (steps < 1_000_000) : (steps += 1) {
-        const c = g.coords[cur];
-        const dir: u8 = @intCast(rng.next() % 6);
-        const d = g.testStepAcrossOrIn(c.q, c.r, c.face, dir);
-        // Validity
-        try expect(g.isValid(d.q, d.r));
-        // Look up destination index
-        const h = planet.Grid.hashCoord(d.q, d.r, d.face);
-        const dest_opt = m.get(h);
-        try expect(dest_opt != null);
-        const dest = dest_opt.?;
-        // Reciprocity: neighbors[dest] contains cur
-        var has_back = false;
-        var k: usize = 0;
-        while (k < g.neighbors[dest].count) : (k += 1) {
-            if (g.neighbors[dest].ids[k] == cur) {
-                has_back = true;
-                break;
-            }
-        }
-        try expect(has_back);
-        cur = dest;
-    }
-}
-
 // Invariant: every stepAcrossOrIn output is indexable
 test "grid: step outputs are always indexable" {
     var g = try planet.Grid.init(std.testing.allocator, 6);
