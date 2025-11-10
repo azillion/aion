@@ -762,11 +762,63 @@ pub const Grid = struct {
     ) bool {
         var k: u8 = 0;
         while (k < 6) : (k += 1) {
-            const back_raw = self.stepAcrossOrIn(from.q, from.r, from.face, k, &STEP_PROBE_SENTINEL);
+            const back_raw = self.stepAcrossOrIn(from.q, from.r, from.face, k, &STEP_NORMAL_SENTINEL);
+            // 1) Canonicalize on the landing face
             const back_can = self.canonicalizeAliasOnFace(back_raw.q, back_raw.r, back_raw.face);
-            const h_back = hashCoord(back_can.q, back_can.r, back_can.face);
-            if (coord_to_index.get(h_back)) |idx_back| {
-                if (idx_back == src_idx) return true;
+            const h0 = hashCoord(back_can.q, back_can.r, back_can.face);
+            if (coord_to_index.get(h0)) |idx0| if (idx0 == src_idx) return true;
+
+            // 2) Local cross-face try: project this 3D point to adjacent faces
+            const N: isize = @intCast(self.size);
+            const P = self.faceCenterPosition(back_can.q, back_can.r, back_can.face);
+            var e: usize = 0;
+            while (e < 3) : (e += 1) {
+                const nf_try = self.face_neighbors[back_can.face][e][0] - 1;
+                if (nf_try >= 20) continue;
+                const ubv = baryFromPointOnFace(P.x, P.y, P.z, nf_try);
+                const scale: f64 = @floatFromInt(@as(i64, @intCast(3 * N)));
+                const u_s = ubv[0] * scale;
+                const v_s = ubv[1] * scale;
+                const w_s = ubv[2] * scale;
+                const uvw_i = roundBaryToSum3N(u_s, v_s, w_s, N);
+                const uvw_enf = enforceHexWindow(uvw_i, N);
+                const back2 = self.fromBaryFace(nf_try, uvw_enf);
+                const h2 = hashCoord(back2.q, back2.r, nf_try);
+                if (coord_to_index.get(h2)) |idx2| if (idx2 == src_idx) return true;
+            }
+        }
+        return false;
+    }
+
+    inline fn anyDirReverseHitsIndexViaAliasSet(
+        self: *const Grid,
+        alias_set: *const std.AutoHashMap(u64, void),
+        from: Coord,
+    ) bool {
+        const N: isize = @intCast(self.size);
+        var k: u8 = 0;
+        while (k < 6) : (k += 1) {
+            const back_raw = self.stepAcrossOrIn(from.q, from.r, from.face, k, &STEP_NORMAL_SENTINEL);
+            // 1) Landing face canonical
+            const back_can = self.canonicalizeAliasOnFace(back_raw.q, back_raw.r, back_raw.face);
+            const h0 = hashCoord(back_can.q, back_can.r, back_can.face);
+            if (alias_set.contains(h0)) return true;
+            // 2) Adjacent faces of landing face
+            const P = self.faceCenterPosition(back_can.q, back_can.r, back_can.face);
+            var e: usize = 0;
+            while (e < 3) : (e += 1) {
+                const nf_try = self.face_neighbors[back_can.face][e][0] - 1;
+                if (nf_try >= 20) continue;
+                const ubv = baryFromPointOnFace(P.x, P.y, P.z, nf_try);
+                const scale: f64 = @floatFromInt(@as(i64, @intCast(3 * N)));
+                const u_s = ubv[0] * scale;
+                const v_s = ubv[1] * scale;
+                const w_s = ubv[2] * scale;
+                const uvw_i = roundBaryToSum3N(u_s, v_s, w_s, N);
+                const uvw_enf = enforceHexWindow(uvw_i, N);
+                const back2 = self.fromBaryFace(nf_try, uvw_enf);
+                const h2 = hashCoord(back2.q, back2.r, nf_try);
+                if (alias_set.contains(h2)) return true;
             }
         }
         return false;
@@ -1810,6 +1862,25 @@ pub const Grid = struct {
         if (self.neighbors.len > 0) self.allocator.free(self.neighbors);
         self.neighbors = try self.allocator.alloc(NeighborSet, self.tile_count);
 
+        // Build alias membership sets per index for robust mutuality checks
+        var aliases_by_index = try self.allocator.alloc(std.AutoHashMap(u64, void), self.tile_count);
+        defer {
+            var t: usize = 0;
+            while (t < self.tile_count) : (t += 1) aliases_by_index[t].deinit();
+            self.allocator.free(aliases_by_index);
+        }
+        {
+            var i_init: usize = 0;
+            while (i_init < self.tile_count) : (i_init += 1) {
+                aliases_by_index[i_init] = std.AutoHashMap(u64, void).init(self.allocator);
+            }
+            var it_aliases = coord_to_index.iterator();
+            while (it_aliases.next()) |e| {
+                const idx = e.value_ptr.*;
+                _ = try aliases_by_index[idx].put(e.key_ptr.*, {});
+            }
+        }
+
         // (tests) seam probe removed
         // Normalize home aliases: prefer face 0 if an alias exists for that index
         {
@@ -1874,7 +1945,43 @@ pub const Grid = struct {
                     if (idx_opt == null) continue;
                     const idx = idx_opt.?;
                     if (idx == i) continue;
-                    if (!self.anyDirReverseHitsIndex(coord_to_index, i, fwd)) continue;
+                    const mutual = self.anyDirReverseHitsIndexViaAliasSet(&aliases_by_index[i], fwd);
+                    if (!mutual) {
+                        if (@import("builtin").is_test and TEST_VERBOSE and i == 7) {
+                            std.debug.print("MUTUALITY FAIL i=7 dir={d} fwd=(f{d},q{d},r{d}) j={d}\n", .{ dir, fwd.face, fwd.q, fwd.r, idx });
+                            var rr: u8 = 0;
+                            while (rr < 6) : (rr += 1) {
+                                const back_raw = self.stepAcrossOrIn(fwd.q, fwd.r, fwd.face, rr, &STEP_PROBE_SENTINEL);
+                                const back_can = self.canonicalizeAliasOnFace(back_raw.q, back_raw.r, back_raw.face);
+                                const h0 = hashCoord(back_can.q, back_can.r, back_can.face);
+                                const idx0opt = coord_to_index.get(h0);
+                                const hit0 = (idx0opt != null and idx0opt.? == i);
+                                std.debug.print("  REV dir={d} -> (f{d},q{d},r{d}) can=(f{d},q{d},r{d}) hit_home={any}\n", .{
+                                    rr, back_raw.face, back_raw.q, back_raw.r, back_can.face, back_can.q, back_can.r, hit0,
+                                });
+                                // cross-face probes
+                                const P = self.faceCenterPosition(back_can.q, back_can.r, back_can.face);
+                                var eprobe: usize = 0;
+                                while (eprobe < 3) : (eprobe += 1) {
+                                    const nf_try = self.face_neighbors[back_can.face][eprobe][0] - 1;
+                                    if (nf_try >= 20) continue;
+                                    const ubv = baryFromPointOnFace(P.x, P.y, P.z, nf_try);
+                                    const Nloc: isize = @intCast(self.size);
+                                    const scale: f64 = @floatFromInt(@as(i64, @intCast(3 * Nloc)));
+                                    const uvw_i = roundBaryToSum3N(ubv[0] * scale, ubv[1] * scale, ubv[2] * scale, Nloc);
+                                    const uvw_enf = enforceHexWindow(uvw_i, Nloc);
+                                    const back2 = self.fromBaryFace(nf_try, uvw_enf);
+                                    const h2 = hashCoord(back2.q, back2.r, nf_try);
+                                    const idx2opt = coord_to_index.get(h2);
+                                    const hit2 = (idx2opt != null and idx2opt.? == i);
+                                    if (hit2) {
+                                        std.debug.print("    XFACE nf={d} -> (f{d},q{d},r{d}) hits_home\n", .{ nf_try, back2.face, back2.q, back2.r });
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     var seen = false;
                     var s: usize = 0;
                     while (s < out_count) : (s += 1) {
@@ -2012,6 +2119,21 @@ pub const Grid = struct {
     const STEP_PROBE_SENTINEL: u8 = 1;
     const TEST_VERBOSE: bool = false;
 
+    inline fn mapNextAxialAcrossSeam(
+        self: *const Grid,
+        f: usize,
+        e: usize,
+        nq: isize,
+        nr: isize,
+        nf: usize,
+    ) struct { q: isize, r: isize } {
+        const uvw_face_src = self.toBaryFace(f, nq, nr);
+        const perm = self.face_perm[f][e];
+        const uvw_face_dst = applyPerm3(uvw_face_src, perm);
+        const back = self.fromBaryFace(nf, uvw_face_dst);
+        return .{ .q = back.q, .r = back.r };
+    }
+
     inline fn equalT(a_num: isize, a_den: isize, b_num: isize, b_den: isize) bool {
         return a_num * b_den == b_num * a_den;
     }
@@ -2059,6 +2181,70 @@ pub const Grid = struct {
         // NEW MODEL: axial neighbor first, seam via first-hit from centers if needed.
         const nq: isize = q + dq;
         const nr: isize = r + dr;
+        // Hex-window is the source of truth for seam selection
+        {
+            const Nloc: isize = @intCast(self.size);
+            const uvw_face0 = self.toBaryFace(face, nq, nr);
+            if (self.isFaceHexValid(uvw_face0, Nloc)) {
+                return Coord{ .q = nq, .r = nr, .face = face };
+            }
+            // Determine violated component (box first, then triangle heuristic)
+            var cn0: usize = 3;
+            var ii: usize = 0;
+            while (ii < 3) : (ii += 1) {
+                if (uvw_face0[ii] < 0 or uvw_face0[ii] > 2 * Nloc) {
+                    cn0 = ii;
+                    break;
+                }
+            }
+            if (cn0 == 3) {
+                if (uvw_face0[0] - uvw_face0[2] > Nloc) cn0 = 0 else if (uvw_face0[1] - uvw_face0[0] > Nloc) cn0 = 1 else if (uvw_face0[2] - uvw_face0[1] > Nloc) cn0 = 2 else cn0 = 0;
+            }
+            const eidx0 = edgeIndexFromOppositeComponent(cn0);
+            const rev_dir0: u8 = @intCast((dir_idx + 3) % 6);
+            if (!probe_mode) {
+                // Exact-reverse preference on primary and alternates
+                const alt10: usize = (eidx0 + 1) % 3;
+                const alt20: usize = (eidx0 + 2) % 3;
+                const nf_p0 = self.face_neighbors[face][eidx0][0] - 1;
+                if (nf_p0 < 20) {
+                    const mapped = self.mapNextAxialAcrossSeam(face, eidx0, nq, nr, nf_p0);
+                    const cand = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_p0 };
+                    if (self.roundTripsViaExactDir(face, q, r, cand, rev_dir0)) return cand;
+                }
+                const nf_a10 = self.face_neighbors[face][alt10][0] - 1;
+                if (nf_a10 < 20) {
+                    const mapped = self.mapNextAxialAcrossSeam(face, alt10, nq, nr, nf_a10);
+                    const cand = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_a10 };
+                    if (self.roundTripsViaExactDir(face, q, r, cand, rev_dir0)) return cand;
+                }
+                const nf_a20 = self.face_neighbors[face][alt20][0] - 1;
+                if (nf_a20 < 20) {
+                    const mapped = self.mapNextAxialAcrossSeam(face, alt20, nq, nr, nf_a20);
+                    const cand = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_a20 };
+                    if (self.roundTripsViaExactDir(face, q, r, cand, rev_dir0)) return cand;
+                }
+                // Any-dir fallback
+                if (nf_p0 < 20) {
+                    const mapped = self.mapNextAxialAcrossSeam(face, eidx0, nq, nr, nf_p0);
+                    const cand = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_p0 };
+                    if (self.roundTripsViaAnyDir(face, q, r, cand)) return cand;
+                }
+                if (nf_a10 < 20) {
+                    const mapped = self.mapNextAxialAcrossSeam(face, alt10, nq, nr, nf_a10);
+                    const cand = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_a10 };
+                    if (self.roundTripsViaAnyDir(face, q, r, cand)) return cand;
+                }
+                if (nf_a20 < 20) {
+                    const mapped = self.mapNextAxialAcrossSeam(face, alt20, nq, nr, nf_a20);
+                    const cand = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_a20 };
+                    if (self.roundTripsViaAnyDir(face, q, r, cand)) return cand;
+                }
+            }
+            const nf_final0 = self.face_neighbors[face][eidx0][0] - 1;
+            const mapped0 = self.mapNextAxialAcrossSeam(face, eidx0, nq, nr, nf_final0);
+            return Coord{ .q = mapped0.q, .r = mapped0.r, .face = nf_final0 };
+        }
         // 3D first-hit against start face edge planes
         const P0 = self.faceCenterPosition(q, r, face);
         const P1 = self.faceCenterPosition(nq, nr, face);
@@ -2223,7 +2409,8 @@ pub const Grid = struct {
                 // Tier 1: exact reverse preference
                 const nf_primary = self.face_neighbors[face][eidx][0] - 1;
                 if (nf_primary < 20) {
-                    const cand_primary = Coord{ .q = nq, .r = nr, .face = nf_primary };
+                    const mapped = self.mapNextAxialAcrossSeam(face, eidx, nq, nr, nf_primary);
+                    const cand_primary = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_primary };
                     if (self.roundTripsViaExactDir(face, q, r, cand_primary, rev_dir)) {
                         return cand_primary;
                     }
@@ -2233,40 +2420,46 @@ pub const Grid = struct {
                 const alt2: usize = (eidx + 2) % 3;
                 const nf_alt1 = self.face_neighbors[face][alt1][0] - 1;
                 if (nf_alt1 < 20) {
-                    const cand_alt1 = Coord{ .q = nq, .r = nr, .face = nf_alt1 };
+                    const mapped = self.mapNextAxialAcrossSeam(face, alt1, nq, nr, nf_alt1);
+                    const cand_alt1 = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt1 };
                     if (self.roundTripsViaExactDir(face, q, r, cand_alt1, rev_dir)) {
                         return cand_alt1;
                     }
                 }
                 const nf_alt2 = self.face_neighbors[face][alt2][0] - 1;
                 if (nf_alt2 < 20) {
-                    const cand_alt2 = Coord{ .q = nq, .r = nr, .face = nf_alt2 };
+                    const mapped = self.mapNextAxialAcrossSeam(face, alt2, nq, nr, nf_alt2);
+                    const cand_alt2 = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt2 };
                     if (self.roundTripsViaExactDir(face, q, r, cand_alt2, rev_dir)) {
                         return cand_alt2;
                     }
                 }
                 // Tier 2: any-dir fallback (current behavior)
                 if (nf_primary < 20) {
-                    const cand_primary2 = Coord{ .q = nq, .r = nr, .face = nf_primary };
+                    const mapped = self.mapNextAxialAcrossSeam(face, eidx, nq, nr, nf_primary);
+                    const cand_primary2 = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_primary };
                     if (self.roundTripsViaAnyDir(face, q, r, cand_primary2)) {
                         return cand_primary2;
                     }
                 }
                 if (nf_alt1 < 20) {
-                    const cand_alt1b = Coord{ .q = nq, .r = nr, .face = nf_alt1 };
+                    const mapped = self.mapNextAxialAcrossSeam(face, alt1, nq, nr, nf_alt1);
+                    const cand_alt1b = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt1 };
                     if (self.roundTripsViaAnyDir(face, q, r, cand_alt1b)) {
                         return cand_alt1b;
                     }
                 }
                 if (nf_alt2 < 20) {
-                    const cand_alt2b = Coord{ .q = nq, .r = nr, .face = nf_alt2 };
+                    const mapped = self.mapNextAxialAcrossSeam(face, alt2, nq, nr, nf_alt2);
+                    const cand_alt2b = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt2 };
                     if (self.roundTripsViaAnyDir(face, q, r, cand_alt2b)) {
                         return cand_alt2b;
                     }
                 }
             }
             const nf2 = self.face_neighbors[face][eidx][0] - 1;
-            return Coord{ .q = nq, .r = nr, .face = nf2 };
+            const mapped2 = self.mapNextAxialAcrossSeam(face, eidx, nq, nr, nf2);
+            return Coord{ .q = mapped2.q, .r = mapped2.r, .face = nf2 };
         }
         // Reciprocity-aware arbitration only on exact-t ties
         const TIE_EPS: f64 = 1e-12;
@@ -2295,7 +2488,8 @@ pub const Grid = struct {
                 while (k < tie_n) : (k += 1) {
                     const e_try = tie_e[k];
                     const nf_try = self.face_neighbors[face][e_try][0] - 1;
-                    const fwd = Coord{ .q = nq, .r = nr, .face = nf_try };
+                    const mapped = self.mapNextAxialAcrossSeam(face, e_try, nq, nr, nf_try);
+                    const fwd = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_try };
                     const back = self.stepAcrossOrIn(fwd.q, fwd.r, fwd.face, rdir, &STEP_PROBE_SENTINEL);
                     if (back.q == q and back.r == r and back.face == face) {
                         best_e = e_try;
@@ -2309,7 +2503,8 @@ pub const Grid = struct {
         const chosen_e: usize = best_e;
         const chosen_nf: usize = self.face_neighbors[face][chosen_e][0] - 1;
         std.debug.assert(chosen_nf < 20);
-        var out = Coord{ .q = nq, .r = nr, .face = chosen_nf };
+        const mapped_chosen = self.mapNextAxialAcrossSeam(face, chosen_e, nq, nr, chosen_nf);
+        var out = Coord{ .q = mapped_chosen.q, .r = mapped_chosen.r, .face = chosen_nf };
         // Reverse-consistency fallback even when not an exact-t tie
         if (!probe_mode) {
             const rev_dir: u8 = @intCast((dir_idx + 3) % 6);
@@ -2318,7 +2513,8 @@ pub const Grid = struct {
             const nf_primary = self.face_neighbors[face][chosen_e][0] - 1;
             // Tier 1: exact reverse on primary
             if (nf_primary < 20) {
-                const cand_primary = Coord{ .q = nq, .r = nr, .face = nf_primary };
+                const mapped = self.mapNextAxialAcrossSeam(face, chosen_e, nq, nr, nf_primary);
+                const cand_primary = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_primary };
                 if (self.roundTripsViaExactDir(face, q, r, cand_primary, rev_dir)) {
                     out = cand_primary;
                     return out;
@@ -2327,7 +2523,8 @@ pub const Grid = struct {
             // Tier 1: exact reverse on alternates
             const nf_alt1 = self.face_neighbors[face][alt1][0] - 1;
             if (nf_alt1 < 20) {
-                const cand_alt1 = Coord{ .q = nq, .r = nr, .face = nf_alt1 };
+                const mapped = self.mapNextAxialAcrossSeam(face, alt1, nq, nr, nf_alt1);
+                const cand_alt1 = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt1 };
                 if (self.roundTripsViaExactDir(face, q, r, cand_alt1, rev_dir)) {
                     out = cand_alt1;
                     return out;
@@ -2335,7 +2532,8 @@ pub const Grid = struct {
             }
             const nf_alt2 = self.face_neighbors[face][alt2][0] - 1;
             if (nf_alt2 < 20) {
-                const cand_alt2 = Coord{ .q = nq, .r = nr, .face = nf_alt2 };
+                const mapped = self.mapNextAxialAcrossSeam(face, alt2, nq, nr, nf_alt2);
+                const cand_alt2 = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt2 };
                 if (self.roundTripsViaExactDir(face, q, r, cand_alt2, rev_dir)) {
                     out = cand_alt2;
                     return out;
@@ -2343,21 +2541,24 @@ pub const Grid = struct {
             }
             // Tier 2: any-dir on primary then alternates
             if (nf_primary < 20) {
-                const cand_primary2 = Coord{ .q = nq, .r = nr, .face = nf_primary };
+                const mapped = self.mapNextAxialAcrossSeam(face, chosen_e, nq, nr, nf_primary);
+                const cand_primary2 = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_primary };
                 if (self.roundTripsViaAnyDir(face, q, r, cand_primary2)) {
                     out = cand_primary2;
                     return out;
                 }
             }
             if (nf_alt1 < 20) {
-                const cand_alt1b = Coord{ .q = nq, .r = nr, .face = nf_alt1 };
+                const mapped = self.mapNextAxialAcrossSeam(face, alt1, nq, nr, nf_alt1);
+                const cand_alt1b = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt1 };
                 if (self.roundTripsViaAnyDir(face, q, r, cand_alt1b)) {
                     out = cand_alt1b;
                     return out;
                 }
             }
             if (nf_alt2 < 20) {
-                const cand_alt2b = Coord{ .q = nq, .r = nr, .face = nf_alt2 };
+                const mapped = self.mapNextAxialAcrossSeam(face, alt2, nq, nr, nf_alt2);
+                const cand_alt2b = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt2 };
                 if (self.roundTripsViaAnyDir(face, q, r, cand_alt2b)) {
                     out = cand_alt2b;
                     return out;
@@ -2501,39 +2702,6 @@ pub const Grid = struct {
             }
         }
 
-        // One-hop raw alias backfill: bind raw forward-hop aliases to the resolved neighbor index
-        {
-            var staged = try std.ArrayList(struct { h: u64, idx: usize }).initCapacity(self.allocator, 64);
-            defer staged.deinit(self.allocator);
-
-            var it1 = coord_to_index.iterator();
-            while (it1.next()) |e| {
-                const c = unhashCoord(e.key_ptr.*);
-                if (c.face >= 20) continue;
-                var d: u8 = 0;
-                while (d < 6) : (d += 1) {
-                    const nb_raw = self.stepAcrossOrIn(c.q, c.r, c.face, d, &STEP_NORMAL_SENTINEL);
-                    // Canonicalize on the destination face and resolve the true neighbor index
-                    const nb_can = self.canonicalizeAliasOnFace(nb_raw.q, nb_raw.r, nb_raw.face);
-                    const h_can = hashCoord(nb_can.q, nb_can.r, nb_can.face);
-                    const idx_nb_opt = coord_to_index.get(h_can);
-                    if (idx_nb_opt == null) continue;
-                    const idx_nb = idx_nb_opt.?;
-                    const h_raw = hashCoord(nb_raw.q, nb_raw.r, nb_raw.face);
-                    if (coord_to_index.get(h_raw)) |cur_idx| {
-                        if (cur_idx == idx_nb) continue; // already correct
-                        if (@import("builtin").mode == .Debug and TEST_VERBOSE) {
-                            std.debug.print("1-hop alias rebind (f{d},q{d},r{d}) -> idx {d} (was {d})\n", .{ nb_raw.face, nb_raw.q, nb_raw.r, idx_nb, cur_idx });
-                        }
-                    }
-                    try staged.append(self.allocator, .{ .h = h_raw, .idx = idx_nb });
-                }
-            }
-            for (staged.items) |b| {
-                _ = try coord_to_index.put(b.h, b.idx);
-            }
-        }
-
         // Post-fill: ensure all valid (face,q,r) aliases map to the canonical index if known
         const Ni: isize = @intCast(self.size);
         var face_it: usize = 0;
@@ -2556,6 +2724,41 @@ pub const Grid = struct {
                         try canonical_to_index.put(ch, idx_new);
                     }
                 }
+            }
+        }
+
+        // One-hop raw alias backfill (purely additive, non-overwriting), AFTER post-fill
+        {
+            var staged = std.AutoHashMap(u64, usize).init(self.allocator);
+            defer staged.deinit();
+            var it1 = coord_to_index.iterator();
+            while (it1.next()) |e| {
+                const c = unhashCoord(e.key_ptr.*);
+                if (c.face >= 20) continue;
+                var d: u8 = 0;
+                while (d < 6) : (d += 1) {
+                    const nb_raw = self.stepAcrossOrIn(c.q, c.r, c.face, d, &STEP_NORMAL_SENTINEL);
+                    const nb_can = self.canonicalizeAliasOnFace(nb_raw.q, nb_raw.r, nb_raw.face);
+                    const h_can = hashCoord(nb_can.q, nb_can.r, nb_can.face);
+                    const idx_nb_opt = coord_to_index.get(h_can);
+                    if (idx_nb_opt == null) continue; // do not create new indices here
+                    const h_raw = hashCoord(nb_raw.q, nb_raw.r, nb_raw.face);
+                    if (coord_to_index.get(h_raw)) |cur_idx| {
+                        // already exists; do not overwrite (optional debug)
+                        if (@import("builtin").mode == .Debug and TEST_VERBOSE) {
+                            const idx_nb = idx_nb_opt.?;
+                            if (cur_idx != idx_nb) {
+                                std.debug.print("1-hop alias conflict (keeping existing): raw={any} has idx {d}, nb_can idx {d}\n", .{ unhashCoord(h_raw), cur_idx, idx_nb });
+                            }
+                        }
+                        continue;
+                    }
+                    _ = try staged.put(h_raw, idx_nb_opt.?);
+                }
+            }
+            var it_s = staged.iterator();
+            while (it_s.next()) |p| {
+                _ = try coord_to_index.put(p.key_ptr.*, p.value_ptr.*);
             }
         }
 
