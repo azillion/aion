@@ -763,33 +763,176 @@ pub const Grid = struct {
         var k: u8 = 0;
         while (k < 6) : (k += 1) {
             const back_raw = self.stepAcrossOrIn(from.q, from.r, from.face, k, &STEP_NORMAL_SENTINEL);
-            // 1) Canonicalize on the landing face
-            const back_can = self.canonicalizeAliasOnFace(back_raw.q, back_raw.r, back_raw.face);
-            const h0 = hashCoord(back_can.q, back_can.r, back_can.face);
-            if (coord_to_index.get(h0)) |idx0| if (idx0 == src_idx) return true;
-
-            // 2) Local cross-face try: project this 3D point to adjacent faces
-            const N: isize = @intCast(self.size);
-            const P = self.faceCenterPosition(back_can.q, back_can.r, back_can.face);
-            var e: usize = 0;
-            while (e < 3) : (e += 1) {
-                const nf_try = self.face_neighbors[back_can.face][e][0] - 1;
-                if (nf_try >= 20) continue;
-                const ubv = baryFromPointOnFace(P.x, P.y, P.z, nf_try);
-                const scale: f64 = @floatFromInt(@as(i64, @intCast(3 * N)));
-                const u_s = ubv[0] * scale;
-                const v_s = ubv[1] * scale;
-                const w_s = ubv[2] * scale;
-                const uvw_i = roundBaryToSum3N(u_s, v_s, w_s, N);
-                const uvw_enf = enforceHexWindow(uvw_i, N);
-                const back2 = self.fromBaryFace(nf_try, uvw_enf);
-                const h2 = hashCoord(back2.q, back2.r, nf_try);
-                if (coord_to_index.get(h2)) |idx2| if (idx2 == src_idx) return true;
+            if (self.resolveIndexNearFaces(coord_to_index, back_raw.q, back_raw.r, back_raw.face, from.face)) |idx_back| {
+                if (idx_back == src_idx) return true;
             }
         }
         return false;
     }
 
+    // Very-near index resolver by 3D proximity on a small set of faces (additive-only usage).
+    inline fn resolveIndexVeryNear(
+        self: *const Grid,
+        coord_to_index: *const std.AutoHashMap(u64, usize),
+        q: isize,
+        r: isize,
+        landing_face: usize,
+        src_face: usize,
+        eps: f64,
+    ) ?usize {
+        if (landing_face >= 20) return null;
+        const Pnb = self.faceCenterPosition(q, r, landing_face);
+        var faces: [8]usize = .{ 20, 20, 20, 20, 20, 20, 20, 20 };
+        var n: usize = 0;
+        // landing face
+        faces[n] = landing_face;
+        n += 1;
+        // landing neighbors
+        inline for (0..3) |e| {
+            const nf = self.face_neighbors[landing_face][e][0] - 1;
+            if (nf < 20) {
+                faces[n] = nf;
+                n += 1;
+            }
+        }
+        // source face
+        if (src_face < 20) {
+            faces[n] = src_face;
+            n += 1;
+            inline for (0..3) |e| {
+                const nf2 = self.face_neighbors[src_face][e][0] - 1;
+                if (nf2 < 20) {
+                    faces[n] = nf2;
+                    n += 1;
+                }
+            }
+        }
+        var best_idx: ?usize = null;
+        var best_d2: f64 = 1e9;
+        var it = coord_to_index.iterator();
+        while (it.next()) |e| {
+            const idx = e.value_ptr.*;
+            const c = unhashCoord(e.key_ptr.*);
+            // check membership
+            var ok_face = false;
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                if (c.face == faces[i]) {
+                    ok_face = true;
+                    break;
+                }
+            }
+            if (!ok_face) continue;
+            const Poth = self.faceCenterPosition(c.q, c.r, c.face);
+            const dx = Pnb.x - Poth.x;
+            const dy = Pnb.y - Poth.y;
+            const dz = Pnb.z - Poth.z;
+            const d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < best_d2) {
+                best_d2 = d2;
+                best_idx = idx;
+            }
+        }
+        if (best_idx) |bi| {
+            if (best_d2 < eps) return bi;
+        }
+        return null;
+    }
+
+    inline fn resolveIndexNearFaces(
+        self: *const Grid,
+        coord_to_index: *const std.AutoHashMap(u64, usize),
+        q: isize,
+        r: isize,
+        face: usize,
+        extra_face: usize,
+    ) ?usize {
+        const N: isize = @intCast(self.size);
+        var faces: [8]usize = .{ 20, 20, 20, 20, 20, 20, 20, 20 };
+        var n: usize = 0;
+        // push face if not already present
+        // add landing face
+        if (face < 20) {
+            var present: bool = false;
+            var ii: usize = 0;
+            while (ii < n) : (ii += 1) {
+                if (faces[ii] == face) {
+                    present = true;
+                    break;
+                }
+            }
+            if (!present) {
+                faces[n] = face;
+                n += 1;
+            }
+        }
+        inline for (0..3) |e| {
+            const fnb = self.face_neighbors[face][e][0] - 1;
+            if (fnb < 20) {
+                var present: bool = false;
+                var ii: usize = 0;
+                while (ii < n) : (ii += 1) {
+                    if (faces[ii] == fnb) {
+                        present = true;
+                        break;
+                    }
+                }
+                if (!present) {
+                    faces[n] = fnb;
+                    n += 1;
+                }
+            }
+        }
+        if (extra_face < 20) {
+            var present2: bool = false;
+            var jj: usize = 0;
+            while (jj < n) : (jj += 1) {
+                if (faces[jj] == extra_face) {
+                    present2 = true;
+                    break;
+                }
+            }
+            if (!present2) {
+                faces[n] = extra_face;
+                n += 1;
+            }
+            inline for (0..3) |e| {
+                const fnb2 = self.face_neighbors[extra_face][e][0] - 1;
+                if (fnb2 < 20) {
+                    var present3: bool = false;
+                    var kk: usize = 0;
+                    while (kk < n) : (kk += 1) {
+                        if (faces[kk] == fnb2) {
+                            present3 = true;
+                            break;
+                        }
+                    }
+                    if (!present3) {
+                        faces[n] = fnb2;
+                        n += 1;
+                    }
+                }
+            }
+        }
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const f_try = faces[i];
+            const uvw_std = toBary(N, q, r);
+            const Pf = self.face_axes[f_try];
+            var Pstd_to_face: [3]u8 = .{ 0, 0, 0 };
+            Pstd_to_face[Pf[0]] = 0;
+            Pstd_to_face[Pf[1]] = 1;
+            Pstd_to_face[Pf[2]] = 2;
+            const uvw_face = applyPerm3(uvw_std, Pstd_to_face);
+            const uvw_enf = enforceHexWindow(uvw_face, N);
+            const back = self.fromBaryFace(f_try, uvw_enf);
+            const h = hashCoord(back.q, back.r, f_try);
+            if (coord_to_index.get(h)) |idx| return idx;
+        }
+        return null;
+    }
+
+    // repairPerFaceUniqueness removed (over-splitting risks); we constrain backfill instead
     inline fn anyDirReverseHitsIndexViaAliasSet(
         self: *const Grid,
         alias_set: *const std.AutoHashMap(u64, void),
@@ -848,6 +991,15 @@ pub const Grid = struct {
             2 => 0,
             else => unreachable,
         };
+    }
+
+    inline fn isFaceHexStrict(_: *const Grid, uvw_face: [3]isize, N: isize) bool {
+        if (uvw_face[0] < 0 or uvw_face[1] < 0 or uvw_face[2] < 0) return false;
+        if (uvw_face[0] > 2 * N or uvw_face[1] > 2 * N or uvw_face[2] > 2 * N) return false;
+        if (uvw_face[0] - uvw_face[2] > N) return false;
+        if (uvw_face[1] - uvw_face[0] > N) return false;
+        if (uvw_face[2] - uvw_face[1] > N) return false;
+        return true;
     }
 
     inline fn oppositeComponentFromEdge(edge: usize) usize {
@@ -1858,7 +2010,7 @@ pub const Grid = struct {
     }
 
     // New neighbor API: use helpers and an external coord_to_index map
-    pub fn populateNeighbors(self: *Grid, coord_to_index: *const std.AutoHashMap(u64, usize)) !void {
+    pub fn populateNeighbors(self: *Grid, coord_to_index: *std.AutoHashMap(u64, usize)) !void {
         if (self.neighbors.len > 0) self.allocator.free(self.neighbors);
         self.neighbors = try self.allocator.alloc(NeighborSet, self.tile_count);
 
@@ -1924,83 +2076,217 @@ pub const Grid = struct {
             // initialize ring to self and reset count to 0 before filling
             @memset(&self.neighbors[i].ids, i);
             self.neighbors[i].count = 0;
-            const home = self.coords[i];
             const cap: u8 = if (is_penta_index[i]) 5 else 6;
-            // Aggregate neighbor indices from the HOME alias only, deduplicated and reciprocal.
+            const home = self.coords[i];
+            // Aggregate neighbor indices using ANY alias of this index, per-direction pick, strict mutuality-by-index.
             var out_ids: [6]usize = undefined;
             var out_count: u8 = 0;
-            // Aggregate neighbors from ALL aliases of this index, with strict mutuality-by-index
-            var it_src = coord_to_index.iterator();
-            while (it_src.next()) |e_src| {
-                const idx_src = e_src.value_ptr.*;
-                if (idx_src != i) continue;
-                const c_src = unhashCoord(e_src.key_ptr.*);
-                const from = self.canonicalizeAliasOnFace(c_src.q, c_src.r, c_src.face);
-                var dir: u8 = 0;
-                while (dir < 6 and out_count < cap) : (dir += 1) {
+            // Track uniqueness across directions for this ring
+            var used: std.AutoHashMap(usize, void) = std.AutoHashMap(usize, void).init(self.allocator);
+            defer used.deinit();
+            var dir: u8 = 0;
+            while (dir < 6 and out_count < cap) : (dir += 1) {
+                var chosen_idx_opt: ?usize = null;
+                // iterate all aliases of i
+                var it_alias = aliases_by_index[i].iterator();
+                while (it_alias.next()) |ae| {
+                    const key = ae.key_ptr.*;
+                    const c_src = unhashCoord(key);
+                    const from = self.canonicalizeAliasOnFace(c_src.q, c_src.r, c_src.face);
                     const fwd_raw = self.stepAcrossOrIn(from.q, from.r, from.face, dir, &STEP_NORMAL_SENTINEL);
                     const fwd = self.canonicalizeAliasOnFace(fwd_raw.q, fwd_raw.r, fwd_raw.face);
-                    const h = hashCoord(fwd.q, fwd.r, fwd.face);
-                    const idx_opt = coord_to_index.get(h);
-                    if (idx_opt == null) continue;
-                    const idx = idx_opt.?;
-                    if (idx == i) continue;
-                    const mutual = self.anyDirReverseHitsIndexViaAliasSet(&aliases_by_index[i], fwd);
-                    if (!mutual) {
-                        if (@import("builtin").is_test and TEST_VERBOSE and i == 7) {
-                            std.debug.print("MUTUALITY FAIL i=7 dir={d} fwd=(f{d},q{d},r{d}) j={d}\n", .{ dir, fwd.face, fwd.q, fwd.r, idx });
-                            var rr: u8 = 0;
-                            while (rr < 6) : (rr += 1) {
-                                const back_raw = self.stepAcrossOrIn(fwd.q, fwd.r, fwd.face, rr, &STEP_PROBE_SENTINEL);
-                                const back_can = self.canonicalizeAliasOnFace(back_raw.q, back_raw.r, back_raw.face);
-                                const h0 = hashCoord(back_can.q, back_can.r, back_can.face);
-                                const idx0opt = coord_to_index.get(h0);
-                                const hit0 = (idx0opt != null and idx0opt.? == i);
-                                std.debug.print("  REV dir={d} -> (f{d},q{d},r{d}) can=(f{d},q{d},r{d}) hit_home={any}\n", .{
-                                    rr, back_raw.face, back_raw.q, back_raw.r, back_can.face, back_can.q, back_can.r, hit0,
-                                });
-                                // cross-face probes
-                                const P = self.faceCenterPosition(back_can.q, back_can.r, back_can.face);
-                                var eprobe: usize = 0;
-                                while (eprobe < 3) : (eprobe += 1) {
-                                    const nf_try = self.face_neighbors[back_can.face][eprobe][0] - 1;
-                                    if (nf_try >= 20) continue;
-                                    const ubv = baryFromPointOnFace(P.x, P.y, P.z, nf_try);
-                                    const Nloc: isize = @intCast(self.size);
-                                    const scale: f64 = @floatFromInt(@as(i64, @intCast(3 * Nloc)));
-                                    const uvw_i = roundBaryToSum3N(ubv[0] * scale, ubv[1] * scale, ubv[2] * scale, Nloc);
-                                    const uvw_enf = enforceHexWindow(uvw_i, Nloc);
-                                    const back2 = self.fromBaryFace(nf_try, uvw_enf);
-                                    const h2 = hashCoord(back2.q, back2.r, nf_try);
-                                    const idx2opt = coord_to_index.get(h2);
-                                    const hit2 = (idx2opt != null and idx2opt.? == i);
-                                    if (hit2) {
-                                        std.debug.print("    XFACE nf={d} -> (f{d},q{d},r{d}) hits_home\n", .{ nf_try, back2.face, back2.q, back2.r });
-                                    }
-                                }
+                    // Prefer exact landing-face canonical key first
+                    const h_can = hashCoord(fwd.q, fwd.r, fwd.face);
+                    var j_idx_opt: ?usize = coord_to_index.get(h_can);
+                    if (j_idx_opt == null) {
+                        // Fallback: resolve via near faces, then materialize exact key additively
+                        if (self.resolveIndexNearFaces(coord_to_index, fwd.q, fwd.r, fwd.face, from.face)) |idx_via| {
+                            if (!coord_to_index.contains(h_can)) {
+                                _ = try coord_to_index.put(h_can, idx_via);
+                            }
+                            j_idx_opt = coord_to_index.get(h_can);
+                        }
+                    }
+                    if (j_idx_opt == null) {
+                        // Try very-near 3D resolver as a last resort for this alias
+                        if (self.resolveIndexVeryNear(coord_to_index, fwd.q, fwd.r, fwd.face, from.face, 1e-8)) |idx_vn| {
+                            // materialize exact landing canonical key additively
+                            if (!coord_to_index.contains(h_can)) {
+                                _ = try coord_to_index.put(h_can, idx_vn);
+                            }
+                            j_idx_opt = coord_to_index.get(h_can);
+                        }
+                    }
+                    if (j_idx_opt == null) continue;
+                    const j_idx = j_idx_opt.?;
+                    // Ensure the exact landing-face canonical key exists (additive-only)
+                    if (!coord_to_index.contains(h_can)) {
+                        _ = try coord_to_index.put(h_can, j_idx);
+                    }
+                    if (j_idx == i) continue;
+                    if (!self.anyDirReverseHitsIndex(coord_to_index, i, fwd)) continue;
+                    if (used.contains(j_idx)) continue; // prefer uniqueness per dir
+                    chosen_idx_opt = j_idx;
+                    if (@import("builtin").is_test and TEST_VERBOSE and i == 7) {
+                        std.debug.print("ACCEPT i=7 dir={d} via alias (f{d},q{d},r{d}) -> j={d}\n", .{ dir, from.face, from.q, from.r, j_idx });
+                    }
+                    break;
+                }
+                // end alias loop for this direction
+                if (chosen_idx_opt == null) {
+                    // Last-chance: use home alias forward hop without reciprocity gate; reciprocity enforced later
+                    const fwd_home_raw = self.stepAcrossOrIn(home.q, home.r, home.face, dir, &STEP_NORMAL_SENTINEL);
+                    const fwd_home = self.canonicalizeAliasOnFace(fwd_home_raw.q, fwd_home_raw.r, fwd_home_raw.face);
+                    var j2_opt = self.resolveIndexNearFaces(coord_to_index, fwd_home.q, fwd_home.r, fwd_home.face, home.face);
+                    if (j2_opt == null) {
+                        // Very-near 3D resolver as last resort (tiny epsilon)
+                        j2_opt = self.resolveIndexVeryNear(coord_to_index, fwd_home.q, fwd_home.r, fwd_home.face, home.face, 1e-8);
+                    }
+                    if (j2_opt) |j2| {
+                        if (j2 != i and !used.contains(j2)) {
+                            const h2 = hashCoord(fwd_home.q, fwd_home.r, fwd_home.face);
+                            if (!coord_to_index.contains(h2)) {
+                                _ = try coord_to_index.put(h2, j2);
+                            }
+                            // enforce mutuality-by-index even for very-near path
+                            if (self.anyDirReverseHitsIndex(coord_to_index, i, fwd_home)) {
+                                chosen_idx_opt = j2;
                             }
                         }
-                        continue;
                     }
+                }
+                if (chosen_idx_opt == null) {
+                    // Final fallback: accept first resolvable neighbor from any alias (no reciprocity gate here)
+                    var it_alias2 = aliases_by_index[i].iterator();
+                    while (it_alias2.next()) |ae2| {
+                        const key2 = ae2.key_ptr.*;
+                        const c_src2 = unhashCoord(key2);
+                        const from2 = self.canonicalizeAliasOnFace(c_src2.q, c_src2.r, c_src2.face);
+                        const fwd2_raw = self.stepAcrossOrIn(from2.q, from2.r, from2.face, dir, &STEP_NORMAL_SENTINEL);
+                        const fwd2 = self.canonicalizeAliasOnFace(fwd2_raw.q, fwd2_raw.r, fwd2_raw.face);
+                        if (self.resolveIndexNearFaces(coord_to_index, fwd2.q, fwd2.r, fwd2.face, from2.face)) |j3| {
+                            if (j3 != i and !used.contains(j3)) {
+                                const h3 = hashCoord(fwd2.q, fwd2.r, fwd2.face);
+                                if (!coord_to_index.contains(h3)) {
+                                    _ = try coord_to_index.put(h3, j3);
+                                }
+                                chosen_idx_opt = j3;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (chosen_idx_opt) |j| {
+                    // de-dupe on insert
                     var seen = false;
                     var s: usize = 0;
                     while (s < out_count) : (s += 1) {
-                        if (out_ids[s] == idx) {
+                        if (out_ids[s] == j) {
                             seen = true;
                             break;
                         }
                     }
-                    if (seen) continue;
-                    out_ids[out_count] = idx;
-                    out_count += 1;
-                    if (@import("builtin").is_test and TEST_VERBOSE and i == 7) {
-                        std.debug.print("ACCEPT i=7 dir={d} -> idx={d} (f={d},q={d},r={d})\n", .{ dir, idx, fwd.face, fwd.q, fwd.r });
+                    if (!seen) {
+                        _ = used.put(j, {}) catch {};
+                        out_ids[out_count] = j;
+                        out_count += 1;
                     }
+                }
+            }
+            // Pool fill: if we still have capacity, gather all one-hop resolvable neighbors from any alias
+            if (out_count < cap) {
+                var pool = std.AutoHashMap(usize, Coord).init(self.allocator);
+                defer pool.deinit();
+                var it_alias3 = aliases_by_index[i].iterator();
+                while (it_alias3.next()) |ae3| {
+                    const k3 = ae3.key_ptr.*;
+                    const c_src3 = unhashCoord(k3);
+                    const from3 = self.canonicalizeAliasOnFace(c_src3.q, c_src3.r, c_src3.face);
+                    var d2: u8 = 0;
+                    while (d2 < 6) : (d2 += 1) {
+                        const nb_raw = self.stepAcrossOrIn(from3.q, from3.r, from3.face, d2, &STEP_NORMAL_SENTINEL);
+                        const nb_can = self.canonicalizeAliasOnFace(nb_raw.q, nb_raw.r, nb_raw.face);
+                        const h_nb = hashCoord(nb_can.q, nb_can.r, nb_can.face);
+                        var idx_u_opt: ?usize = coord_to_index.get(h_nb);
+                        if (idx_u_opt == null) {
+                            if (self.resolveIndexNearFaces(coord_to_index, nb_can.q, nb_can.r, nb_can.face, from3.face)) |idx_via| {
+                                if (!coord_to_index.contains(h_nb)) {
+                                    _ = try coord_to_index.put(h_nb, idx_via);
+                                }
+                                idx_u_opt = coord_to_index.get(h_nb);
+                            } else {
+                                // Proximity snap fallback (tiny epsilon) on landing face + its neighbors
+                                var faces_try: [4]usize = .{ nb_can.face, 20, 20, 20 };
+                                var nfaces: usize = 1;
+                                inline for (0..3) |e| {
+                                    const nf_try = self.face_neighbors[nb_can.face][e][0] - 1;
+                                    if (nf_try < 20) {
+                                        faces_try[nfaces] = nf_try;
+                                        nfaces += 1;
+                                    }
+                                }
+                                const Pnb = self.faceCenterPosition(nb_can.q, nb_can.r, nb_can.face);
+                                var best_idx: ?usize = null;
+                                var best_d2: f64 = 1e9;
+                                var it_scan = coord_to_index.iterator();
+                                while (it_scan.next()) |es| {
+                                    const idx_scan = es.value_ptr.*;
+                                    const cscan = unhashCoord(es.key_ptr.*);
+                                    // check face in faces_try
+                                    var ok_face = false;
+                                    var fi: usize = 0;
+                                    while (fi < nfaces) : (fi += 1) {
+                                        if (cscan.face == faces_try[fi]) {
+                                            ok_face = true;
+                                            break;
+                                        }
+                                    }
+                                    if (!ok_face) continue;
+                                    const Poth = self.faceCenterPosition(cscan.q, cscan.r, cscan.face);
+                                    const dx = Pnb.x - Poth.x;
+                                    const dy = Pnb.y - Poth.y;
+                                    const dz = Pnb.z - Poth.z;
+                                    const dist2 = dx * dx + dy * dy + dz * dz;
+                                    if (dist2 < best_d2) {
+                                        best_d2 = dist2;
+                                        best_idx = idx_scan;
+                                    }
+                                }
+                                if (best_idx) |idx_snap| {
+                                    if (best_d2 < 1e-8) {
+                                        if (!coord_to_index.contains(h_nb)) {
+                                            _ = try coord_to_index.put(h_nb, idx_snap);
+                                        }
+                                        idx_u_opt = coord_to_index.get(h_nb);
+                                    }
+                                }
+                            }
+                        }
+                        if (idx_u_opt) |idx_u| {
+                            if (idx_u == i) continue;
+                            if (used.contains(idx_u)) continue;
+                            if (!pool.contains(idx_u)) {
+                                _ = try pool.put(idx_u, nb_can);
+                            }
+                        }
+                    }
+                }
+                // Fill remaining slots from pool deterministically by iteration order
+                var it_pool = pool.iterator();
+                while (out_count < cap) {
+                    const nextp = it_pool.next();
+                    if (nextp == null) break;
+                    const j_idx_fill = nextp.?.key_ptr.*;
+                    // append
+                    out_ids[out_count] = j_idx_fill;
+                    _ = used.put(j_idx_fill, {}) catch {};
+                    out_count += 1;
                 }
             }
             // Sort ring by angle around center and deduplicate
             self.sortRing(i, out_ids[0..out_count]);
             out_count = @intCast(dedupSorted(out_ids[0..out_count]));
+            if (out_count > cap) out_count = cap;
             var w: usize = 0;
             while (w < out_count) : (w += 1) self.neighbors[i].ids[w] = out_ids[w];
             // Optional: pad remaining slots with self for fixed-size storage
@@ -2185,7 +2471,7 @@ pub const Grid = struct {
         {
             const Nloc: isize = @intCast(self.size);
             const uvw_face0 = self.toBaryFace(face, nq, nr);
-            if (self.isFaceHexValid(uvw_face0, Nloc)) {
+            if (self.isFaceHexStrict(uvw_face0, Nloc)) {
                 return Coord{ .q = nq, .r = nr, .face = face };
             }
             // Determine violated component (box first, then triangle heuristic)
@@ -2673,92 +2959,68 @@ pub const Grid = struct {
         // Deterministic post-BFS completion: ensure all pentagon vertex aliases exist
         try self.completePentagonAliases(&coord_to_index, &next_index);
 
-        // Cross-face alias backfill: for each indexed alias, add synonyms on adjacent faces
-        {
-            var it_syn = coord_to_index.iterator();
-            while (it_syn.next()) |e| {
-                const idx = e.value_ptr.*;
-                const c = unhashCoord(e.key_ptr.*);
-                if (c.face >= 20) continue;
-                const P = self.faceCenterPosition(c.q, c.r, c.face);
-                const N_i: isize = @intCast(self.size);
-                var eidx: usize = 0;
-                while (eidx < 3) : (eidx += 1) {
-                    const nf_try = self.face_neighbors[c.face][eidx][0] - 1;
-                    if (nf_try >= 20) continue;
-                    const ubv = baryFromPointOnFace(P.x, P.y, P.z, nf_try);
-                    const scale: f64 = @floatFromInt(@as(i64, @intCast(3 * N_i)));
-                    const u_s = ubv[0] * scale;
-                    const v_s = ubv[1] * scale;
-                    const w_s = ubv[2] * scale;
-                    const uvw_i = roundBaryToSum3N(u_s, v_s, w_s, N_i);
-                    const uvw_enf = enforceHexWindow(uvw_i, N_i);
-                    const back = self.fromBaryFace(nf_try, uvw_enf);
-                    const h2 = hashCoord(back.q, back.r, nf_try);
-                    if (!coord_to_index.contains(h2)) {
-                        _ = try coord_to_index.put(h2, idx);
-                    }
-                }
-            }
-        }
+        // Cross-face alias backfill removed to avoid gluing distinct seam neighbors to the same index
 
-        // Post-fill: ensure all valid (face,q,r) aliases map to the canonical index if known
-        const Ni: isize = @intCast(self.size);
-        var face_it: usize = 0;
-        while (face_it < 20) : (face_it += 1) {
-            var qv: isize = -Ni;
-            while (qv <= Ni) : (qv += 1) {
-                var rv: isize = -Ni;
-                while (rv <= Ni) : (rv += 1) {
-                    if (!self.isValid(qv, rv)) continue;
-                    const h = hashCoord(qv, rv, face_it);
-                    if (coord_to_index.contains(h)) continue;
-                    const ch = hashCoord(qv, rv, 0);
-                    if (canonical_to_index.get(ch)) |idx_v| {
-                        try coord_to_index.put(h, idx_v);
-                    } else {
-                        // Create a new index for this alias and record its canonical mapping
-                        const idx_new = next_index;
-                        next_index += 1;
-                        try coord_to_index.put(h, idx_new);
-                        try canonical_to_index.put(ch, idx_new);
-                    }
-                }
-            }
-        }
+        // Post-fill canonical face-0 mapping removed to avoid over-aliasing and index collapse
 
         // One-hop raw alias backfill (purely additive, non-overwriting), AFTER post-fill
+        // Saturating fixed-point (small) to ensure closure
         {
-            var staged = std.AutoHashMap(u64, usize).init(self.allocator);
-            defer staged.deinit();
-            var it1 = coord_to_index.iterator();
-            while (it1.next()) |e| {
-                const c = unhashCoord(e.key_ptr.*);
-                if (c.face >= 20) continue;
-                var d: u8 = 0;
-                while (d < 6) : (d += 1) {
-                    const nb_raw = self.stepAcrossOrIn(c.q, c.r, c.face, d, &STEP_NORMAL_SENTINEL);
-                    const nb_can = self.canonicalizeAliasOnFace(nb_raw.q, nb_raw.r, nb_raw.face);
-                    const h_can = hashCoord(nb_can.q, nb_can.r, nb_can.face);
-                    const idx_nb_opt = coord_to_index.get(h_can);
-                    if (idx_nb_opt == null) continue; // do not create new indices here
-                    const h_raw = hashCoord(nb_raw.q, nb_raw.r, nb_raw.face);
-                    if (coord_to_index.get(h_raw)) |cur_idx| {
-                        // already exists; do not overwrite (optional debug)
-                        if (@import("builtin").mode == .Debug and TEST_VERBOSE) {
-                            const idx_nb = idx_nb_opt.?;
-                            if (cur_idx != idx_nb) {
-                                std.debug.print("1-hop alias conflict (keeping existing): raw={any} has idx {d}, nb_can idx {d}\n", .{ unhashCoord(h_raw), cur_idx, idx_nb });
+            var added_any = true;
+            var guard: usize = 0;
+            while (added_any and guard < 4) : (guard += 1) {
+                added_any = false;
+                var staged = std.AutoHashMap(u64, usize).init(self.allocator);
+                defer staged.deinit();
+                var it1 = coord_to_index.iterator();
+                while (it1.next()) |e| {
+                    const src_idx = e.value_ptr.*;
+                    const c = unhashCoord(e.key_ptr.*);
+                    if (c.face >= 20) continue;
+                    var d: u8 = 0;
+                    while (d < 6) : (d += 1) {
+                        const nb_raw = self.stepAcrossOrIn(c.q, c.r, c.face, d, &STEP_NORMAL_SENTINEL);
+                        const Nloc: isize = @intCast(self.size);
+                        // Canonicalize on the landing face; require strict in-window to avoid invalid keys
+                        const uvw_face_raw = self.toBaryFace(nb_raw.face, nb_raw.q, nb_raw.r);
+                        if (!self.isFaceHexStrict(uvw_face_raw, Nloc)) continue;
+                        const uvw_enf = enforceHexWindow(uvw_face_raw, Nloc);
+                        const back = self.fromBaryFace(nb_raw.face, uvw_enf);
+                        const h_nb = hashCoord(back.q, back.r, nb_raw.face);
+                        // Resolve neighbor index: direct or via near-face resolver (landing/source neighborhoods)
+                        var idx_nb_opt: ?usize = coord_to_index.get(h_nb);
+                        if (idx_nb_opt == null) {
+                            const idx_near = self.resolveIndexNearFaces(&coord_to_index, back.q, back.r, nb_raw.face, c.face);
+                            if (idx_near) |val| {
+                                idx_nb_opt = val;
                             }
                         }
-                        continue;
+                        if (idx_nb_opt == null) continue; // do not create indices
+                        if (!coord_to_index.contains(h_nb)) {
+                            _ = try staged.put(h_nb, idx_nb_opt.?);
+                        }
+
+                        // Reverse one-hop closure: try all 6 local reverse dirs to map back-to-source aliases
+                        var rk: u8 = 0;
+                        while (rk < 6) : (rk += 1) {
+                            const back_step = self.stepAcrossOrIn(back.q, back.r, nb_raw.face, rk, &STEP_NORMAL_SENTINEL);
+                            const uvw_back = self.toBaryFace(back_step.face, back_step.q, back_step.r);
+                            if (!self.isFaceHexStrict(uvw_back, Nloc)) continue;
+                            const back_can2 = self.canonicalizeAliasOnFace(back_step.q, back_step.r, back_step.face);
+                            const h_back = hashCoord(back_can2.q, back_can2.r, back_can2.face);
+                            if (!coord_to_index.contains(h_back)) {
+                                _ = try staged.put(h_back, src_idx);
+                            }
+                        }
                     }
-                    _ = try staged.put(h_raw, idx_nb_opt.?);
                 }
-            }
-            var it_s = staged.iterator();
-            while (it_s.next()) |p| {
-                _ = try coord_to_index.put(p.key_ptr.*, p.value_ptr.*);
+                var it_s = staged.iterator();
+                while (it_s.next()) |p| {
+                    if (!coord_to_index.contains(p.key_ptr.*)) {
+                        _ = try coord_to_index.put(p.key_ptr.*, p.value_ptr.*);
+                        added_any = true;
+                    }
+                }
             }
         }
 
