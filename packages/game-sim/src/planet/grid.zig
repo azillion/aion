@@ -757,100 +757,27 @@ pub const Grid = struct {
     }
 
     fn recomputeSeamPermsFromAxes(self: *Grid) void {
-        // Build face_perm in the ACTUAL axis basis by label equality only:
-        // For each seam (f,e)->(nf,ne), p_actual maps nf actual axis j to f actual axis i
-        // such that Pf[invAf[i]] == Pnf[invAnf[j]].
+        // Build-only: neighbors are frozen; axes are propagated.
+        // Write both directions per seam once; skip if reciprocal already set.
         var f: usize = 0;
         while (f < 20) : (f += 1) {
             var e: usize = 0;
             while (e < 3) : (e += 1) {
-                // Derive neighbor nf by shared labels on edge (unordered)
-                const Pf = self.normalized_faces[f];
-                const kf: u8 = @intCast(e);
-                const la: u8 = Pf[(kf + 1) % 3];
-                const lb: u8 = Pf[(kf + 2) % 3];
-                var nf: usize = 20;
-                var Pnf: [3]u8 = .{ 0, 0, 0 };
-                var ia: u8 = 3;
-                var ib: u8 = 3;
-                var cand: usize = 0;
-                while (cand < 20) : (cand += 1) {
-                    if (cand == f) continue;
-                    const Pc = self.normalized_faces[cand];
-                    var found_a: bool = false;
-                    var found_b: bool = false;
-                    var ixa: u8 = 3;
-                    var ixb: u8 = 3;
-                    var j: u8 = 0;
-                    while (j < 3) : (j += 1) {
-                        if (!found_a and Pc[j] == la) {
-                            found_a = true;
-                            ixa = j;
-                        }
-                        if (!found_b and Pc[j] == lb) {
-                            found_b = true;
-                            ixb = j;
-                        }
-                    }
-                    if (found_a and found_b) {
-                        nf = cand;
-                        Pnf = Pc;
-                        ia = ixa;
-                        ib = ixb;
-                        break;
-                    }
-                }
-                std.debug.assert(nf < 20 and ia < 3 and ib < 3);
-                // Neighbor edge index opposite endpoints (unordered) — derived later from perm
-                // Build dst->src perm in ACTUAL axes via label-equality reference
-                const Af = self.face_axes[f];
-                const invAnf = invertPerm3(self.face_axes[nf]);
-                // Compose actual perm per contract: p_actual = Af ∘ p_lbl ∘ inv(Anf)
-                // Here p_lbl is identity on labels for reversed-edge pairing of endpoints
-                const p_use = composeActualPerm(Af, invAnf, .{ 0, 1, 2 });
-                // Geometry-derived neighbor edge index (reversed endpoints) — authoritative
-                const ne2: u8 = @intCast(3 - ia - ib);
-                // Write forward perm and neighbor edge index
-                self.face_perm[f][e] = p_use;
-                self.face_neighbors[f][e][1] = ne2 + 1;
-                // Write inverse at reciprocal seam and ensure reciprocity
-                const p_inv = invertPerm3(p_use);
-                self.face_perm[nf][ne2] = p_inv;
-                self.face_neighbors[nf][ne2][0] = f + 1;
-                self.face_neighbors[nf][ne2][1] = e + 1;
-            }
-        }
-        // Involution checks and label-endpoint sanity (repair-by-label-equality if needed)
-        for (0..20) |ff| {
-            for (0..3) |ee| {
-                const nf = self.face_neighbors[ff][ee][0] - 1;
-                const ne = self.face_neighbors[ff][ee][1] - 1;
-                const p = self.face_perm[ff][ee];
-                const q = self.face_perm[nf][ne];
-                const Pf = self.normalized_faces[ff];
-                const Pnf = self.normalized_faces[nf];
-                const Af = self.face_axes[ff]; // label->actual
-                const Anf = self.face_axes[nf]; // label->actual
-                const invAf = invertPerm3(Af); // actual->label
-                const invAnf = invertPerm3(Anf); // actual->label
-                const k_nf: u8 = @intCast(ne);
-                const la_nf: u8 = (k_nf + 1) % 3;
-                const lb_nf: u8 = (k_nf + 2) % 3;
-                const j_a: u8 = Anf[la_nf];
-                const j_b: u8 = Anf[lb_nf];
-                // Shared endpoint labels must match through dst->src perm, bijection and inverse sanity
-                const j_rest: u8 = 3 - j_a - j_b;
-                const i_rest: u8 = 3 - p[j_a] - p[j_b];
-                if (!(Pf[invAf[p[j_a]]] == Pnf[invAnf[j_a]] and Pf[invAf[p[j_b]]] == Pnf[invAnf[j_b]] and p[j_rest] == i_rest and q[p[0]] == 0 and q[p[1]] == 1 and q[p[2]] == 2)) {
-                    // Diagnostic print
-                    if (@import("builtin").is_test) {
-                        std.debug.print("SEAM_CHECK_FAIL: ff={d} ee={d} nf={d} ne={d}\n", .{ ff, ee, nf, ne });
-                        std.debug.print("  Pf=({d},{d},{d}) Pnf=({d},{d},{d})\n", .{ Pf[0], Pf[1], Pf[2], Pnf[0], Pnf[1], Pnf[2] });
-                        std.debug.print("  Af=({d},{d},{d}) invAf=({d},{d},{d}) Anf=({d},{d},{d}) invAnf=({d},{d},{d})\n", .{ Af[0], Af[1], Af[2], invAf[0], invAf[1], invAf[2], Anf[0], Anf[1], Anf[2], invAnf[0], invAnf[1], invAnf[2] });
-                        std.debug.print("  p=({d},{d},{d}) q=({d},{d},{d})\n", .{ p[0], p[1], p[2], q[0], q[1], q[2] });
-                    }
-                    std.debug.assert(false);
-                }
+                if (self.face_perm[f][e][0] != 255) continue;
+                const nf0 = self.face_neighbors[f][e][0];
+                const ne0 = self.face_neighbors[f][e][1];
+                if (nf0 == 0 or ne0 == 0) continue; // skip unset slots defensively
+                const nf = nf0 - 1;
+                const ne = ne0 - 1;
+                // Label-basis reversed oriented edge mapping
+                const Pf_lbl = self.normalized_faces[f];
+                const Pnf_lbl = self.normalized_faces[nf];
+                const p_lbl = buildPLblFromReversedEdge(.{ Pf_lbl[0], Pf_lbl[1], Pf_lbl[2] }, .{ Pnf_lbl[0], Pnf_lbl[1], Pnf_lbl[2] }, @intCast(e));
+                // Compose to actual basis
+                const invA_nf = invertPerm3(self.face_axes[nf]);
+                const p_actual = composeActualPerm(self.face_axes[f], invA_nf, p_lbl);
+                self.setSeamPerm(f, e, p_actual, "builder f,e");
+                self.setSeamPerm(nf, ne, invertPerm3(p_actual), "builder nf,ne");
             }
         }
         self.freezeSeams();
