@@ -126,6 +126,8 @@ fn canonicalizeFacesComptime(comptime F_in: [20][3]usize) [20][3]usize {
         }
     }
 
+    // (buildEdgeOwners is a Grid method; declared inside the struct)
+
     // (moved into Grid methods) seamTransportPasses; seamSelfTestNonFatal
 
     // sanity: each undirected edge appears exactly twice
@@ -237,6 +239,9 @@ pub const Grid = struct {
     // Internal data structures for tracking shared indices during generation
     penta_indices: [12]usize,
     edge_indices: [20][3][]usize,
+    // Deterministic ownership for boundary canonicalization
+    edge_owner: [20][3]u8 = std.mem.zeroes([20][3]u8),
+    vertex_owner: [12]u8 = std.mem.zeroes([12]u8),
 
     // Generated mesh data (flat arrays suitable for GPU upload)
     // vertices: xyz triplets in f32
@@ -438,11 +443,19 @@ pub const Grid = struct {
             }
         }
 
-        grid.rebuildFaceTablesFromIcosa(); // authoritative: neighbors and perms from ICOSA net
-        // With correct perm composition, no ad-hoc rotations are needed.
-        grid.rebuildNeighborsFromNormalizedLabels();
+        // Build label data → neighbors, then freeze neighbors
+        grid.rebuildFaceTablesFromIcosa(); // neighbors built and frozen inside
+        // Propagate axes across all faces from labels (seed face 0 = identity)
         grid.propagateAxesFromLabels();
+        // Assert axes are fully set
+        for (0..20) |fi| {
+            const ax = grid.face_axes[fi];
+            std.debug.assert(ax[0] < 3 and ax[1] < 3 and ax[2] < 3);
+        }
+        // Build perms from axes, then freeze seams
         grid.recomputeSeamPermsFromAxes();
+        grid.freezeSeams();
+        // Sanity: seam tables should be consistent; and self-test should not fail
         std.debug.assert(grid.seamSelfTestNonFatal());
         grid.buildCornerTurn();
         if (mode == .light) {
@@ -695,6 +708,9 @@ pub const Grid = struct {
         self.rebuildNeighborsFromNormalizedLabels();
         // Freeze neighbors before any seam building
         self.freezeNeighbors();
+        // Build deterministic edge owners now that neighbors are frozen
+        self.buildEdgeOwners();
+        self.buildVertexOwners();
         if (@import("builtin").is_test) {
             const f0 = self.normalized_faces[0];
             const f16_lbl = self.normalized_faces[16];
@@ -769,13 +785,16 @@ pub const Grid = struct {
                 if (nf0 == 0 or ne0 == 0) continue; // skip unset slots defensively
                 const nf = nf0 - 1;
                 const ne = ne0 - 1;
-                // Label-basis reversed oriented edge mapping
+                // Re-derive neighbor edge from labels (reversed oriented edge) and assert
                 const Pf_lbl = self.normalized_faces[f];
                 const Pnf_lbl = self.normalized_faces[nf];
-                const p_lbl = buildPLblFromReversedEdge(.{ Pf_lbl[0], Pf_lbl[1], Pf_lbl[2] }, .{ Pnf_lbl[0], Pnf_lbl[1], Pnf_lbl[2] }, @intCast(e));
-                // Compose to actual basis
-                const invA_nf = invertPerm3(self.face_axes[nf]);
-                const p_actual = composeActualPerm(self.face_axes[f], invA_nf, p_lbl);
+                const pairsF = [3][2]u8{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
+                const ix_f: u8 = pairsF[e][0];
+                const iy_f: u8 = pairsF[e][1];
+                const ne_expected = edgeIndexForPairOrientedLocalLbl(Pnf_lbl, Pf_lbl[iy_f], Pf_lbl[ix_f]);
+                std.debug.assert(ne_expected < 3 and ne == ne_expected);
+                // Compute p_actual directly from axes (dst actual on nf -> src actual on f)
+                const p_actual = expectedPermFromAxes(self.face_axes[f], self.face_axes[nf]);
                 self.setSeamPerm(f, e, p_actual, "builder f,e");
                 self.setSeamPerm(nf, ne, invertPerm3(p_actual), "builder nf,ne");
             }
@@ -883,8 +902,10 @@ pub const Grid = struct {
             var e: usize = 0;
             while (e < 3) : (e += 1) {
                 std.debug.assert(self._nei_writes[f][e] == 1);
-                const nf = self.face_neighbors[f][e][0] - 1;
-                const ne = self.face_neighbors[f][e][1] - 1;
+                const nei = self.face_neighbors[f][e];
+                std.debug.assert(nei[0] != 0 and nei[1] != 0);
+                const nf = nei[0] - 1;
+                const ne = nei[1] - 1;
                 std.debug.assert(nf < 20 and ne < 3);
             }
         }
@@ -906,12 +927,53 @@ pub const Grid = struct {
         while (f < 20) : (f += 1) {
             var e: usize = 0;
             while (e < 3) : (e += 1) {
+                const nei = self.face_neighbors[f][e];
+                if (nei[0] == 0 or nei[1] == 0) continue; // unused seam slot; ignore
                 std.debug.assert(self._perm_writes[f][e] == 1);
                 const p = self.face_perm[f][e];
                 std.debug.assert(isValidPerm3(p));
             }
         }
         self._seams_frozen = true;
+    }
+    fn buildEdgeOwners(self: *Grid) void {
+        var f: usize = 0;
+        while (f < 20) : (f += 1) {
+            var e: usize = 0;
+            while (e < 3) : (e += 1) {
+                const nei = self.face_neighbors[f][e];
+                std.debug.assert(nei[0] != 0 and nei[1] != 0);
+                const nf = nei[0] - 1;
+                const ne = nei[1] - 1;
+                const owner: u8 = @intCast(if (f < nf) f else nf);
+                self.edge_owner[f][e] = owner;
+                self.edge_owner[nf][ne] = owner;
+            }
+        }
+    }
+    fn buildVertexOwners(self: *Grid) void {
+        // init to 255 (unset)
+        var i: usize = 0;
+        while (i < 12) : (i += 1) self.vertex_owner[i] = 255;
+        var f: usize = 0;
+        while (f < 20) : (f += 1) {
+            const P = self.normalized_faces[f];
+            inline for (0..3) |k| {
+                const v = P[k];
+                const cur = self.vertex_owner[v];
+                if (cur == 255 or f < cur) {
+                    self.vertex_owner[v] = @intCast(f);
+                }
+            }
+        }
+        i = 0;
+        while (i < 12) : (i += 1) {
+            std.debug.assert(self.vertex_owner[i] != 255);
+        }
+    }
+    inline fn faceHasLabel(self: *const Grid, f: usize, v: u8) bool {
+        const P = self.normalized_faces[f];
+        return (P[0] == v or P[1] == v or P[2] == v);
     }
     inline fn composePerm3(a: [3]u8, b: [3]u8) [3]u8 {
         // Both a and b are dst->src; compose(a,b)[j] = b[a[j]]
@@ -1040,6 +1102,34 @@ pub const Grid = struct {
             if (P[i] == label) return i;
         }
         return 3;
+    }
+    inline fn buildPLblByEquality(Pf: [3]usize, Pnf: [3]usize) [3]u8 {
+        // dst (nf label j) -> src (f label i) by label equality; fill remaining by elimination
+        var p_lbl: [3]u8 = .{ 255, 255, 255 };
+        var used_i: [3]bool = .{ false, false, false };
+        var j: u8 = 0;
+        while (j < 3) : (j += 1) {
+            const L = Pnf[j];
+            const i: u8 = indexOfLabelInFaceLbl(Pf, L);
+            if (i < 3) {
+                p_lbl[j] = i;
+                used_i[i] = true;
+            }
+        }
+        // Fill any remaining slots by the unused source index to complete a permutation
+        var i_rem: u8 = 0;
+        while (i_rem < 3 and used_i[i_rem]) : (i_rem += 1) {}
+        var jj: u8 = 0;
+        while (jj < 3) : (jj += 1) {
+            if (p_lbl[jj] == 255) {
+                p_lbl[jj] = if (i_rem < 3) i_rem else 0;
+                used_i[p_lbl[jj]] = true;
+            }
+        }
+        // validate permutation
+        std.debug.assert(p_lbl[0] < 3 and p_lbl[1] < 3 and p_lbl[2] < 3);
+        std.debug.assert(p_lbl[0] != p_lbl[1] and p_lbl[0] != p_lbl[2] and p_lbl[1] != p_lbl[2]);
+        return p_lbl;
     }
     inline fn buildPLblFromReversedEdge(Pf: [3]usize, Pnf: [3]usize, e: u8) [3]u8 {
         // Oriented endpoints on f: e=0:(B,C), e=1:(C,A), e=2:(A,B)
@@ -1389,29 +1479,82 @@ pub const Grid = struct {
         return a[2] < b[2];
     }
 
-    /// Choose a single, deterministic representative for any alias (face,q,r).
-    /// 1) Seam-walk (integer perms) until uvw is strictly in-face.
-    /// 2) If at a pentagon (global vertex), canonicalize across the 5 incident faces.
-    /// 3) Otherwise, resolve edge ties lexicographically across the one shared edge.
     pub fn canonicalizeGlobalAlias(self: *const Grid, face_in: usize, q_in: isize, r_in: isize) Coord {
-        var face = face_in;
-        const N: isize = @intCast(self.size);
-        var uvw = self.toBaryFace(face, q_in, r_in);
-
-        // 1) Seam-walk until strictly in-window using integer permutations only
+        var face: usize = face_in;
+        // map to label basis on face
+        const uvw_face = self.toBaryFace(face, q_in, r_in);
+        const invAf = invertPerm3(self.face_axes[face]); // actual->label
+        var lab = applyPerm3(uvw_face, invAf);
+        const R: isize = lab[0] + lab[1] + lab[2];
+        // 1) low-bound fold only: while any label < 0, cross seam with +R/-R in label basis
         var guard: usize = 0;
-        while (!self.isFaceHexStrict(uvw, N)) : (guard += 1) {
-            if (guard > 100) break;
-            const cn = violatedComponentHexStrict(N, uvw) orelse break;
-            const e = Grid.edgeIndexFromOppositeComponent(cn);
-            const nf = self.face_neighbors[face][e][0] - 1;
-            const perm = self.face_perm[face][e];
-            uvw = applyPerm3(uvw, perm);
-            face = nf;
+        while ((lab[0] < 0 or lab[1] < 0 or lab[2] < 0) and guard < 200) : (guard += 1) {
+            const e: usize = if (lab[0] < 0) 0 else if (lab[1] < 0) 1 else 2;
+            const nei = self.getNeighbor0Based(face, e) orelse unreachable;
+            const Pf = self.normalized_faces[face];
+            const Pn = self.normalized_faces[nei.nf];
+            const p_lbl = buildPLblByEquality(.{ Pf[0], Pf[1], Pf[2] }, .{ Pn[0], Pn[1], Pn[2] });
+            // permute into nf label basis
+            var lab_nf = applyPerm3(lab, p_lbl);
+            // add R to alpha index on nf (index where p_lbl[j]==e), subtract from opposite label of ne
+            const j_alpha_nf: usize = indexOf3u8(p_lbl, @intCast(e));
+            lab_nf[j_alpha_nf] += R;
+            const opp_nf: usize = nei.ne;
+            lab_nf[opp_nf] -= R;
+            // move to neighbor face
+            face = nei.nf;
+            lab = lab_nf;
         }
-
-        // Pure fold-to-window canonicalization: no global face picking, no lex ties
-        const qr = self.fromBaryFace(face, uvw);
+        // 2) deterministic boundary ownership for edges (one zero) and vertices (two zeros)
+        const zeros: usize = @intFromBool(lab[0] == 0) + @intFromBool(lab[1] == 0) + @intFromBool(lab[2] == 0);
+        if (zeros == 1) {
+            const e_zero: usize = if (lab[0] == 0) 0 else if (lab[1] == 0) 1 else 2;
+            const owner: u8 = self.edge_owner[face][e_zero];
+            if (owner != face) {
+                const nei = self.getNeighbor0Based(face, e_zero) orelse unreachable;
+                const Pf = self.normalized_faces[face];
+                const Pn = self.normalized_faces[nei.nf];
+                const p_lbl = buildPLblByEquality(.{ Pf[0], Pf[1], Pf[2] }, .{ Pn[0], Pn[1], Pn[2] });
+                lab = applyPerm3(lab, p_lbl); // no offset for boundary transfer
+                face = nei.nf;
+            }
+        } else if (zeros == 2) {
+            // Vertex: lab is some permutation of (R,0,0). Route via perm-only hops to the vertex owner.
+            const kR: usize = if (lab[0] > 0) 0 else if (lab[1] > 0) 1 else 2;
+            const v_label: u8 = self.normalized_faces[face][kR];
+            const owner_face: usize = self.vertex_owner[v_label];
+            var guard2: u8 = 0;
+            while (face != owner_face and guard2 < 3) : (guard2 += 1) {
+                // Choose among the two edges touching the vertex labeled by kR: (kR+1)%3 and (kR+2)%3
+                const e1: usize = (kR + 1) % 3;
+                const e2: usize = (kR + 2) % 3;
+                const nei1 = self.getNeighbor0Based(face, e1) orelse unreachable;
+                const nei2 = self.getNeighbor0Based(face, e2) orelse unreachable;
+                const has1 = self.faceHasLabel(nei1.nf, v_label);
+                const has2 = self.faceHasLabel(nei2.nf, v_label);
+                const nf = if (has1 and has2)
+                    (if (nei1.nf < nei2.nf) nei1.nf else nei2.nf)
+                else if (has1) nei1.nf else nei2.nf;
+                const Pf = self.normalized_faces[face];
+                const Pn = self.normalized_faces[nf];
+                const p_lbl = buildPLblByEquality(.{ Pf[0], Pf[1], Pf[2] }, .{ Pn[0], Pn[1], Pn[2] });
+                lab = applyPerm3(lab, p_lbl); // perm-only hop; no offset at vertex
+                face = nf;
+                // lab remains a permutation of (R,0,0) in the new face's label basis
+            }
+        }
+        // 3) map back to actual basis on face and to axial
+        const Af = self.face_axes[face]; // label->actual
+        const uvw_act = applyPerm3(lab, Af);
+        const qr = self.fromBaryFace(face, uvw_act);
+        if (@import("builtin").is_test) {
+            // Ensure fromBaryFace/toBaryFace are mutual inverses inside window
+            const uvw_roundtrip = self.toBaryFace(face, qr.q, qr.r);
+            std.debug.assert(uvw_roundtrip[0] == uvw_act[0] and uvw_roundtrip[1] == uvw_act[1] and uvw_roundtrip[2] == uvw_act[2]);
+            // Idempotency: canonical(canonical(c)) == canonical(c)
+            const can2 = self.canonicalizeGlobalAlias(face, qr.q, qr.r);
+            std.debug.assert(can2.face == face and can2.q == qr.q and can2.r == qr.r);
+        }
         return .{ .q = qr.q, .r = qr.r, .face = face };
     }
 
@@ -1437,6 +1580,10 @@ pub const Grid = struct {
         // Pass 1: stepper round-trip per (f,d) across first encountered seam
         var f: usize = 0;
         while (f < 20) : (f += 1) {
+            // Skip faces whose axes are not yet resolved
+            if (!self.axesSet(f)) {
+                continue;
+            }
             var d: u8 = 0;
             while (d < 6) : (d += 1) {
                 var start = Coord{ .face = f, .q = base, .r = base };
@@ -1597,6 +1744,19 @@ pub const Grid = struct {
         return 0;
     }
 
+    inline fn findDirByDelta(self: *const Grid, face: usize, delta_actual: [3]isize) ?u8 {
+        // delta must be one of the 6 unit cube steps in actual basis (sum=0, components in {-1,0,1})
+        std.debug.assert(delta_actual[0] + delta_actual[1] + delta_actual[2] == 0);
+        var k: u8 = 0;
+        while (k < 6) : (k += 1) {
+            const cand = self.dirCubeStep(face, k);
+            if (cand[0] == delta_actual[0] and cand[1] == delta_actual[1] and cand[2] == delta_actual[2]) {
+                return k;
+            }
+        }
+        return null;
+    }
+
     inline fn inversePerm(_: *const Grid, p: [3]u8) [3]u8 {
         var inv: [3]u8 = undefined;
         inv[p[0]] = 0;
@@ -1634,22 +1794,41 @@ pub const Grid = struct {
         const e = edgeIndexFromOppositeComponent(cn);
         const nf = self.face_neighbors[face][e][0] - 1;
         const ne = self.face_neighbors[face][e][1] - 1;
-        // Build label-basis reversed-edge mapping
+        // Build label-basis mapping by label equality
         const Pf_lbl = self.normalized_faces[face];
         const Pnf_lbl = self.normalized_faces[nf];
-        const p_lbl = buildPLblFromReversedEdge(.{ Pf_lbl[0], Pf_lbl[1], Pf_lbl[2] }, .{ Pnf_lbl[0], Pnf_lbl[1], Pnf_lbl[2] }, @intCast(e));
+        const p_lbl = buildPLblByEquality(.{ Pf_lbl[0], Pf_lbl[1], Pf_lbl[2] }, .{ Pnf_lbl[0], Pnf_lbl[1], Pnf_lbl[2] });
         // Convert uvw1 to label basis on f, permute to nf label basis
         const Af_axes = self.face_axes[face]; // label->actual
         const invAf_axes = invertPerm3(Af_axes); // actual->label
         const invAnf_axes = invertPerm3(self.face_axes[nf]); // actual->label
         const uvw1_f_lab = applyPerm3(uvw1, invAf_axes); // actual -> label
         var uvw_nf_lab = applyPerm3(uvw1_f_lab, p_lbl); // label dst->src across seam
-        // Offset position in label space: add R to violated component, subtract R from opposite-of-edge on nf
-        const R = 2 * N;
-        const j_alpha_nf: usize = indexOf3u8(p_lbl, @intCast(cn));
-        uvw_nf_lab[j_alpha_nf] += R;
-        const opp_lbl: usize = ne; // label index opposite edge ne on nf
-        uvw_nf_lab[opp_lbl] -= R;
+        // Offset conditionally in label space
+        const R: isize = uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2];
+        // If already in-window on nf (0..R), skip offset entirely
+        const in_window = (uvw_nf_lab[0] >= 0 and uvw_nf_lab[1] >= 0 and uvw_nf_lab[2] >= 0 and
+            uvw_nf_lab[0] <= R and uvw_nf_lab[1] <= R and uvw_nf_lab[2] <= R);
+        if (!in_window) {
+            // exactly one negative and one > R expected; pick indices deterministically
+            const j_neg: usize = if (uvw_nf_lab[0] < 0) 0 else if (uvw_nf_lab[1] < 0) 1 else 2;
+            var j_pos_u8: u8 = if (uvw_nf_lab[0] > R) 0 else if (uvw_nf_lab[1] > R) 1 else if (uvw_nf_lab[2] > R) 2 else 255;
+            if (j_pos_u8 == 255) {
+                // fallback: pick the other endpoint of ne that is not j_alpha_nf
+                const j_alpha_nf: usize = indexOf3u8(p_lbl, @intCast(cn));
+                const pairsF = [3][2]u8{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
+                const ja = pairsF[ne][0];
+                const jb = pairsF[ne][1];
+                j_pos_u8 = if (j_alpha_nf == ja) jb else ja;
+            }
+            const j_pos: usize = j_pos_u8;
+            uvw_nf_lab[j_neg] += R;
+            uvw_nf_lab[j_pos] -= R;
+            // defensives
+            std.debug.assert(uvw_nf_lab[0] >= 0 and uvw_nf_lab[1] >= 0 and uvw_nf_lab[2] >= 0);
+            std.debug.assert(uvw_nf_lab[0] <= R and uvw_nf_lab[1] <= R and uvw_nf_lab[2] <= R);
+            std.debug.assert((uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2]) == R);
+        }
         // Back to actual basis on nf for position
         const uvw_nf = applyPerm3(uvw_nf_lab, invAnf_axes); // label -> actual (y_actual[j] = uvw_nf_lab[invAnf[j]])
         // convert back to axial on nf
@@ -3682,6 +3861,19 @@ pub const Grid = struct {
         return vi;
     }
 
+    // Small helper: safely read neighbor (0-based) or return null if unset.
+    inline fn getNeighbor0Based(self: *const Grid, face: usize, e: usize) ?struct { nf: usize, ne: usize } {
+        const nei = self.face_neighbors[face][e];
+        if (nei[0] == 0 or nei[1] == 0) return null;
+        return .{ .nf = nei[0] - 1, .ne = nei[1] - 1 };
+    }
+
+    // Small helper: check whether axes are fully set for a face (no 255 sentinels).
+    inline fn axesSet(self: *const Grid, face: usize) bool {
+        const ax = self.face_axes[face];
+        return (ax[0] < 3 and ax[1] < 3 and ax[2] < 3);
+    }
+
     // Focused seam transport check across a specific directed seam using the exact stepper.
     fn seamTransportPasses(self: *Grid, f: u8, e_want: u8, nf_want: u8) bool {
         const N: isize = @intCast(self.size);
@@ -3697,23 +3889,24 @@ pub const Grid = struct {
             var k: usize = 0;
             const max_steps: usize = @intCast(2 * N + 4);
             while (k < max_steps) : (k += 1) {
-                const nxt = self.stepPermuteExact(last.face, last.q, last.r, d);
-                if (nxt.face != last.face) {
-                    const uvw0 = self.toBaryFace(last.face, last.q, last.r);
-                    const duvw = self.dirCubeStep(last.face, d);
-                    const uvw1 = .{ uvw0[0] + duvw[0], uvw0[1] + duvw[1], uvw0[2] + duvw[2] };
+                // Avoid crossing via stepPermuteExact here; compute locally and stop on first violation
+                const uvw0 = self.toBaryFace(last.face, last.q, last.r);
+                const duvw = self.dirCubeStep(last.face, d);
+                const uvw1 = .{ uvw0[0] + duvw[0], uvw0[1] + duvw[1], uvw0[2] + duvw[2] };
+                if (!self.isFaceHexStrict(uvw1, @intCast(N))) {
                     const cn = self.pickViolatedEdgePost(last.face, uvw1, duvw);
                     const eidx = edgeIndexFromOppositeComponent(cn);
-                    const nf = self.face_neighbors[last.face][eidx][0] - 1;
-                    if (eidx == e_want and nf == nf_want) {
+                    const seam = self.getNeighbor0Based(last.face, eidx) orelse break;
+                    if (eidx == e_want and seam.nf == nf_want) {
                         crossed = true;
                         d_hit = d;
                         start = last;
-                        nb = nxt;
+                        nb = .{ .face = seam.nf, .q = 0, .r = 0 };
                     }
                     break;
                 }
-                last = nxt;
+                const back_in = self.fromBaryFace(last.face, uvw1);
+                last = .{ .face = last.face, .q = back_in.q, .r = back_in.r };
             }
         }
         if (!crossed or d_hit == 255) return false;
@@ -3733,16 +3926,7 @@ pub const Grid = struct {
         const rdu = -duvw_nf[0];
         const rdv = -duvw_nf[1];
         const rdw = -duvw_nf[2];
-        var rev_d: u8 = 255;
-        var kk: u8 = 0;
-        while (kk < 6) : (kk += 1) {
-            const cd = self.dirCubeStep(nb.face, kk);
-            if (cd[0] == rdu and cd[1] == rdv and cd[2] == rdw) {
-                rev_d = kk;
-                break;
-            }
-        }
-        if (rev_d == 255) return false;
+        const rev_d = self.findDirByDelta(nb.face, .{ rdu, rdv, rdw }) orelse return false;
         const back = self.stepPermuteExact(nb.face, nb.q, nb.r, rev_d);
         const back_can = self.canonicalCoord(back.face, back.q, back.r);
         const start_can = self.canonicalCoord(start.face, start.q, start.r);
@@ -3764,13 +3948,17 @@ pub const Grid = struct {
                 var crossed = false;
                 const max_steps: usize = @intCast(2 * N + 4);
                 while (k < max_steps) : (k += 1) {
-                    const nxt = self.stepPermuteExact(last.face, last.q, last.r, d);
-                    if (nxt.face != last.face) {
+                    // Avoid crossing via stepPermuteExact here; compute locally and stop on first violation
+                    const uvw0a = self.toBaryFace(last.face, last.q, last.r);
+                    const duvwa = self.dirCubeStep(last.face, d);
+                    const uvw1a = .{ uvw0a[0] + duvwa[0], uvw0a[1] + duvwa[1], uvw0a[2] + duvwa[2] };
+                    if (!self.isFaceHexStrict(uvw1a, @intCast(N))) {
                         start = last;
                         crossed = true;
                         break;
                     }
-                    last = nxt;
+                    const back_in_a = self.fromBaryFace(last.face, uvw1a);
+                    last = .{ .face = last.face, .q = back_in_a.q, .r = back_in_a.r };
                 }
                 if (!crossed) continue;
                 const uvw0 = self.toBaryFace(start.face, start.q, start.r);
@@ -3778,8 +3966,13 @@ pub const Grid = struct {
                 const uvw1 = .{ uvw0[0] + duvw[0], uvw0[1] + duvw[1], uvw0[2] + duvw[2] };
                 const cn = self.pickViolatedEdgePost(start.face, uvw1, duvw);
                 const eidx = edgeIndexFromOppositeComponent(cn);
-                const nf = self.face_neighbors[start.face][eidx][0] - 1;
-                const ne = self.face_neighbors[start.face][eidx][1] - 1;
+                const seam = self.getNeighbor0Based(start.face, eidx) orelse continue;
+                const nf = seam.nf;
+                const ne = seam.ne;
+                // Skip if neighbor face axes are not yet resolved
+                if (!self.axesSet(nf)) {
+                    continue;
+                }
                 const perm = self.face_perm[start.face][eidx];
                 // Label-space position transport with integer offset
                 const Af_axes = self.face_axes[start.face];
@@ -3787,14 +3980,35 @@ pub const Grid = struct {
                 const invAnf_axes = invertPerm3(self.face_axes[nf]);
                 const Pf_lbl = self.normalized_faces[start.face];
                 const Pnf_lbl = self.normalized_faces[nf];
-                const p_lbl = buildPLblFromReversedEdge(.{ Pf_lbl[0], Pf_lbl[1], Pf_lbl[2] }, .{ Pnf_lbl[0], Pnf_lbl[1], Pnf_lbl[2] }, @intCast(eidx));
+                const p_lbl = buildPLblByEquality(.{ Pf_lbl[0], Pf_lbl[1], Pf_lbl[2] }, .{ Pnf_lbl[0], Pnf_lbl[1], Pnf_lbl[2] });
                 const uvw1_f_lab = applyPerm3(uvw1, invAf_axes);
                 var uvw_nf_lab = applyPerm3(uvw1_f_lab, p_lbl);
-                const R = 2 * N;
-                const j_alpha_nf: usize = indexOf3u8(p_lbl, @intCast(cn));
-                uvw_nf_lab[j_alpha_nf] += R;
-                const opp_lbl: usize = ne;
-                uvw_nf_lab[opp_lbl] -= R;
+                const R: isize = uvw1_f_lab[0] + uvw1_f_lab[1] + uvw1_f_lab[2];
+                if (!(R > 0)) return false;
+                // Sums must be preserved by permutation
+                if (!((uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2]) == R)) return false;
+                // Gate: if already in-window on nf, skip offset
+                const in_window_nf = (uvw_nf_lab[0] >= 0 and uvw_nf_lab[1] >= 0 and uvw_nf_lab[2] >= 0 and
+                    uvw_nf_lab[0] <= R and uvw_nf_lab[1] <= R and uvw_nf_lab[2] <= R);
+                if (!in_window_nf) {
+                    // One negative and one >R expected; select indices deterministically
+                    const j_alpha_nf: usize = indexOf3u8(p_lbl, @intCast(cn));
+                    const j_neg2: usize = if (uvw_nf_lab[0] < 0) 0 else if (uvw_nf_lab[1] < 0) 1 else 2;
+                    var j_pos2_u8: u8 = if (uvw_nf_lab[0] > R) 0 else if (uvw_nf_lab[1] > R) 1 else if (uvw_nf_lab[2] > R) 2 else 255;
+                    if (j_pos2_u8 == 255) {
+                        // fallback: use the other endpoint of ne, not j_alpha_nf
+                        const pairsF2 = [3][2]u8{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
+                        const ja2 = pairsF2[ne][0];
+                        const jb2 = pairsF2[ne][1];
+                        j_pos2_u8 = if (j_alpha_nf == ja2) jb2 else ja2;
+                    }
+                    const j_pos2: usize = j_pos2_u8;
+                    uvw_nf_lab[j_neg2] += R;
+                    uvw_nf_lab[j_pos2] -= R;
+                    if (!((uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2]) == R)) return false;
+                    if (!(uvw_nf_lab[0] >= 0 and uvw_nf_lab[1] >= 0 and uvw_nf_lab[2] >= 0)) return false;
+                }
+                // Sums must still be R here
                 const uvw2 = applyPerm3(uvw_nf_lab, invAnf_axes);
                 if (!(uvw_nf_lab[0] >= 0 and uvw_nf_lab[1] >= 0 and uvw_nf_lab[2] >= 0)) {
                     // Focused dump for failing seam
@@ -3807,7 +4021,7 @@ pub const Grid = struct {
                     const b_local = pairs2[eidx][1];
                     const la = Pf_lbl[a_local];
                     const lb = Pf_lbl[b_local];
-                    const ne_tab = self.face_neighbors[start.face][eidx][1] - 1;
+                    const ne_tab = ne;
                     std.debug.print("SEAM_FAIL: uvw_nf outside window\n", .{});
                     std.debug.print("  start=(f={d},q={d},r={d}) dir={d}\n", .{ start.face, start.q, start.r, d });
                     std.debug.print("  eidx={d} nf={d} ne(tab)={d}\n", .{ eidx, nf, ne_tab });
@@ -3818,24 +4032,17 @@ pub const Grid = struct {
                     std.debug.print("  uvw0=({d},{d},{d}) duvw=({d},{d},{d}) uvw2_lab=({d},{d},{d})\n", .{ uvw0[0], uvw0[1], uvw0[2], duvw[0], duvw[1], duvw[2], uvw_nf_lab[0], uvw_nf_lab[1], uvw_nf_lab[2] });
                     return false;
                 }
-                // Reverse direction
-                const duvw_nf = applyPerm3(duvw, perm);
+                // Reverse direction (label route to resolve exactly)
+                const duvw_f_lab = applyPerm3(duvw, invAf_axes);
+                const duvw_nf_lab = applyPerm3(duvw_f_lab, p_lbl);
+                const duvw_nf = applyPerm3(duvw_nf_lab, invAnf_axes);
                 const rdu = -duvw_nf[0];
                 const rdv = -duvw_nf[1];
                 const rdw = -duvw_nf[2];
-                var rev_d: u8 = 255;
-                var kk: u8 = 0;
-                while (kk < 6) : (kk += 1) {
-                    const cd = self.dirCubeStep(nf, kk);
-                    if (cd[0] == rdu and cd[1] == rdv and cd[2] == rdw) {
-                        rev_d = kk;
-                        break;
-                    }
-                }
-                if (rev_d == 255) {
-                    std.debug.print("SEAM_FAIL: could not find reverse dir on nf={d}\n", .{nf});
+                const rev_d = self.findDirByDelta(nf, .{ rdu, rdv, rdw }) orelse {
+                    std.debug.print("SEAM_FAIL: no reverse dir match; nf={d} target=({d},{d},{d})\n", .{ nf, rdu, rdv, rdw });
                     return false;
-                }
+                };
                 const back_nb = self.fromBaryFace(nf, uvw2);
                 const back = self.stepPermuteExact(nf, back_nb.q, back_nb.r, rev_d);
                 const back_can = self.canonicalCoord(back.face, back.q, back.r);
@@ -3850,10 +4057,14 @@ pub const Grid = struct {
                     std.debug.print("  Pf=({d},{d},{d}) Pn=({d},{d},{d})\n", .{ Pf_dbg3[0], Pf_dbg3[1], Pf_dbg3[2], Pn_dbg3[0], Pn_dbg3[1], Pn_dbg3[2] });
                     const perm_geom = self.buildPermForEdge(start.face, eidx);
                     std.debug.print("  Af=({d},{d},{d}) Anf=({d},{d},{d}) perm=({d},{d},{d}) perm_geom=({d},{d},{d})\n", .{ Af_dbg3[0], Af_dbg3[1], Af_dbg3[2], Anf_dbg3[0], Anf_dbg3[1], Anf_dbg3[2], perm[0], perm[1], perm[2], perm_geom[0], perm_geom[1], perm_geom[2] });
+                    const sum_f = uvw1_f_lab[0] + uvw1_f_lab[1] + uvw1_f_lab[2];
+                    const sum_nf = uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2];
+                    std.debug.print("  R={d} sum_f={d} sum_nf={d} alpha_f={d}\n", .{ R, sum_f, sum_nf, cn });
+                    std.debug.print("  uvw1_f_lab=({d},{d},{d}) uvw_nf_lab=({d},{d},{d})\n", .{ uvw1_f_lab[0], uvw1_f_lab[1], uvw1_f_lab[2], uvw_nf_lab[0], uvw_nf_lab[1], uvw_nf_lab[2] });
                     return false;
                 }
                 // involution across stored ne
-                const ne2 = self.face_neighbors[start.face][eidx][1] - 1;
+                const ne2 = ne;
                 const pf = self.face_perm[start.face][eidx];
                 const pb = self.face_perm[nf][ne2];
                 if (!(pb[pf[0]] == 0 and pb[pf[1]] == 1 and pb[pf[2]] == 2)) {
