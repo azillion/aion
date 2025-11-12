@@ -51,4 +51,44 @@ pub fn build(b: *std.Build) void {
     wasm_exe.rdynamic = true;
 
     b.installArtifact(wasm_exe);
+
+    // ----------------------------
+    // Unit tests (native host)
+    // ----------------------------
+    const host_target = b.resolveTargetQuery(.{});
+    const math_host = b.createModule(.{ .root_source_file = b.path("src/math/index.zig"), .target = host_target, .optimize = optimize });
+    const core_host = b.createModule(.{ .root_source_file = b.path("src/core/types.zig"), .target = host_target, .optimize = optimize });
+    const physics_host = b.createModule(.{ .root_source_file = b.path("src/physics/nbody.zig"), .target = host_target, .optimize = optimize });
+    const sim_host = b.createModule(.{ .root_source_file = b.path("src/sim/index.zig"), .target = host_target, .optimize = optimize });
+    const planet_host = b.createModule(.{ .root_source_file = b.path("src/planet/index.zig"), .target = host_target, .optimize = optimize });
+
+    core_host.addImport("math", math_host);
+    physics_host.addImport("core", core_host);
+    physics_host.addImport("math", math_host);
+    physics_host.addImport("sim", sim_host);
+    sim_host.addImport("core", core_host);
+    sim_host.addImport("math", math_host);
+    planet_host.addImport("math", math_host);
+
+    const test_root = b.createModule(.{
+        .root_source_file = b.path("src/planet/test_grid.zig"),
+        .target = host_target,
+        .optimize = optimize,
+    });
+    test_root.addImport("core", core_host);
+    test_root.addImport("math", math_host);
+    test_root.addImport("physics", physics_host);
+    test_root.addImport("sim", sim_host);
+    test_root.addImport("planet", planet_host);
+    const unit_tests = b.addTest(.{ .root_module = test_root });
+
+    const run_tests = b.addRunArtifact(unit_tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_tests.step);
+
+    // Focused seam self-test
+    const run_seam = b.addRunArtifact(unit_tests);
+    run_seam.addArgs(&.{ "--test-filter", "seam tables consistent" });
+    const seam_step = b.step("test-seam", "Run only seam self-test");
+    seam_step.dependOn(&run_seam.step);
 }
