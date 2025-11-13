@@ -109,10 +109,6 @@ fn canonicalizeFacesComptime(comptime F_in: [20][3]usize) [20][3]usize {
         }
     }
 
-    // (buildEdgeOwners is a Grid method; declared inside the struct)
-
-    // (moved into Grid methods) seamTransportPasses; seamSelfTestNonFatal
-
     // sanity: each undirected edge appears exactly twice
     inline for (0..20) |i| {
         const t = F[i];
@@ -176,11 +172,6 @@ const DIR_BARY_LABEL = [_][3]isize{
     .{ 0, -1, 1 },
 };
 
-// Tiny, sum-preserving perturbation vectors to break symmetry in projection.
-// A larger magnitude is used to prevent the nudge from being absorbed by the
-// integer arithmetic of the enforceHexWindow projection.
-const NUDGE = [_][3]isize{ .{ 2, -1, -1 }, .{ -1, 2, -1 }, .{ -1, -1, 2 }, .{ -2, 1, 1 }, .{ 1, -2, 1 }, .{ 1, 1, -2 } };
-
 var debug_edge_logs: usize = 0;
 var debug_nbr_logs: usize = 0;
 var test_probe_done: bool = false;
@@ -197,8 +188,7 @@ pub const Grid = struct {
     face_neighbors: [20][3][2]usize,
     // permutation mapping of barycentric coords across each face edge
     face_perm: [20][3][3]u8,
-    // Precomputed donor index (jminus) per directed seam (f,e) in LABEL basis
-    seam_jminus: [20][3]u8 = [_][3]u8{.{ 255, 255, 255 }} ** 20,
+
     // per-face axes mapping from face-local vertex order (0,1,2) to standard (u,v,w)
     face_axes: [20][3]u8,
     // Normalized (0-based) face label triples (A,B,C) after global winding+rotation normalization
@@ -209,11 +199,6 @@ pub const Grid = struct {
     // Guarded neighbor writes
     _nei_writes: [20][3]u8 = std.mem.zeroes([20][3]u8),
     _neighbors_frozen: bool = false,
-    // Precomputed corner-turn map for pentagon outward steps:
-    // For a given (face, local_vertex, exit_edge_on_face),
-    // stores the immediate turn edge on the neighbor face and the final face.
-    corner_turn_edge: [20][3][3]u8, // stores e2+1 or 0 if N/A
-    corner_final_face: [20][3][3]u8, // stores nf2+1 or 0 if N/A
 
     // Debug snapshots to guard against accidental seam rewrites after init (Debug mode only)
     _perm_snapshot: [20][3][3]u8 = std.mem.zeroes([20][3][3]u8),
@@ -281,8 +266,7 @@ pub const Grid = struct {
             .face_axes = std.mem.zeroes([20][3]u8),
             .normalized_faces = std.mem.zeroes([20][3]u8),
             ._nei_writes = std.mem.zeroes([20][3]u8),
-            .corner_turn_edge = std.mem.zeroes([20][3][3]u8),
-            .corner_final_face = std.mem.zeroes([20][3][3]u8),
+
             ._perm_snapshot = std.mem.zeroes([20][3][3]u8),
             ._ne_snapshot = std.mem.zeroes([20][3][2]usize),
             .penta_indices = undefined,
@@ -364,49 +348,6 @@ pub const Grid = struct {
         if (self.vertices) |v| self.allocator.free(v);
         if (self.elevations) |e| self.allocator.free(e);
         if (self.indices) |i| self.allocator.free(i);
-    }
-
-    fn buildFaceNeighbors(self: *Grid) !void {
-
-        // zero init
-        for (0..20) |fi| {
-            for (0..3) |ei| {
-                self.face_neighbors[fi][ei] = .{ 0, 0 };
-            }
-        }
-
-        var map = std.AutoHashMap(EdgeKey, struct { f: usize, e: usize }).init(self.allocator);
-        defer map.deinit();
-
-        // pass 1: link opposite faces by shared edges
-        for (0..20) |fi| {
-            const tri = icosa_face_vertices[fi];
-            const edges = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
-            for (edges, 0..) |e, ei| {
-                const va = tri[e[0]];
-                const vb = tri[e[1]];
-                const k = edgeKey(va, vb);
-                if (map.getPtr(k)) |slot| {
-                    const of = slot.f;
-                    const oe = slot.e;
-                    self.face_neighbors[fi][ei] = .{ of + 1, oe + 1 };
-                    self.face_neighbors[of][oe] = .{ fi + 1, ei + 1 };
-                } else {
-                    try map.put(k, .{ .f = fi, .e = ei });
-                }
-            }
-        }
-        // any border (none in closed icosa) remains {0,0}
-        // Validate closed topology and reverse links
-        for (0..20) |f| {
-            for (0..3) |e| {
-                const nf = self.face_neighbors[f][e][0];
-                const ne = self.face_neighbors[f][e][1];
-                std.debug.assert(nf != 0 and ne != 0);
-                const back = self.face_neighbors[nf - 1][ne - 1];
-                std.debug.assert(back[0] == f + 1 and back[1] == e + 1);
-            }
-        }
     }
 
     fn buildPermForEdge(self: *const Grid, f: usize, e: usize) [3]u8 {
@@ -1727,10 +1668,7 @@ pub const Grid = struct {
         return self.face_neighbors[face][ei][0] - 1;
     }
 
-    // Test helper: expose stepping function for random-walk tests
-    pub fn testStepAcrossOrIn(self: *const Grid, q: isize, r: isize, face: usize, dir_idx: u8) Coord {
-        return self.stepPermuteExact(face, q, r, dir_idx);
-    }
+    // Test helper: expose exact stepper (preferred)
 
     // Test helper: expose face-aware edge position
     pub fn testGetEdgePositionFace(self: *const Grid, q: isize, r: isize, face: usize, edge: usize) usize {
@@ -2341,11 +2279,9 @@ pub const Grid = struct {
             break;
         }
         const nf2_expected = if (e2_expected < 3) self.face_neighbors[nf][e2_expected][0] - 1 else 999;
-        const e2 = self.corner_turn_edge[f][v_local][eidx];
-        const nf2 = self.corner_final_face[f][v_local][eidx];
         if (@import("builtin").is_test and TEST_VERBOSE) {
-            std.debug.print("CTDBG f={d} v={d} e={d} -> nf={d} ne={d} | e2(exp={d},tab={d}) nf2(exp={d},tab={d})\n", .{
-                f, v_local, eidx, nf, ne, e2_expected, e2, nf2_expected, nf2,
+            std.debug.print("CTDBG f={d} v={d} e={d} -> nf={d} ne={d} | e2(exp={d}) nf2(exp={d})\n", .{
+                f, v_local, eidx, nf, ne, e2_expected, nf2_expected,
             });
         }
     }

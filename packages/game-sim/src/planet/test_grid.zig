@@ -46,7 +46,7 @@ test "grid: debug asym A-side stepAcrossOrIn (f8,q2,r0) all dirs" {
     std.debug.print("A-SIDE stepAcrossOrIn FROM (f{d},q{d},r{d}):\n", .{ A.face, A.q, A.r });
     var d: u8 = 0;
     while (d < 6) : (d += 1) {
-        const nb = g.testStepAcrossOrIn(A.q, A.r, A.face, d);
+        const nb = g.testExactStep(A.face, A.q, A.r, d);
         std.debug.print("  dir={d} -> (f{d},q{d},r{d})\n", .{ d, nb.face, nb.q, nb.r });
     }
 }
@@ -841,7 +841,7 @@ test "grid: seam 0<->8 reciprocity and failing tile diagnostics" {
     const ff: usize = start_c.face;
 
     // dir=2
-    const d2_raw = g.testStepAcrossOrIn(fq, fr, ff, 2);
+    const d2_raw = g.testExactStep(ff, fq, fr, 2);
     const d2 = g.canonicalCoord(d2_raw.face, d2_raw.q, d2_raw.r);
     std.debug.print("DIAG: dir=2 -> (f={d},q={d},r={d})\n", .{ d2.face, d2.q, d2.r });
     const h2 = planet.Grid.hashCoord(d2.q, d2.r, d2.face);
@@ -850,7 +850,7 @@ test "grid: seam 0<->8 reciprocity and failing tile diagnostics" {
     std.debug.print("  idx={d}\n", .{idx2_val});
 
     // dir=3
-    const d3_raw = g.testStepAcrossOrIn(fq, fr, ff, 3);
+    const d3_raw = g.testExactStep(ff, fq, fr, 3);
     const d3 = g.canonicalCoord(d3_raw.face, d3_raw.q, d3_raw.r);
     std.debug.print("DIAG: dir=3 -> (f={d},q={d},r={d})\n", .{ d3.face, d3.q, d3.r });
     const h3 = planet.Grid.hashCoord(d3.q, d3.r, d3.face);
@@ -860,12 +860,12 @@ test "grid: seam 0<->8 reciprocity and failing tile diagnostics" {
 
     // Reverse step reciprocity checks
     const rev2: u8 = (2 + 3) % 6;
-    const back2_raw = g.testStepAcrossOrIn(d2.q, d2.r, d2.face, rev2);
+    const back2_raw = g.testExactStep(d2.face, d2.q, d2.r, rev2);
     const back2 = g.canonicalCoord(back2_raw.face, back2_raw.q, back2_raw.r);
     std.debug.print("REV: dir=2 back -> (f={d},q={d},r={d})\n", .{ back2.face, back2.q, back2.r });
 
     const rev3: u8 = (3 + 3) % 6;
-    const back3_raw = g.testStepAcrossOrIn(d3.q, d3.r, d3.face, rev3);
+    const back3_raw = g.testExactStep(d3.face, d3.q, d3.r, rev3);
     const back3 = g.canonicalCoord(back3_raw.face, back3_raw.q, back3_raw.r);
     std.debug.print("REV: dir=3 back -> (f={d},q={d},r={d})\n", .{ back3.face, back3.q, back3.r });
 
@@ -887,7 +887,7 @@ test "grid: trace from face 0 (-3,4) across all dirs" {
     defer g.deinit();
     var dir: u8 = 0;
     while (dir < 6) : (dir += 1) {
-        const c = g.testStepAcrossOrIn(-3, 4, 0, dir);
+        const c = g.testExactStep(0, -3, 4, dir);
         std.debug.print("TRACE_CALL dir={d} -> (f={d},q={d},r={d})\n", .{ dir, c.face, c.q, c.r });
     }
 }
