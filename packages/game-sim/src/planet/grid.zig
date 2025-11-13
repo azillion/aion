@@ -800,6 +800,51 @@ pub const Grid = struct {
         p_lbl[ic_nf] = ic_f;
         return p_lbl;
     }
+    inline fn projectSeamIntoWindow(v: *[3]isize, R: isize) void {
+        // Expect sum invariant
+        if (@import("builtin").is_test) {
+            std.debug.assert(v.*[0] + v.*[1] + v.*[2] == R);
+        }
+        // Early-exit if already within [0..R]^3
+        if (v.*[0] >= 0 and v.*[0] <= R and v.*[1] >= 0 and v.*[1] <= R and v.*[2] >= 0 and v.*[2] <= R) {
+            return;
+        }
+        // Sort indices by value ascending
+        var idx0: usize = 0;
+        var idx1: usize = 1;
+        var idx2: usize = 2;
+        if (v.*[idx0] > v.*[idx1]) {
+            const tmp = idx0;
+            idx0 = idx1;
+            idx1 = tmp;
+        }
+        if (v.*[idx1] > v.*[idx2]) {
+            const tmp = idx1;
+            idx1 = idx2;
+            idx2 = tmp;
+        }
+        if (v.*[idx0] > v.*[idx1]) {
+            const tmp = idx0;
+            idx0 = idx1;
+            idx1 = tmp;
+        }
+        const imin0 = idx0; // most negative
+        const imin1 = idx1; // second most negative
+        const imax = idx2; // largest
+        // Only handle canonical seam case (-,-,>R)
+        if (!(v.*[imin0] < 0 and v.*[imin1] < 0 and v.*[imax] > R)) {
+            return;
+        }
+        const a0 = -v.*[imin0];
+        const a1 = -v.*[imin1];
+        v.*[imin0] += a0; // -> 0
+        v.*[imin1] += a1; // -> 0
+        v.*[imax] -= (a0 + a1); // -> R
+        if (@import("builtin").is_test) {
+            std.debug.assert(v.*[0] >= 0 and v.*[0] <= R and v.*[1] >= 0 and v.*[1] <= R and v.*[2] >= 0 and v.*[2] <= R);
+            std.debug.assert(v.*[0] + v.*[1] + v.*[2] == R);
+        }
+    }
     // Deterministic label-space seam hop with single-fold using endpoint donors only.
     inline fn seamHopLabelSpace(
         self: *const Grid,
@@ -846,6 +891,11 @@ pub const Grid = struct {
             const jminus2: usize = if (jminus == end1) end2 else end1;
             v[jplus] += R;
             v[jminus2] -= R;
+            // Algebraic projection safeguard for (-,-,>R) pattern
+            projectSeamIntoWindow(&v, R);
+            if (@import("builtin").is_test) {
+                std.debug.print("SEAM WINDOW FAIL candidate f={d} e={d} ne={d} p_lbl=({d},{d},{d}) R={d} v=({d},{d},{d}) jplus={d} jminus={d} jminus2={d}\n", .{ f, e, ne, p_lbl[0], p_lbl[1], p_lbl[2], R, v[0], v[1], v[2], jplus, jminus, jminus2 });
+            }
             std.debug.assert(v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R);
         }
         return v;
@@ -894,8 +944,8 @@ pub const Grid = struct {
         var face: usize = face_in;
         // map to label basis on face
         const uvw_face = self.toBaryFace(face, q_in, r_in);
-        const invAf = invertPerm3(self.face_axes[face]); // actual->label
-        var lab = applyPerm3(uvw_face, invAf);
+        // toBaryFace already returns label-ordered components for this face
+        var lab = uvw_face;
         const R: isize = lab[0] + lab[1] + lab[2];
         // 1) low-bound fold only: while any label < 0, cross seam using reversed-edge label perm; apply ±R data-driven
         var guard: usize = 0;
@@ -960,14 +1010,16 @@ pub const Grid = struct {
             }
             if (@import("builtin").is_test) std.debug.assert(face == owner_face);
         }
-        // 3) map back to actual basis on face and to axial
-        const Af = self.face_axes[face]; // label->actual
-        const uvw_act = applyPerm3(lab, Af);
-        const qr = self.fromBaryFace(face, uvw_act);
+        // 3) map back to axial from label-ordered face barycentrics
+        const qr = self.fromBaryFace(face, lab);
         if (@import("builtin").is_test) {
             // Ensure fromBaryFace/toBaryFace are mutual inverses inside window
             const uvw_roundtrip = self.toBaryFace(face, qr.q, qr.r);
-            std.debug.assert(uvw_roundtrip[0] == uvw_act[0] and uvw_roundtrip[1] == uvw_act[1] and uvw_roundtrip[2] == uvw_act[2]);
+            if (!(uvw_roundtrip[0] == lab[0] and uvw_roundtrip[1] == lab[1] and uvw_roundtrip[2] == lab[2])) {
+                const ax = self.face_axes[face];
+                std.debug.print("ROUNDTRIP FAIL face={d} ax=({d},{d},{d}) lab=({d},{d},{d}) -> qr=(q{d},r{d}) -> uvw=({d},{d},{d})\n", .{ face, ax[0], ax[1], ax[2], lab[0], lab[1], lab[2], qr.q, qr.r, uvw_roundtrip[0], uvw_roundtrip[1], uvw_roundtrip[2] });
+            }
+            std.debug.assert(uvw_roundtrip[0] == lab[0] and uvw_roundtrip[1] == lab[1] and uvw_roundtrip[2] == lab[2]);
             // Interior no-op: all positive lab implies unchanged
             const positive_interior = (lab[0] > 0 and lab[1] > 0 and lab[2] > 0);
             if (positive_interior) {
@@ -1185,9 +1237,9 @@ pub const Grid = struct {
         const p_lbl = buildPLblByEquality(.{ Pf_lbl[0], Pf_lbl[1], Pf_lbl[2] }, .{ Pnf_lbl[0], Pnf_lbl[1], Pnf_lbl[2] });
         // Convert uvw1 to label basis on f, permute to nf label basis
         const Af_axes = self.face_axes[face]; // label->actual
-        const invAf_axes = invertPerm3(Af_axes); // actual->label
         const invAnf_axes = invertPerm3(self.face_axes[nf]); // actual->label
-        const uvw1_f_lab = applyPerm3(uvw1, invAf_axes); // actual -> label
+        // actual -> label must use Af_axes (label->axis mapping)
+        const uvw1_f_lab = applyPerm3(uvw1, Af_axes);
         const R: isize = uvw1_f_lab[0] + uvw1_f_lab[1] + uvw1_f_lab[2];
         const uvw_nf_lab = self.seamHopLabelSpace(uvw1_f_lab, dir, face, e, nf, ne, p_lbl, R);
         // Back to actual basis on nf for position
