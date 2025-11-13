@@ -800,6 +800,17 @@ pub const Grid = struct {
         p_lbl[ic_nf] = ic_f;
         return p_lbl;
     }
+    /// projectSeamIntoWindow
+    ///
+    /// Preconditions:
+    /// - v is in label basis on the neighbor face
+    /// - v[0] + v[1] + v[2] == R
+    ///
+    /// Seam aliases can produce tuples of the form (-a, -b, R + a + b),
+    /// i.e. exactly two negatives, one coord > R, with sum fixed.
+    /// We map that canonically to (0, 0, R) (up to permutation) by:
+    ///   v_min0 += a; v_min1 += b; v_max -= (a + b);
+    /// which preserves sum = R and lands in [0..R]^3.
     inline fn projectSeamIntoWindow(v: *[3]isize, R: isize) void {
         // Expect sum invariant
         if (@import("builtin").is_test) {
@@ -871,8 +882,8 @@ pub const Grid = struct {
         if (v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R) {
             return v;
         }
+        // First fold: lift violated label and donate from one endpoint
         v[jplus] += R;
-        // legal donors are the two endpoints of ne on nf
         const end1: usize = (ne + 1) % 3;
         const end2: usize = (ne + 2) % 3;
         var jminus: usize = undefined;
@@ -881,23 +892,20 @@ pub const Grid = struct {
         } else if (v[end2] > R and v[end1] <= R) {
             jminus = end2;
         } else {
-            // corner split; choose larger endpoint (ties -> smaller index)
             jminus = if (v[end1] >= v[end2]) end1 else end2;
         }
-        // ensure we never pick jplus (endpoints can't equal jplus by construction)
         v[jminus] -= R;
-        // Deterministic second fold if still out-of-window: use the other endpoint
+        // If still out-of-window, deterministic second fold with the other endpoint
         if (!(v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R)) {
             const jminus2: usize = if (jminus == end1) end2 else end1;
             v[jplus] += R;
             v[jminus2] -= R;
-            // Algebraic projection safeguard for (-,-,>R) pattern
-            projectSeamIntoWindow(&v, R);
-            if (@import("builtin").is_test) {
-                std.debug.print("SEAM WINDOW FAIL candidate f={d} e={d} ne={d} p_lbl=({d},{d},{d}) R={d} v=({d},{d},{d}) jplus={d} jminus={d} jminus2={d}\n", .{ f, e, ne, p_lbl[0], p_lbl[1], p_lbl[2], R, v[0], v[1], v[2], jplus, jminus, jminus2 });
-            }
-            std.debug.assert(v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R);
         }
+        // Algebraic safeguard for (-,-,>R)
+        projectSeamIntoWindow(&v, R);
+        // Final window + sum invariant
+        std.debug.assert(v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R);
+        if (@import("builtin").is_test) std.debug.assert(v[0] + v[1] + v[2] == R);
         return v;
     }
     inline fn toBary(N: isize, q: isize, r: isize) [3]isize {
