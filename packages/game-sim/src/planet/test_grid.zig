@@ -301,6 +301,196 @@ test "seam tables consistent" {
     defer g.deinit();
     try g.assertSeamTablesConsistent();
 }
+
+test "finish invertibility holds on all faces" {
+    var g = try planet.Grid.init(std.testing.allocator, 4);
+    defer g.deinit();
+    const N: isize = @intCast(g.size);
+    var f: usize = 0;
+    while (f < 20) : (f += 1) {
+        var q: isize = -N;
+        while (q <= N) : (q += 1) {
+            var r: isize = -N;
+            while (r <= N) : (r += 1) {
+                const c1 = g.canonicalCoord(f, q, r);
+                const c2 = g.canonicalCoord(c1.face, c1.q, c1.r);
+                try expectEqual(c1.face, c2.face);
+                try expectEqual(c1.q, c2.q);
+                try expectEqual(c1.r, c2.r);
+                // Interior points should be no-ops
+                const uvw_face = g.testToBaryFace(f, q, r);
+                const interior = (uvw_face[0] > 0 and uvw_face[1] > 0 and uvw_face[2] > 0 and
+                    uvw_face[0] < N and uvw_face[1] < N and uvw_face[2] < N);
+                if (interior) {
+                    try expectEqual(f, c1.face);
+                    try expectEqual(q, c1.q);
+                    try expectEqual(r, c1.r);
+                }
+            }
+        }
+    }
+}
+
+test "edge owner canonicalization" {
+    var g = try planet.Grid.init(std.testing.allocator, 4);
+    defer g.deinit();
+    const N: isize = @intCast(g.size);
+    const R: isize = 3 * N;
+    var f: usize = 0;
+    while (f < 20) : (f += 1) {
+        var e: usize = 0;
+        while (e < 3) : (e += 1) {
+            const nf = g.faceNeighborFace(f, e);
+            const owner: usize = if (f < nf) f else nf;
+            // sample two positions along the edge excluding corners
+            const samples = [_]isize{ 1, R - 1 };
+            for (samples) |t| {
+                var lab: [3]isize = .{ 0, 0, 0 };
+                lab[(e + 1) % 3] = t;
+                lab[(e + 2) % 3] = R - t;
+                const uvw_act = g.testLabelToActual(f, lab);
+                const qr = g.testFromBaryFace(f, uvw_act);
+                const c = g.canonicalCoord(f, qr.q, qr.r);
+                try expectEqual(owner, c.face);
+            }
+        }
+    }
+}
+
+test "vertex owner canonicalization" {
+    var g = try planet.Grid.init(std.testing.allocator, 4);
+    defer g.deinit();
+    const N: isize = @intCast(g.size);
+    const R: isize = 3 * N;
+    // For each global vertex label, craft lab with two zeros and assert owner
+    var v: u8 = 0;
+    while (v < 12) : (v += 1) {
+        // Find a face that contains label v
+        var found_face: usize = 20;
+        var local_k: usize = 3;
+        var f: usize = 0;
+        while (f < 20 and found_face == 20) : (f += 1) {
+            var k: usize = 0;
+            while (k < 3) : (k += 1) {
+                if (g.testGetFaceLabel(f, k) == v) {
+                    found_face = f;
+                    local_k = k;
+                    break;
+                }
+            }
+        }
+        try expect(found_face < 20);
+        var lab: [3]isize = .{ 0, 0, 0 };
+        lab[local_k] = R;
+        const uvw_act = g.testLabelToActual(found_face, lab);
+        const qr = g.testFromBaryFace(found_face, uvw_act);
+        const c = g.canonicalCoord(found_face, qr.q, qr.r);
+        try expectEqual(@as(usize, g.testVertexOwner(v)), c.face);
+    }
+}
+
+test "no seam hop on boundary zero" {
+    var g = try planet.Grid.init(std.testing.allocator, 4);
+    defer g.deinit();
+    // Use the failing dump's label-basis coords: (7,5,0) with R=12 on face 0
+    const uvw_lbl = [3]isize{ 7, 5, 0 };
+    const uvw_act = g.testLabelToActual(0, uvw_lbl);
+    const pick = g.testPickViolatedEdge(0, uvw_act);
+    try expect(pick == null);
+}
+
+test "canonical interior idempotent (random samples per face)" {
+    var g = try planet.Grid.init(std.testing.allocator, 4);
+    defer g.deinit();
+    const N: isize = @intCast(g.size);
+    const R: isize = 3 * N;
+    var f: usize = 0;
+    while (f < 20) : (f += 1) {
+        var a_i: isize = 1;
+        var count: usize = 0;
+        const max_a: isize = if (R - 2 > 20) 20 else (R - 2);
+        while (a_i <= max_a and count < 20) : (a_i += 1) {
+            const a: isize = a_i;
+            const b: isize = 1; // ensures c = R - a - 1 >= 1 for a <= R-2
+            const c: isize = R - a - b;
+            const lab = [3]isize{ a, b, c };
+            const uvw_act = g.testLabelToActual(f, lab);
+            const qr = g.testFromBaryFace(f, uvw_act);
+            const c0 = g.canonicalCoord(f, qr.q, qr.r);
+            try expectEqual(f, c0.face);
+            try expectEqual(qr.q, c0.q);
+            try expectEqual(qr.r, c0.r);
+            count += 1;
+        }
+    }
+}
+
+test "edge owner canonicalization (both sides, perm-only boundary)" {
+    var g = try planet.Grid.init(std.testing.allocator, 4);
+    defer g.deinit();
+    const N: isize = @intCast(g.size);
+    const R: isize = 3 * N;
+    var f: usize = 0;
+    while (f < 20) : (f += 1) {
+        var e: usize = 0;
+        while (e < 3) : (e += 1) {
+            const nf = g.faceNeighborFace(f, e);
+            const owner: usize = if (f < nf) f else nf;
+            const ts = [_]isize{ 1, R - 1 };
+            for (ts) |t| {
+                // side A
+                var labA: [3]isize = .{ 0, 0, 0 };
+                labA[(e + 1) % 3] = t;
+                labA[(e + 2) % 3] = R - t;
+                const uvwA = g.testLabelToActual(f, labA);
+                const qrA = g.testFromBaryFace(f, uvwA);
+                const cA = g.canonicalCoord(f, qrA.q, qrA.r);
+                try expectEqual(owner, cA.face);
+                // side B (neighbor’s perspective)
+                // Build neighbor lab with zero at its edge index; we can just mirror using same pattern with ne
+                var labB: [3]isize = .{ 0, 0, 0 };
+                // derive ne via neighborEdgeMap helper
+                const map = g.testNeighborEdgeMap(f, e);
+                const ne_idx = map.ne;
+                labB[(ne_idx + 1) % 3] = t;
+                labB[(ne_idx + 2) % 3] = R - t;
+                const uvwB = g.testLabelToActual(nf, labB);
+                const qrB = g.testFromBaryFace(nf, uvwB);
+                const cB = g.canonicalCoord(nf, qrB.q, qrB.r);
+                try expectEqual(owner, cB.face);
+            }
+        }
+    }
+}
+
+test "round-trip invariant via exact reverse delta on interiors" {
+    var g = try planet.Grid.init(std.testing.allocator, 4);
+    defer g.deinit();
+    // choose interior grid on each face (q,r in {1,2})
+    var f: usize = 0;
+    while (f < 20) : (f += 1) {
+        var q: isize = 1;
+        while (q <= 2) : (q += 1) {
+            var r: isize = 1;
+            while (r <= 2) : (r += 1) {
+                var d: u8 = 0;
+                while (d < 6) : (d += 1) {
+                    const a0 = g.canonicalCoord(f, q, r);
+                    const step = g.testExactStep(a0.face, a0.q, a0.r, d);
+                    const b = g.canonicalCoord(step.face, step.q, step.r);
+                    const du = g.testDirCubeStep(a0.face, d);
+                    const rev = [3]isize{ -du[0], -du[1], -du[2] };
+                    const d_rev = g.testFindDirByDelta(b.face, rev) orelse return error.Unexpected;
+                    const back = g.testExactStep(b.face, b.q, b.r, d_rev);
+                    const back_can = g.canonicalCoord(back.face, back.q, back.r);
+                    try expectEqual(a0.face, back_can.face);
+                    try expectEqual(a0.q, back_can.q);
+                    try expectEqual(a0.r, back_can.r);
+                }
+            }
+        }
+    }
+}
 // test "grid: seam assumptions" {
 //     var g = try planet.Grid.initWithMode(std.testing.allocator, 3, .full);
 //     defer g.deinit();

@@ -216,6 +216,8 @@ pub const Grid = struct {
     face_neighbors: [20][3][2]usize,
     // permutation mapping of barycentric coords across each face edge
     face_perm: [20][3][3]u8,
+    // Precomputed donor index (jminus) per directed seam (f,e) in LABEL basis
+    seam_jminus: [20][3]u8 = [_][3]u8{.{ 255, 255, 255 }} ** 20,
     // per-face axes mapping from face-local vertex order (0,1,2) to standard (u,v,w)
     face_axes: [20][3]u8,
     // Normalized (0-based) face label triples (A,B,C) after global winding+rotation normalization
@@ -456,7 +458,8 @@ pub const Grid = struct {
         grid.recomputeSeamPermsFromAxes();
         grid.freezeSeams();
         // Sanity: seam tables should be consistent; and self-test should not fail
-        std.debug.assert(grid.seamSelfTestNonFatal());
+        const ok = grid.seamSelfTestNonFatal();
+        std.debug.assert(ok);
         grid.buildCornerTurn();
         if (mode == .light) {
             // Lightweight: single-pass propagation, no repairs or verification
@@ -470,6 +473,59 @@ pub const Grid = struct {
             grid.verifySeams();
             grid.freezeSeamsForDebug();
             return grid;
+        }
+    }
+
+    // Build deterministic donor (jminus) per directed seam (f,e) in LABEL basis.
+    fn buildSeamOffsets(self: *Grid) void {
+        var f: usize = 0;
+        while (f < 20) : (f += 1) {
+            var e: usize = 0;
+            while (e < 3) : (e += 1) {
+                const nei = self.face_neighbors[f][e];
+                const nf = nei[0] - 1;
+                const ne = nei[1] - 1;
+                // equality perm for reversed edge, in LABEL basis
+                const Pf = self.normalized_faces[f];
+                const Pn = self.normalized_faces[nf];
+                const p_lbl = buildPLblByEquality(.{ Pf[0], Pf[1], Pf[2] }, .{ Pn[0], Pn[1], Pn[2] });
+                // two legal donors on nf for a hop across edge `ne`: its two endpoints
+                const pairs = [_][2]usize{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
+                const a: usize = pairs[ne][0];
+                const b: usize = pairs[ne][1];
+                // window sum
+                const R: isize = 2 * @as(isize, @intCast(self.size));
+                // two canonical uvw1 samples on f in LABEL basis that cross edge e:
+                // uvw1[e] = -1, and the other two sum to R+1 with k in {1, R-1}
+                const ks = [_]isize{ 1, R - 1 };
+                // helper to test a candidate donor jminus on nf
+                const Ok = struct {
+                    fn run(Rv: isize, uvw_f_lab: [3]isize, e_src: usize, p: [3]u8, jminus: usize) bool {
+                        var v = applyPerm3(uvw_f_lab, p);
+                        const jplus: usize = indexOf3u8(p, @intCast(e_src));
+                        v[jplus] += Rv;
+                        v[jminus] -= Rv;
+                        return v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= Rv and v[1] <= Rv and v[2] <= Rv;
+                    }
+                };
+                var pick: u8 = 255;
+                var pass_a = true;
+                var pass_b = true;
+                for (ks) |k| {
+                    var uvw1: [3]isize = .{ 0, 0, 0 };
+                    uvw1[e] = -1;
+                    uvw1[(e + 1) % 3] = k;
+                    uvw1[(e + 2) % 3] = (R + 1) - k;
+                    if (!Ok.run(R, uvw1, e, p_lbl, a)) pass_a = false;
+                    if (!Ok.run(R, uvw1, e, p_lbl, b)) pass_b = false;
+                }
+                if (pass_a and pass_b) pick = @intCast(if (a < b) a else b) else if (pass_a) pick = @intCast(a) else if (pass_b) pick = @intCast(b) else {
+                    // hard fail means inconsistent p_lbl or ne
+                    std.debug.print("SEAM_OFFSET_BUILD_FAIL f={d} e={d} nf={d} ne={d} R={d} Pf=({d},{d},{d}) Pn=({d},{d},{d}) p_lbl=({d},{d},{d})\n", .{ f, e, nf, ne, R, Pf[0], Pf[1], Pf[2], Pn[0], Pn[1], Pn[2], p_lbl[0], p_lbl[1], p_lbl[2] });
+                    std.debug.assert(false);
+                }
+                self.seam_jminus[f][e] = pick;
+            }
         }
     }
 
@@ -699,6 +755,8 @@ pub const Grid = struct {
             faces0[i][2] = @intCast(icosa_face_vertices[i][2] - 1);
         }
         self.normalized_faces = faces0;
+        // Normalize label rotations/winding via BFS to enforce oriented-reversed seams
+        self.normalizeFacesByBfs();
         // Rebuild directed reversed-edge neighbors from labels
         for (0..20) |i| {
             for (0..3) |e| {
@@ -711,7 +769,7 @@ pub const Grid = struct {
         // Build deterministic edge owners now that neighbors are frozen
         self.buildEdgeOwners();
         self.buildVertexOwners();
-        if (@import("builtin").is_test) {
+        if (@import("builtin").is_test and TEST_VERBOSE) {
             const f0 = self.normalized_faces[0];
             const f16_lbl = self.normalized_faces[16];
             std.debug.print("NORM_FACES: f0=({d},{d},{d}) f16=({d},{d},{d})\n", .{ f0[0], f0[1], f0[2], f16_lbl[0], f16_lbl[1], f16_lbl[2] });
@@ -728,34 +786,17 @@ pub const Grid = struct {
         }
         var fi: usize = 0;
         while (fi < 20) : (fi += 1) {
-            const tri = self.normalized_faces[fi];
-            const edges = [3][2]u8{ .{ tri[1], tri[2] }, .{ tri[2], tri[0] }, .{ tri[0], tri[1] } };
+            const Pf = self.normalized_faces[fi];
             var e: usize = 0;
             while (e < 3) : (e += 1) {
                 if (self._nei_writes[fi][e] != 0) continue; // already set (by reciprocal earlier)
-                const u = edges[e][0];
-                const v = edges[e][1];
-                // find neighbor with both labels
-                var nf: usize = 0;
-                var k: usize = 0;
-                while (k < 20) : (k += 1) {
-                    if (k == fi) {
-                        k += 1;
-                        if (k >= 20) break;
-                    }
-                    const t = self.normalized_faces[k];
-                    var seen: u8 = 0;
-                    if (t[0] == u or t[0] == v) seen += 1;
-                    if (t[1] == u or t[1] == v) seen += 1;
-                    if (t[2] == u or t[2] == v) seen += 1;
-                    if (seen == 2) {
-                        nf = k;
-                        break;
-                    }
-                }
-                const ne = edgeIndexForPairOrientedLocalLbl(self.normalized_faces[nf], v, u);
-                self.setNeighbor(fi, e, nf, ne, "neighbors builder");
-                self.setNeighbor(nf, ne, fi, e, "neighbors builder (recip)");
+                const a: u8 = Pf[(e + 1) % 3];
+                const b: u8 = Pf[(e + 2) % 3];
+                const nf = self.findFaceByTwoLabels(a, b, fi);
+                const Pn = self.normalized_faces[nf];
+                const ne = findReversedOnNF(Pn, a, b) orelse @panic("oriented nf edge not found");
+                self.setNeighbor(fi, e, nf, ne, "oriented-builder");
+                self.setNeighbor(nf, ne, fi, e, "oriented-builder-recip");
             }
         }
         // Reciprocity
@@ -1103,6 +1144,81 @@ pub const Grid = struct {
         }
         return 3;
     }
+    inline fn rot3(lbl: [3]u8, r: u8) [3]u8 {
+        return .{ lbl[(0 + r) % 3], lbl[(1 + r) % 3], lbl[(2 + r) % 3] };
+    }
+    inline fn findReversedOnNF(Pn: [3]u8, a: u8, b: u8) ?u8 {
+        var k: u8 = 0;
+        while (k < 3) : (k += 1) {
+            if (Pn[(k + 1) % 3] == b and Pn[(k + 2) % 3] == a) return k;
+        }
+        return null;
+    }
+    fn findFaceByTwoLabels(self: *const Grid, a: u8, b: u8, exclude: usize) usize {
+        var k: usize = 0;
+        while (k < 20) : (k += 1) {
+            if (k == exclude) continue;
+            const t = self.normalized_faces[k];
+            var seen: u8 = 0;
+            if (t[0] == a or t[0] == b) seen += 1;
+            if (t[1] == a or t[1] == b) seen += 1;
+            if (t[2] == a or t[2] == b) seen += 1;
+            if (seen == 2) return k;
+        }
+        return exclude; // sentinel; caller should assert not equal
+    }
+    fn normalizeFacesByBfs(self: *Grid) void {
+        // Enforce: for every seam (f,e)->nf, the oriented reversed edge exists on nf labels.
+        var seen: [20]bool = .{false} ** 20;
+        var queue: [20]u8 = undefined;
+        var head: usize = 0;
+        var tail: usize = 0;
+        seen[0] = true;
+        queue[tail] = 0;
+        tail += 1;
+        while (head < tail) : (head += 1) {
+            const f = queue[head];
+            const Pf = self.normalized_faces[f];
+            var e: u8 = 0;
+            while (e < 3) : (e += 1) {
+                const a: u8 = Pf[(e + 1) % 3];
+                const b: u8 = Pf[(e + 2) % 3];
+                const nf = self.findFaceByTwoLabels(a, b, f);
+                std.debug.assert(nf != f);
+                if (!seen[nf]) {
+                    // Rotate (or flip+rotate) nf so that (b,a) is an oriented edge
+                    const Pn = self.normalized_faces[nf];
+                    var ok = false;
+                    var r: u8 = 0;
+                    while (r < 3 and !ok) : (r += 1) {
+                        const Pr = rot3(Pn, r);
+                        if (findReversedOnNF(Pr, a, b) != null) {
+                            self.normalized_faces[nf] = Pr;
+                            ok = true;
+                        }
+                    }
+                    if (!ok) {
+                        const flip = .{ Pn[0], Pn[2], Pn[1] };
+                        var rr: u8 = 0;
+                        while (rr < 3 and !ok) : (rr += 1) {
+                            const Pr = rot3(flip, rr);
+                            if (findReversedOnNF(Pr, a, b) != null) {
+                                self.normalized_faces[nf] = Pr;
+                                ok = true;
+                            }
+                        }
+                    }
+                    std.debug.assert(ok);
+                    seen[nf] = true;
+                    queue[tail] = @intCast(nf);
+                    tail += 1;
+                } else {
+                    const Pn = self.normalized_faces[nf];
+                    std.debug.assert(findReversedOnNF(Pn, a, b) != null);
+                }
+            }
+        }
+    }
     inline fn buildPLblByEquality(Pf: [3]usize, Pnf: [3]usize) [3]u8 {
         // dst (nf label j) -> src (f label i) by label equality; fill remaining by elimination
         var p_lbl: [3]u8 = .{ 255, 255, 255 };
@@ -1151,6 +1267,56 @@ pub const Grid = struct {
         // Opposite ↔ opposite
         p_lbl[ic_nf] = ic_f;
         return p_lbl;
+    }
+    // Deterministic label-space seam hop with single-fold using endpoint donors only.
+    inline fn seamHopLabelSpace(
+        self: *const Grid,
+        v_f_lab: [3]isize,
+        _: u8, // dir (unused in hop math but kept for signature parity)
+        f: usize, // source face
+        e: usize, // violated edge on f (opposite label index)
+        _: usize, // nf (unused here)
+        ne: usize, // neighbor edge index (on nf)
+        p_lbl: [3]u8,
+        R: isize,
+    ) [3]isize {
+        _ = self;
+        var v = applyPerm3(v_f_lab, p_lbl); // f -> nf (labels)
+        const jplus: usize = indexOf3u8(p_lbl, @intCast(e)); // where violated label maps on nf
+        // Pre-hop invariant: the violated component must be exactly at jplus
+        if (!(v[jplus] < 0)) {
+            if (@import("builtin").is_test) {
+                std.debug.print("SEAM PRE-HOP INVARIANT FAIL f={d} e={d} ne={d} p_lbl=({d},{d},{d}) jplus={d} v_pre=({d},{d},{d})\n", .{ f, e, ne, p_lbl[0], p_lbl[1], p_lbl[2], jplus, v[0], v[1], v[2] });
+            }
+            std.debug.assert(v[jplus] < 0);
+        }
+        // If already in-window on nf, no offset needed
+        if (v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R) {
+            return v;
+        }
+        v[jplus] += R;
+        // legal donors are the two endpoints of ne on nf
+        const end1: usize = (ne + 1) % 3;
+        const end2: usize = (ne + 2) % 3;
+        var jminus: usize = undefined;
+        if (v[end1] > R and v[end2] <= R) {
+            jminus = end1;
+        } else if (v[end2] > R and v[end1] <= R) {
+            jminus = end2;
+        } else {
+            // corner split; choose larger endpoint (ties -> smaller index)
+            jminus = if (v[end1] >= v[end2]) end1 else end2;
+        }
+        // ensure we never pick jplus (endpoints can't equal jplus by construction)
+        v[jminus] -= R;
+        // Deterministic second fold if still out-of-window: use the other endpoint
+        if (!(v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R)) {
+            const jminus2: usize = if (jminus == end1) end2 else end1;
+            v[jplus] += R;
+            v[jminus2] -= R;
+            std.debug.assert(v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R);
+        }
+        return v;
     }
     inline fn toBary(N: isize, q: isize, r: isize) [3]isize {
         const u = q + N;
@@ -1486,27 +1652,30 @@ pub const Grid = struct {
         const invAf = invertPerm3(self.face_axes[face]); // actual->label
         var lab = applyPerm3(uvw_face, invAf);
         const R: isize = lab[0] + lab[1] + lab[2];
-        // 1) low-bound fold only: while any label < 0, cross seam with +R/-R in label basis
+        // 1) low-bound fold only: while any label < 0, cross seam using reversed-edge label perm; apply ±R data-driven
         var guard: usize = 0;
         while ((lab[0] < 0 or lab[1] < 0 or lab[2] < 0) and guard < 200) : (guard += 1) {
             const e: usize = if (lab[0] < 0) 0 else if (lab[1] < 0) 1 else 2;
-            const nei = self.getNeighbor0Based(face, e) orelse unreachable;
+            const seam = self.getNeighbor0Based(face, e) orelse unreachable;
             const Pf = self.normalized_faces[face];
-            const Pn = self.normalized_faces[nei.nf];
-            const p_lbl = buildPLblByEquality(.{ Pf[0], Pf[1], Pf[2] }, .{ Pn[0], Pn[1], Pn[2] });
+            const Pn = self.normalized_faces[seam.nf];
+            // Use reversed oriented edge mapping for label permutation across seam
+            const p_lbl = buildPLblFromReversedEdge(.{ Pf[0], Pf[1], Pf[2] }, .{ Pn[0], Pn[1], Pn[2] }, @intCast(e));
             // permute into nf label basis
-            var lab_nf = applyPerm3(lab, p_lbl);
-            // add R to alpha index on nf (index where p_lbl[j]==e), subtract from opposite label of ne
-            const j_alpha_nf: usize = indexOf3u8(p_lbl, @intCast(e));
-            lab_nf[j_alpha_nf] += R;
-            const opp_nf: usize = nei.ne;
-            lab_nf[opp_nf] -= R;
+            var nf_lab = applyPerm3(lab, p_lbl);
+            // If already in-window [0..R], do not apply any offset
+            const in_window =
+                (nf_lab[0] >= 0 and nf_lab[1] >= 0 and nf_lab[2] >= 0 and
+                    nf_lab[0] <= R and nf_lab[1] <= R and nf_lab[2] <= R);
+            if (!in_window) {
+                nf_lab = self.seamHopLabelSpace(lab, 255, face, e, seam.nf, seam.ne, p_lbl, R);
+            }
             // move to neighbor face
-            face = nei.nf;
-            lab = lab_nf;
+            lab = nf_lab;
+            face = seam.nf;
         }
         // 2) deterministic boundary ownership for edges (one zero) and vertices (two zeros)
-        const zeros: usize = @intFromBool(lab[0] == 0) + @intFromBool(lab[1] == 0) + @intFromBool(lab[2] == 0);
+        const zeros: u8 = @as(u8, @intFromBool(lab[0] == 0)) + @as(u8, @intFromBool(lab[1] == 0)) + @as(u8, @intFromBool(lab[2] == 0));
         if (zeros == 1) {
             const e_zero: usize = if (lab[0] == 0) 0 else if (lab[1] == 0) 1 else 2;
             const owner: u8 = self.edge_owner[face][e_zero];
@@ -1518,30 +1687,33 @@ pub const Grid = struct {
                 lab = applyPerm3(lab, p_lbl); // no offset for boundary transfer
                 face = nei.nf;
             }
+            if (@import("builtin").is_test) std.debug.assert(face == owner);
         } else if (zeros == 2) {
-            // Vertex: lab is some permutation of (R,0,0). Route via perm-only hops to the vertex owner.
+            // Vertex: lab is some permutation of (R,0,0). Route perm-only along adjacent faces that contain the same vertex label until reaching the owner.
             const kR: usize = if (lab[0] > 0) 0 else if (lab[1] > 0) 1 else 2;
             const v_label: u8 = self.normalized_faces[face][kR];
             const owner_face: usize = self.vertex_owner[v_label];
-            var guard2: u8 = 0;
-            while (face != owner_face and guard2 < 3) : (guard2 += 1) {
-                // Choose among the two edges touching the vertex labeled by kR: (kR+1)%3 and (kR+2)%3
+            while (face != owner_face) {
+                // Candidate edges around this vertex are the two edges incident to kR
                 const e1: usize = (kR + 1) % 3;
                 const e2: usize = (kR + 2) % 3;
-                const nei1 = self.getNeighbor0Based(face, e1) orelse unreachable;
-                const nei2 = self.getNeighbor0Based(face, e2) orelse unreachable;
-                const has1 = self.faceHasLabel(nei1.nf, v_label);
-                const has2 = self.faceHasLabel(nei2.nf, v_label);
-                const nf = if (has1 and has2)
-                    (if (nei1.nf < nei2.nf) nei1.nf else nei2.nf)
-                else if (has1) nei1.nf else nei2.nf;
+                const n1 = self.getNeighbor0Based(face, e1) orelse unreachable;
+                const n2 = self.getNeighbor0Based(face, e2) orelse unreachable;
+                // Both neighbors should contain the same vertex label; pick the smaller face id deterministically
+                const Pn1 = self.normalized_faces[n1.nf];
+                const Pn2 = self.normalized_faces[n2.nf];
+                const has_v1 = (Pn1[0] == v_label or Pn1[1] == v_label or Pn1[2] == v_label);
+                const has_v2 = (Pn2[0] == v_label or Pn2[1] == v_label or Pn2[2] == v_label);
+                std.debug.assert(has_v1 or has_v2);
+                const next_face: usize = if (has_v1 and has_v2) (if (n1.nf < n2.nf) n1.nf else n2.nf) else if (has_v1) n1.nf else n2.nf;
                 const Pf = self.normalized_faces[face];
-                const Pn = self.normalized_faces[nf];
-                const p_lbl = buildPLblByEquality(.{ Pf[0], Pf[1], Pf[2] }, .{ Pn[0], Pn[1], Pn[2] });
-                lab = applyPerm3(lab, p_lbl); // perm-only hop; no offset at vertex
-                face = nf;
-                // lab remains a permutation of (R,0,0) in the new face's label basis
+                const Pnext = self.normalized_faces[next_face];
+                const p_lbl = buildPLblByEquality(.{ Pf[0], Pf[1], Pf[2] }, .{ Pnext[0], Pnext[1], Pnext[2] });
+                lab = applyPerm3(lab, p_lbl); // perm-only hop, no ±R
+                face = next_face;
+                // Update kR remains the same component index in label basis (R stays with the same label)
             }
+            if (@import("builtin").is_test) std.debug.assert(face == owner_face);
         }
         // 3) map back to actual basis on face and to axial
         const Af = self.face_axes[face]; // label->actual
@@ -1551,9 +1723,11 @@ pub const Grid = struct {
             // Ensure fromBaryFace/toBaryFace are mutual inverses inside window
             const uvw_roundtrip = self.toBaryFace(face, qr.q, qr.r);
             std.debug.assert(uvw_roundtrip[0] == uvw_act[0] and uvw_roundtrip[1] == uvw_act[1] and uvw_roundtrip[2] == uvw_act[2]);
-            // Idempotency: canonical(canonical(c)) == canonical(c)
-            const can2 = self.canonicalizeGlobalAlias(face, qr.q, qr.r);
-            std.debug.assert(can2.face == face and can2.q == qr.q and can2.r == qr.r);
+            // Interior no-op: all positive lab implies unchanged
+            const positive_interior = (lab[0] > 0 and lab[1] > 0 and lab[2] > 0);
+            if (positive_interior) {
+                std.debug.assert(face == face_in and qr.q == q_in and qr.r == r_in);
+            }
         }
         return .{ .q = qr.q, .r = qr.r, .face = face };
     }
@@ -1606,8 +1780,9 @@ pub const Grid = struct {
                 const uvw0 = self.toBaryFace(start.face, start.q, start.r);
                 const duvw = self.dirCubeStep(start.face, d);
                 const uvw1 = .{ uvw0[0] + duvw[0], uvw0[1] + duvw[1], uvw0[2] + duvw[2] };
-                const cn = self.pickViolatedEdgePost(start.face, uvw1, duvw);
-                const e = edgeIndexFromOppositeComponent(cn);
+                const cn_opt = self.pickViolatedEdgePost(start.face, uvw1, duvw);
+                if (cn_opt == null) continue;
+                const e = edgeIndexFromOppositeComponent(cn_opt.?);
                 const nf = self.face_neighbors[start.face][e][0] - 1;
                 // Step forward once across the seam
                 const fwd = self.stepPermuteExact(start.face, start.q, start.r, d);
@@ -1730,8 +1905,8 @@ pub const Grid = struct {
         return out;
     }
 
-    inline fn pickViolatedEdgePost(self: *const Grid, face: usize, uvw1: [3]isize, _: [3]isize) usize {
-        // Low-bound only: decide seam by which LABEL component went negative.
+    inline fn pickViolatedEdgePost(self: *const Grid, face: usize, uvw1: [3]isize, _: [3]isize) ?u8 {
+        // Low-bound only: choose seam only if a LABEL component is strictly negative.
         // Compute label-space components in A,B,C order deterministically.
         const Af = self.face_axes[face]; // label -> actual
         const uA = uvw1[Af[0]];
@@ -1740,8 +1915,8 @@ pub const Grid = struct {
         if (uA < 0) return 0; // A<0 -> edge e=0 (B,C)
         if (uB < 0) return 1; // B<0 -> edge e=1 (C,A)
         if (uC < 0) return 2; // C<0 -> edge e=2 (A,B)
-        // No seam (should not be called in that case in current flow)
-        return 0;
+        // No seam to cross
+        return null;
     }
 
     inline fn findDirByDelta(self: *const Grid, face: usize, delta_actual: [3]isize) ?u8 {
@@ -1789,8 +1964,13 @@ pub const Grid = struct {
             const back_in = self.fromBaryFace(face, uvw1);
             return .{ .q = back_in.q, .r = back_in.r, .face = face };
         }
-        // Determine violated label component (A,B,C) and neighbor seam
-        const cn = self.pickViolatedEdgePost(face, uvw1, duvw); // 0:A,1:B,2:C in label basis
+        // Determine violated label component (A,B,C) and neighbor seam; if none, stay on face
+        const cn_opt = self.pickViolatedEdgePost(face, uvw1, duvw); // 0:A,1:B,2:C in label basis
+        if (cn_opt == null) {
+            const back_in2 = self.fromBaryFace(face, uvw1);
+            return .{ .q = back_in2.q, .r = back_in2.r, .face = face };
+        }
+        const cn = cn_opt.?;
         const e = edgeIndexFromOppositeComponent(cn);
         const nf = self.face_neighbors[face][e][0] - 1;
         const ne = self.face_neighbors[face][e][1] - 1;
@@ -1803,32 +1983,8 @@ pub const Grid = struct {
         const invAf_axes = invertPerm3(Af_axes); // actual->label
         const invAnf_axes = invertPerm3(self.face_axes[nf]); // actual->label
         const uvw1_f_lab = applyPerm3(uvw1, invAf_axes); // actual -> label
-        var uvw_nf_lab = applyPerm3(uvw1_f_lab, p_lbl); // label dst->src across seam
-        // Offset conditionally in label space
-        const R: isize = uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2];
-        // If already in-window on nf (0..R), skip offset entirely
-        const in_window = (uvw_nf_lab[0] >= 0 and uvw_nf_lab[1] >= 0 and uvw_nf_lab[2] >= 0 and
-            uvw_nf_lab[0] <= R and uvw_nf_lab[1] <= R and uvw_nf_lab[2] <= R);
-        if (!in_window) {
-            // exactly one negative and one > R expected; pick indices deterministically
-            const j_neg: usize = if (uvw_nf_lab[0] < 0) 0 else if (uvw_nf_lab[1] < 0) 1 else 2;
-            var j_pos_u8: u8 = if (uvw_nf_lab[0] > R) 0 else if (uvw_nf_lab[1] > R) 1 else if (uvw_nf_lab[2] > R) 2 else 255;
-            if (j_pos_u8 == 255) {
-                // fallback: pick the other endpoint of ne that is not j_alpha_nf
-                const j_alpha_nf: usize = indexOf3u8(p_lbl, @intCast(cn));
-                const pairsF = [3][2]u8{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
-                const ja = pairsF[ne][0];
-                const jb = pairsF[ne][1];
-                j_pos_u8 = if (j_alpha_nf == ja) jb else ja;
-            }
-            const j_pos: usize = j_pos_u8;
-            uvw_nf_lab[j_neg] += R;
-            uvw_nf_lab[j_pos] -= R;
-            // defensives
-            std.debug.assert(uvw_nf_lab[0] >= 0 and uvw_nf_lab[1] >= 0 and uvw_nf_lab[2] >= 0);
-            std.debug.assert(uvw_nf_lab[0] <= R and uvw_nf_lab[1] <= R and uvw_nf_lab[2] <= R);
-            std.debug.assert((uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2]) == R);
-        }
+        const R: isize = uvw1_f_lab[0] + uvw1_f_lab[1] + uvw1_f_lab[2];
+        const uvw_nf_lab = self.seamHopLabelSpace(uvw1_f_lab, dir, face, e, nf, ne, p_lbl, R);
         // Back to actual basis on nf for position
         const uvw_nf = applyPerm3(uvw_nf_lab, invAnf_axes); // label -> actual (y_actual[j] = uvw_nf_lab[invAnf[j]])
         // convert back to axial on nf
@@ -2667,6 +2823,34 @@ pub const Grid = struct {
     pub fn testFromBaryFace(self: *const Grid, face: usize, uvw_face: [3]isize) QR {
         return self.fromBaryFace(face, uvw_face);
     }
+    // Test helper: map label-basis uvw to actual-basis uvw on a face
+    pub fn testLabelToActual(self: *const Grid, face: usize, uvw_lbl: [3]isize) [3]isize {
+        return applyPerm3(uvw_lbl, self.face_axes[face]);
+    }
+    // Test helper: expose seam-pick decision (optional)
+    pub fn testPickViolatedEdge(self: *const Grid, face: usize, uvw1_actual: [3]isize) ?u8 {
+        return self.pickViolatedEdgePost(face, uvw1_actual, .{ 0, 0, 0 });
+    }
+    // Test helper: exact stepper
+    pub fn testExactStep(self: *const Grid, face: usize, q: isize, r: isize, dir: u8) Coord {
+        return self.stepPermuteExact(face, q, r, dir);
+    }
+    // Test helper: dir step delta in actual basis
+    pub fn testDirCubeStep(self: *const Grid, face: usize, dir: u8) [3]isize {
+        return self.dirCubeStep(face, dir);
+    }
+    // Test helper: find dir by exact delta
+    pub fn testFindDirByDelta(self: *const Grid, face: usize, delta: [3]isize) ?u8 {
+        return self.findDirByDelta(face, delta);
+    }
+    // Test helper: read a face's label at local index k
+    pub fn testGetFaceLabel(self: *const Grid, face: usize, k: usize) u8 {
+        return self.normalized_faces[face][k];
+    }
+    // Test helper: expose vertex owner for a global label
+    pub fn testVertexOwner(self: *const Grid, label: u8) usize {
+        return self.vertex_owner[label];
+    }
 
     fn whichEdgeViolated(self: *const Grid, nq: isize, nr: isize) usize {
         const ns = -(nq + nr);
@@ -2991,8 +3175,9 @@ pub const Grid = struct {
         const uvw = self.toBaryFace(h.face, h.q, h.r);
         const duvw = self.dirCubeStep(h.face, d);
         const uvw1 = .{ uvw[0] + duvw[0], uvw[1] + duvw[1], uvw[2] + duvw[2] };
-        const cn = self.pickViolatedEdgePost(h.face, uvw1, duvw);
-        const e = Grid.edgeIndexFromOppositeComponent(cn);
+        const cn_opt = self.pickViolatedEdgePost(h.face, uvw1, duvw);
+        if (cn_opt == null) return;
+        const e = Grid.edgeIndexFromOppositeComponent(cn_opt.?);
         const nf = self.face_neighbors[h.face][e][0] - 1;
         const perm = self.face_perm[h.face][e];
         const uvw_nf = applyPerm3(uvw, perm);
@@ -3894,8 +4079,9 @@ pub const Grid = struct {
                 const duvw = self.dirCubeStep(last.face, d);
                 const uvw1 = .{ uvw0[0] + duvw[0], uvw0[1] + duvw[1], uvw0[2] + duvw[2] };
                 if (!self.isFaceHexStrict(uvw1, @intCast(N))) {
-                    const cn = self.pickViolatedEdgePost(last.face, uvw1, duvw);
-                    const eidx = edgeIndexFromOppositeComponent(cn);
+                    const cn_opt = self.pickViolatedEdgePost(last.face, uvw1, duvw);
+                    if (cn_opt == null) break;
+                    const eidx = edgeIndexFromOppositeComponent(cn_opt.?);
                     const seam = self.getNeighbor0Based(last.face, eidx) orelse break;
                     if (eidx == e_want and seam.nf == nf_want) {
                         crossed = true;
@@ -3914,8 +4100,9 @@ pub const Grid = struct {
         if (!self.isFaceHexStrict(uvw_nb, @intCast(N))) return false;
         const uvw0b = self.toBaryFace(start.face, start.q, start.r);
         const duvwb = self.dirCubeStep(start.face, d_hit);
-        const cnb = self.pickViolatedEdgePost(start.face, .{ uvw0b[0] + duvwb[0], uvw0b[1] + duvwb[1], uvw0b[2] + duvwb[2] }, duvwb);
-        const eidxb = edgeIndexFromOppositeComponent(cnb);
+        const cnb_opt = self.pickViolatedEdgePost(start.face, .{ uvw0b[0] + duvwb[0], uvw0b[1] + duvwb[1], uvw0b[2] + duvwb[2] }, duvwb);
+        if (cnb_opt == null) return false;
+        const eidxb = edgeIndexFromOppositeComponent(cnb_opt.?);
         const perm = self.face_perm[start.face][eidxb];
         const uvw_nf0 = applyPerm3(uvw0b, perm);
         const duvw_nf = applyPerm3(duvwb, perm);
@@ -3964,8 +4151,9 @@ pub const Grid = struct {
                 const uvw0 = self.toBaryFace(start.face, start.q, start.r);
                 const duvw = self.dirCubeStep(start.face, d);
                 const uvw1 = .{ uvw0[0] + duvw[0], uvw0[1] + duvw[1], uvw0[2] + duvw[2] };
-                const cn = self.pickViolatedEdgePost(start.face, uvw1, duvw);
-                const eidx = edgeIndexFromOppositeComponent(cn);
+                const cn_opt2 = self.pickViolatedEdgePost(start.face, uvw1, duvw);
+                if (cn_opt2 == null) continue;
+                const eidx = edgeIndexFromOppositeComponent(cn_opt2.?);
                 const seam = self.getNeighbor0Based(start.face, eidx) orelse continue;
                 const nf = seam.nf;
                 const ne = seam.ne;
@@ -3973,6 +4161,13 @@ pub const Grid = struct {
                 if (!self.axesSet(nf)) {
                     continue;
                 }
+                // Oriented reversed-edge assertion on labels
+                const Pf_chk = self.normalized_faces[start.face];
+                const Pn_chk = self.normalized_faces[nf];
+                const a_lbl: u8 = Pf_chk[(eidx + 1) % 3];
+                const b_lbl: u8 = Pf_chk[(eidx + 2) % 3];
+                const ne_geom_oriented = findReversedOnNF(Pn_chk, a_lbl, b_lbl) orelse @panic("no reversed");
+                std.debug.assert(ne == ne_geom_oriented);
                 const perm = self.face_perm[start.face][eidx];
                 // Label-space position transport with integer offset
                 const Af_axes = self.face_axes[start.face];
@@ -3982,54 +4177,52 @@ pub const Grid = struct {
                 const Pnf_lbl = self.normalized_faces[nf];
                 const p_lbl = buildPLblByEquality(.{ Pf_lbl[0], Pf_lbl[1], Pf_lbl[2] }, .{ Pnf_lbl[0], Pnf_lbl[1], Pnf_lbl[2] });
                 const uvw1_f_lab = applyPerm3(uvw1, invAf_axes);
-                var uvw_nf_lab = applyPerm3(uvw1_f_lab, p_lbl);
                 const R: isize = uvw1_f_lab[0] + uvw1_f_lab[1] + uvw1_f_lab[2];
-                if (!(R > 0)) return false;
+                const uvw_nf_lab = self.seamHopLabelSpace(uvw1_f_lab, d, start.face, eidx, nf, ne, p_lbl, R);
+                if (!(R > 0)) {
+                    std.debug.print("SEAM_FAIL_MIN: bad R f={d} d={d} e={d} nf={d} ne={d} R={d}\n", .{ start.face, d, eidx, nf, ne, R });
+                    return false;
+                }
                 // Sums must be preserved by permutation
-                if (!((uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2]) == R)) return false;
+                if (!((uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2]) == R)) {
+                    if (@import("builtin").is_test and TEST_VERBOSE) {
+                        std.debug.print("SEAM_FAIL_MIN: sum mismatch f={d} d={d} e={d} nf={d} ne={d} R={d} uvw1_f_lab=({d},{d},{d}) uvw_nf_lab=({d},{d},{d})\n", .{ start.face, d, eidx, nf, ne, R, uvw1_f_lab[0], uvw1_f_lab[1], uvw1_f_lab[2], uvw_nf_lab[0], uvw_nf_lab[1], uvw_nf_lab[2] });
+                    }
+                    return false;
+                }
                 // Gate: if already in-window on nf, skip offset
                 const in_window_nf = (uvw_nf_lab[0] >= 0 and uvw_nf_lab[1] >= 0 and uvw_nf_lab[2] >= 0 and
                     uvw_nf_lab[0] <= R and uvw_nf_lab[1] <= R and uvw_nf_lab[2] <= R);
                 if (!in_window_nf) {
-                    // One negative and one >R expected; select indices deterministically
-                    const j_alpha_nf: usize = indexOf3u8(p_lbl, @intCast(cn));
-                    const j_neg2: usize = if (uvw_nf_lab[0] < 0) 0 else if (uvw_nf_lab[1] < 0) 1 else 2;
-                    var j_pos2_u8: u8 = if (uvw_nf_lab[0] > R) 0 else if (uvw_nf_lab[1] > R) 1 else if (uvw_nf_lab[2] > R) 2 else 255;
-                    if (j_pos2_u8 == 255) {
-                        // fallback: use the other endpoint of ne, not j_alpha_nf
-                        const pairsF2 = [3][2]u8{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
-                        const ja2 = pairsF2[ne][0];
-                        const jb2 = pairsF2[ne][1];
-                        j_pos2_u8 = if (j_alpha_nf == ja2) jb2 else ja2;
+                    if (@import("builtin").is_test and TEST_VERBOSE) {
+                        std.debug.print("SEAM_FAIL_MIN: out-of-window after hop f={d} d={d} e={d} nf={d} ne={d} R={d} uvw_nf_lab=({d},{d},{d})\n", .{ start.face, d, eidx, nf, ne, R, uvw_nf_lab[0], uvw_nf_lab[1], uvw_nf_lab[2] });
                     }
-                    const j_pos2: usize = j_pos2_u8;
-                    uvw_nf_lab[j_neg2] += R;
-                    uvw_nf_lab[j_pos2] -= R;
-                    if (!((uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2]) == R)) return false;
-                    if (!(uvw_nf_lab[0] >= 0 and uvw_nf_lab[1] >= 0 and uvw_nf_lab[2] >= 0)) return false;
+                    return false;
                 }
                 // Sums must still be R here
                 const uvw2 = applyPerm3(uvw_nf_lab, invAnf_axes);
                 if (!(uvw_nf_lab[0] >= 0 and uvw_nf_lab[1] >= 0 and uvw_nf_lab[2] >= 0)) {
-                    // Focused dump for failing seam
-                    const Pf_dbg = self.normalized_faces[start.face];
-                    const Pn_dbg = self.normalized_faces[nf];
-                    const Af_dbg2 = self.face_axes[start.face];
-                    const Anf_dbg2 = self.face_axes[nf];
-                    const pairs2 = [_][2]usize{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
-                    const a_local = pairs2[eidx][0];
-                    const b_local = pairs2[eidx][1];
-                    const la = Pf_lbl[a_local];
-                    const lb = Pf_lbl[b_local];
-                    const ne_tab = ne;
-                    std.debug.print("SEAM_FAIL: uvw_nf outside window\n", .{});
-                    std.debug.print("  start=(f={d},q={d},r={d}) dir={d}\n", .{ start.face, start.q, start.r, d });
-                    std.debug.print("  eidx={d} nf={d} ne(tab)={d}\n", .{ eidx, nf, ne_tab });
-                    std.debug.print("  Pf=({d},{d},{d}) Pn=({d},{d},{d})\n", .{ Pf_dbg[0], Pf_dbg[1], Pf_dbg[2], Pn_dbg[0], Pn_dbg[1], Pn_dbg[2] });
-                    std.debug.print("  Af=({d},{d},{d}) Anf=({d},{d},{d})\n", .{ Af_dbg2[0], Af_dbg2[1], Af_dbg2[2], Anf_dbg2[0], Anf_dbg2[1], Anf_dbg2[2] });
-                    std.debug.print("  perm=({d},{d},{d})\n", .{ perm[0], perm[1], perm[2] });
-                    std.debug.print("  endpoints labels: la={d} lb={d}\n", .{ la, lb });
-                    std.debug.print("  uvw0=({d},{d},{d}) duvw=({d},{d},{d}) uvw2_lab=({d},{d},{d})\n", .{ uvw0[0], uvw0[1], uvw0[2], duvw[0], duvw[1], duvw[2], uvw_nf_lab[0], uvw_nf_lab[1], uvw_nf_lab[2] });
+                    if (@import("builtin").is_test and TEST_VERBOSE) {
+                        // Focused dump for failing seam
+                        const Pf_dbg = self.normalized_faces[start.face];
+                        const Pn_dbg = self.normalized_faces[nf];
+                        const Af_dbg2 = self.face_axes[start.face];
+                        const Anf_dbg2 = self.face_axes[nf];
+                        const pairs2 = [_][2]usize{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
+                        const a_local = pairs2[eidx][0];
+                        const b_local = pairs2[eidx][1];
+                        const la = Pf_lbl[a_local];
+                        const lb = Pf_lbl[b_local];
+                        const ne_tab = ne;
+                        std.debug.print("SEAM_FAIL: uvw_nf outside window\n", .{});
+                        std.debug.print("  start=(f={d},q={d},r={d}) dir={d}\n", .{ start.face, start.q, start.r, d });
+                        std.debug.print("  eidx={d} nf={d} ne(tab)={d}\n", .{ eidx, nf, ne_tab });
+                        std.debug.print("  Pf=({d},{d},{d}) Pn=({d},{d},{d})\n", .{ Pf_dbg[0], Pf_dbg[1], Pf_dbg[2], Pn_dbg[0], Pn_dbg[1], Pn_dbg[2] });
+                        std.debug.print("  Af=({d},{d},{d}) Anf=({d},{d},{d})\n", .{ Af_dbg2[0], Af_dbg2[1], Af_dbg2[2], Anf_dbg2[0], Anf_dbg2[1], Anf_dbg2[2] });
+                        std.debug.print("  perm=({d},{d},{d})\n", .{ perm[0], perm[1], perm[2] });
+                        std.debug.print("  endpoints labels: la={d} lb={d}\n", .{ la, lb });
+                        std.debug.print("  uvw0=({d},{d},{d}) duvw=({d},{d},{d}) uvw2_lab=({d},{d},{d})\n", .{ uvw0[0], uvw0[1], uvw0[2], duvw[0], duvw[1], duvw[2], uvw_nf_lab[0], uvw_nf_lab[1], uvw_nf_lab[2] });
+                    }
                     return false;
                 }
                 // Reverse direction (label route to resolve exactly)
@@ -4040,7 +4233,9 @@ pub const Grid = struct {
                 const rdv = -duvw_nf[1];
                 const rdw = -duvw_nf[2];
                 const rev_d = self.findDirByDelta(nf, .{ rdu, rdv, rdw }) orelse {
-                    std.debug.print("SEAM_FAIL: no reverse dir match; nf={d} target=({d},{d},{d})\n", .{ nf, rdu, rdv, rdw });
+                    if (@import("builtin").is_test and TEST_VERBOSE) {
+                        std.debug.print("SEAM_FAIL: no reverse dir match; nf={d} target=({d},{d},{d})\n", .{ nf, rdu, rdv, rdw });
+                    }
                     return false;
                 };
                 const back_nb = self.fromBaryFace(nf, uvw2);
@@ -4048,19 +4243,21 @@ pub const Grid = struct {
                 const back_can = self.canonicalCoord(back.face, back.q, back.r);
                 const start_can = self.canonicalCoord(start.face, start.q, start.r);
                 if (!(back_can.face == start_can.face and back_can.q == start_can.q and back_can.r == start_can.r)) {
-                    const Pf_dbg3 = self.normalized_faces[start.face];
-                    const Pn_dbg3 = self.normalized_faces[nf];
-                    const Af_dbg3 = self.face_axes[start.face];
-                    const Anf_dbg3 = self.face_axes[nf];
-                    std.debug.print("SEAM_FAIL: round-trip mismatch (f={d} e={d} -> nf={d})\n", .{ start.face, eidx, nf });
-                    std.debug.print("  start_can=(f={d},q={d},r={d}) back_can=(f={d},q={d},r={d})\n", .{ start_can.face, start_can.q, start_can.r, back_can.face, back_can.q, back_can.r });
-                    std.debug.print("  Pf=({d},{d},{d}) Pn=({d},{d},{d})\n", .{ Pf_dbg3[0], Pf_dbg3[1], Pf_dbg3[2], Pn_dbg3[0], Pn_dbg3[1], Pn_dbg3[2] });
-                    const perm_geom = self.buildPermForEdge(start.face, eidx);
-                    std.debug.print("  Af=({d},{d},{d}) Anf=({d},{d},{d}) perm=({d},{d},{d}) perm_geom=({d},{d},{d})\n", .{ Af_dbg3[0], Af_dbg3[1], Af_dbg3[2], Anf_dbg3[0], Anf_dbg3[1], Anf_dbg3[2], perm[0], perm[1], perm[2], perm_geom[0], perm_geom[1], perm_geom[2] });
-                    const sum_f = uvw1_f_lab[0] + uvw1_f_lab[1] + uvw1_f_lab[2];
-                    const sum_nf = uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2];
-                    std.debug.print("  R={d} sum_f={d} sum_nf={d} alpha_f={d}\n", .{ R, sum_f, sum_nf, cn });
-                    std.debug.print("  uvw1_f_lab=({d},{d},{d}) uvw_nf_lab=({d},{d},{d})\n", .{ uvw1_f_lab[0], uvw1_f_lab[1], uvw1_f_lab[2], uvw_nf_lab[0], uvw_nf_lab[1], uvw_nf_lab[2] });
+                    if (@import("builtin").is_test and TEST_VERBOSE) {
+                        const Pf_dbg3 = self.normalized_faces[start.face];
+                        const Pn_dbg3 = self.normalized_faces[nf];
+                        const Af_dbg3 = self.face_axes[start.face];
+                        const Anf_dbg3 = self.face_axes[nf];
+                        std.debug.print("SEAM_FAIL: round-trip mismatch (f={d} e={d} -> nf={d})\n", .{ start.face, eidx, nf });
+                        std.debug.print("  start_can=(f={d},q={d},r={d}) back_can=(f={d},q={d},r={d})\n", .{ start_can.face, start_can.q, start_can.r, back_can.face, back_can.q, back_can.r });
+                        std.debug.print("  Pf=({d},{d},{d}) Pn=({d},{d},{d})\n", .{ Pf_dbg3[0], Pf_dbg3[1], Pf_dbg3[2], Pn_dbg3[0], Pn_dbg3[1], Pn_dbg3[2] });
+                        const perm_geom = self.buildPermForEdge(start.face, eidx);
+                        std.debug.print("  Af=({d},{d},{d}) Anf=({d},{d},{d}) perm=({d},{d},{d}) perm_geom=({d},{d},{d})\n", .{ Af_dbg3[0], Af_dbg3[1], Af_dbg3[2], Anf_dbg3[0], Anf_dbg3[1], Anf_dbg3[2], perm[0], perm[1], perm[2], perm_geom[0], perm_geom[1], perm_geom[2] });
+                        const sum_f = uvw1_f_lab[0] + uvw1_f_lab[1] + uvw1_f_lab[2];
+                        const sum_nf = uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2];
+                        std.debug.print("  R={d} sum_f={d} sum_nf={d} alpha_f={d}\n", .{ R, sum_f, sum_nf, cn_opt2.? });
+                        std.debug.print("  uvw1_f_lab=({d},{d},{d}) uvw_nf_lab=({d},{d},{d})\n", .{ uvw1_f_lab[0], uvw1_f_lab[1], uvw1_f_lab[2], uvw_nf_lab[0], uvw_nf_lab[1], uvw_nf_lab[2] });
+                    }
                     return false;
                 }
                 // involution across stored ne
@@ -4068,8 +4265,10 @@ pub const Grid = struct {
                 const pf = self.face_perm[start.face][eidx];
                 const pb = self.face_perm[nf][ne2];
                 if (!(pb[pf[0]] == 0 and pb[pf[1]] == 1 and pb[pf[2]] == 2)) {
-                    std.debug.print("SEAM_FAIL: inverse perm mismatch f={d} e={d} nf={d} ne={d}\n", .{ start.face, eidx, nf, ne2 });
-                    std.debug.print("  pf=({d},{d},{d}) pb=({d},{d},{d})\n", .{ pf[0], pf[1], pf[2], pb[0], pb[1], pb[2] });
+                    if (@import("builtin").is_test and TEST_VERBOSE) {
+                        std.debug.print("SEAM_FAIL: inverse perm mismatch f={d} e={d} nf={d} ne={d}\n", .{ start.face, eidx, nf, ne2 });
+                        std.debug.print("  pf=({d},{d},{d}) pb=({d},{d},{d})\n", .{ pf[0], pf[1], pf[2], pb[0], pb[1], pb[2] });
+                    }
                     return false;
                 }
                 // geometric ne check
@@ -4090,8 +4289,52 @@ pub const Grid = struct {
                     }
                 }
                 if (!(ne_geom != 3 and ne_geom == ne)) {
-                    std.debug.print("SEAM_FAIL: geometric ne mismatch f={d} e={d} nf={d} ne(tab)={d} ne(geom)={d}\n", .{ start.face, eidx, nf, ne, ne_geom });
+                    if (@import("builtin").is_test and TEST_VERBOSE) {
+                        std.debug.print("SEAM_FAIL: geometric ne mismatch f={d} e={d} nf={d} ne(tab)={d} ne(geom)={d}\n", .{ start.face, eidx, nf, ne, ne_geom });
+                    }
                     return false;
+                }
+            }
+        }
+        return true;
+    }
+    // Deterministic seam-offset self-test: for every directed seam, replay two near-edge samples
+    // and ensure the table-driven single-fold hop lands in-window on the neighbor face.
+    fn seamOffsetSelfTest(self: *Grid) bool {
+        const N: isize = @intCast(self.size);
+        const R: isize = 2 * N;
+        var f: usize = 0;
+        while (f < 20) : (f += 1) {
+            var e: usize = 0;
+            while (e < 3) : (e += 1) {
+                const nei = self.face_neighbors[f][e];
+                const nf = nei[0] - 1;
+                const ne = nei[1] - 1;
+                // axes must be set for both faces
+                if (!self.axesSet(f) or !self.axesSet(nf)) continue;
+                const Pf = self.normalized_faces[f];
+                const Pn = self.normalized_faces[nf];
+                const p_lbl = buildPLblByEquality(.{ Pf[0], Pf[1], Pf[2] }, .{ Pn[0], Pn[1], Pn[2] });
+                const jminus = self.seam_jminus[f][e];
+                if (jminus == 255) return false;
+                const ks = [_]isize{ 1, R - 1 };
+                for (ks) |k| {
+                    var uvw1: [3]isize = .{ 0, 0, 0 };
+                    uvw1[e] = -1;
+                    uvw1[(e + 1) % 3] = k;
+                    uvw1[(e + 2) % 3] = (R + 1) - k;
+                    var v = applyPerm3(uvw1, p_lbl);
+                    const jplus: usize = indexOf3u8(p_lbl, @intCast(e));
+                    v[jplus] += R;
+                    v[jminus] -= R;
+                    const ok = (v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R);
+                    if (!ok) {
+                        if (@import("builtin").is_test and TEST_VERBOSE) {
+                            std.debug.print("SEAM_OFFSET_FAIL f={d} e={d} nf={d} ne={d} R={d} pick={d} v=({d},{d},{d})\n", .{ f, e, nf, ne, R, jminus, v[0], v[1], v[2] });
+                            std.debug.print("  Pf=({d},{d},{d}) Pn=({d},{d},{d}) p_lbl=({d},{d},{d})\n", .{ Pf[0], Pf[1], Pf[2], Pn[0], Pn[1], Pn[2], p_lbl[0], p_lbl[1], p_lbl[2] });
+                        }
+                        return false;
+                    }
                 }
             }
         }
