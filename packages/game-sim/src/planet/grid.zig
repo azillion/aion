@@ -13,20 +13,6 @@ comptime {
     std.debug.assert((22 + 21 + 21) == 64);
 }
 
-// check STANDARD-basis barycentrics against the hex window
-inline fn isBaryValidOnFace(self: *const Grid, uvw_std: [3]isize) bool {
-    const N: isize = @intCast(self.size);
-    const maxB: isize = 2 * N;
-    // box constraints
-    if (uvw_std[0] < 0 or uvw_std[1] < 0 or uvw_std[2] < 0) return false;
-    if (uvw_std[0] > maxB or uvw_std[1] > maxB or uvw_std[2] > maxB) return false;
-    // triangle constraints: (u-w) <= N, (v-u) <= N, (w-v) <= N
-    if (uvw_std[0] - uvw_std[2] > N) return false;
-    if (uvw_std[1] - uvw_std[0] > N) return false;
-    if (uvw_std[2] - uvw_std[1] > N) return false;
-    return true;
-}
-
 // (debug helpers defined as Grid methods inside the struct)
 
 fn cross(a: Vec3, b: Vec3) Vec3 {
@@ -38,9 +24,6 @@ fn cross(a: Vec3, b: Vec3) Vec3 {
 }
 fn dot(a: Vec3, b: Vec3) f64 {
     return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-inline fn vecSub(a: Vec3, b: Vec3) Vec3 {
-    return .{ .x = a.x - b.x, .y = a.y - b.y, .z = a.z - b.z };
 }
 
 fn canonicalizeFacesComptime(comptime F_in: [20][3]usize) [20][3]usize {
@@ -203,8 +186,6 @@ var debug_nbr_logs: usize = 0;
 var test_probe_done: bool = false;
 var seam_verify_logged: bool = false;
 
-pub const InitMode = enum { light, full };
-
 pub const Grid = struct {
     allocator: std.mem.Allocator,
     size: usize,
@@ -258,116 +239,6 @@ pub const Grid = struct {
 
     // Sum-preserving rounding of barycentric floats scaled to 3N.
     // Floors each component, then distributes residual by largest fractional parts.
-    inline fn roundBaryToSum3N(u: f64, v: f64, w: f64, N: isize) [3]isize {
-        const target: isize = 3 * N;
-        const uf = u;
-        const vf = v;
-        const wf = w;
-        var ui: isize = @intFromFloat(@floor(uf));
-        var vi: isize = @intFromFloat(@floor(vf));
-        var wi: isize = @intFromFloat(@floor(wf));
-        const sum_i: isize = ui + vi + wi;
-        var rem: isize = target - sum_i;
-        const fu = uf - @as(f64, @floatFromInt(ui));
-        const fv = vf - @as(f64, @floatFromInt(vi));
-        const fw = wf - @as(f64, @floatFromInt(wi));
-        // Helper to bump one of (u,v,w) by +1 or -1
-        const bump = struct {
-            inline fn inc(which: u2, ui_ptr: *isize, vi_ptr: *isize, wi_ptr: *isize) void {
-                switch (which) {
-                    0 => ui_ptr.* += 1,
-                    1 => vi_ptr.* += 1,
-                    else => wi_ptr.* += 1,
-                }
-            }
-            inline fn dec(which: u2, ui_ptr: *isize, vi_ptr: *isize, wi_ptr: *isize) void {
-                switch (which) {
-                    0 => ui_ptr.* -= 1,
-                    1 => vi_ptr.* -= 1,
-                    else => wi_ptr.* -= 1,
-                }
-            }
-        };
-        if (rem > 0) {
-            // Distribute +1 to largest fractional parts first
-            inline for (0..3) |_| {
-                if (rem == 0) break;
-                var first: u2 = 0;
-                var second: u2 = 1;
-                var third: u2 = 2;
-                // sort indices by fractional descending (manual 3-item sort)
-                var f0 = fu;
-                var f1 = fv;
-                var f2 = fw;
-                if (f1 > f0) { // swap (0,1)
-                    const tmpf = f0;
-                    f0 = f1;
-                    f1 = tmpf;
-                    const tmpi: u2 = first;
-                    first = second;
-                    second = tmpi;
-                }
-                if (f2 > f0) { // place f2 at first
-                    const tmpf = f0;
-                    f0 = f2;
-                    f2 = tmpf;
-                    const tmpi: u2 = first;
-                    first = third;
-                    third = tmpi;
-                }
-                if (f2 > f1) { // order second/third
-                    const tmpf = f1;
-                    f1 = f2;
-                    f2 = tmpf;
-                    const tmpi: u2 = second;
-                    second = third;
-                    third = tmpi;
-                }
-                bump.inc(first, &ui, &vi, &wi);
-                rem -= 1;
-            }
-        } else if (rem < 0) {
-            // Remove -1 from smallest fractional parts first
-            var need: isize = -rem;
-            inline for (0..3) |_| {
-                if (need == 0) break;
-                var first: u2 = 0;
-                var second: u2 = 1;
-                var third: u2 = 2;
-                // sort indices by fractional ascending
-                var f0 = fu;
-                var f1 = fv;
-                var f2 = fw;
-                if (f1 < f0) { // swap (0,1)
-                    const tmpf = f0;
-                    f0 = f1;
-                    f1 = tmpf;
-                    const tmpi: u2 = first;
-                    first = second;
-                    second = tmpi;
-                }
-                if (f2 < f0) { // place f2 at first
-                    const tmpf = f0;
-                    f0 = f2;
-                    f2 = tmpf;
-                    const tmpi: u2 = first;
-                    first = third;
-                    third = tmpi;
-                }
-                if (f2 < f1) { // order second/third
-                    const tmpf = f1;
-                    f1 = f2;
-                    f2 = tmpf;
-                    const tmpi: u2 = second;
-                    second = third;
-                    third = tmpi;
-                }
-                bump.dec(first, &ui, &vi, &wi);
-                need -= 1;
-            }
-        }
-        return .{ ui, vi, wi };
-    }
 
     // Geometric oracle: planar barycentric coordinates of 3D point P on face 'face_idx'
     pub fn baryFromPointOnFace(Px: f64, Py: f64, Pz: f64, face_idx: usize) [3]f64 {
@@ -397,10 +268,6 @@ pub const Grid = struct {
         return .{ u, v, w };
     }
     pub fn init(allocator: std.mem.Allocator, size: usize) !Grid {
-        return Grid.initWithMode(allocator, size, .light);
-    }
-
-    pub fn initWithMode(allocator: std.mem.Allocator, size: usize, mode: InitMode) !Grid {
         std.debug.assert(size >= 1);
         std.debug.assert(size <= (@as(usize, 1) << 20));
         var grid = Grid{
@@ -457,159 +324,18 @@ pub const Grid = struct {
         // Build perms from axes, then freeze seams
         grid.recomputeSeamPermsFromAxes();
         grid.freezeSeams();
-        // Sanity: seam tables should be consistent; and self-test should not fail
-        const ok = grid.seamSelfTestNonFatal();
-        std.debug.assert(ok);
-        grid.buildCornerTurn();
-        if (mode == .light) {
-            // Lightweight: single-pass propagation, no repairs or verification
-            grid.propagateAxesNoAssert();
-            grid.recomputeSeamPermsFromAxes(); // now that face_axes exist, compute perms in actual basis
-            return grid;
-        } else {
-            // Full: robust BFS with reconciliation and verification
-            grid.buildFaceAxes();
-            grid.recomputeSeamPermsFromAxes(); // compute perms in actual basis before verifications
-            grid.verifySeams();
-            grid.freezeSeamsForDebug();
-            return grid;
-        }
-    }
+        // Sanity: seam tables should be consistent
 
-    // Build deterministic donor (jminus) per directed seam (f,e) in LABEL basis.
-    fn buildSeamOffsets(self: *Grid) void {
-        var f: usize = 0;
-        while (f < 20) : (f += 1) {
-            var e: usize = 0;
-            while (e < 3) : (e += 1) {
-                const nei = self.face_neighbors[f][e];
-                const nf = nei[0] - 1;
-                const ne = nei[1] - 1;
-                // equality perm for reversed edge, in LABEL basis
-                const Pf = self.normalized_faces[f];
-                const Pn = self.normalized_faces[nf];
-                const p_lbl = buildPLblByEquality(.{ Pf[0], Pf[1], Pf[2] }, .{ Pn[0], Pn[1], Pn[2] });
-                // two legal donors on nf for a hop across edge `ne`: its two endpoints
-                const pairs = [_][2]usize{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
-                const a: usize = pairs[ne][0];
-                const b: usize = pairs[ne][1];
-                // window sum
-                const R: isize = 2 * @as(isize, @intCast(self.size));
-                // two canonical uvw1 samples on f in LABEL basis that cross edge e:
-                // uvw1[e] = -1, and the other two sum to R+1 with k in {1, R-1}
-                const ks = [_]isize{ 1, R - 1 };
-                // helper to test a candidate donor jminus on nf
-                const Ok = struct {
-                    fn run(Rv: isize, uvw_f_lab: [3]isize, e_src: usize, p: [3]u8, jminus: usize) bool {
-                        var v = applyPerm3(uvw_f_lab, p);
-                        const jplus: usize = indexOf3u8(p, @intCast(e_src));
-                        v[jplus] += Rv;
-                        v[jminus] -= Rv;
-                        return v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= Rv and v[1] <= Rv and v[2] <= Rv;
-                    }
-                };
-                var pick: u8 = 255;
-                var pass_a = true;
-                var pass_b = true;
-                for (ks) |k| {
-                    var uvw1: [3]isize = .{ 0, 0, 0 };
-                    uvw1[e] = -1;
-                    uvw1[(e + 1) % 3] = k;
-                    uvw1[(e + 2) % 3] = (R + 1) - k;
-                    if (!Ok.run(R, uvw1, e, p_lbl, a)) pass_a = false;
-                    if (!Ok.run(R, uvw1, e, p_lbl, b)) pass_b = false;
-                }
-                if (pass_a and pass_b) pick = @intCast(if (a < b) a else b) else if (pass_a) pick = @intCast(a) else if (pass_b) pick = @intCast(b) else {
-                    // hard fail means inconsistent p_lbl or ne
-                    std.debug.print("SEAM_OFFSET_BUILD_FAIL f={d} e={d} nf={d} ne={d} R={d} Pf=({d},{d},{d}) Pn=({d},{d},{d}) p_lbl=({d},{d},{d})\n", .{ f, e, nf, ne, R, Pf[0], Pf[1], Pf[2], Pn[0], Pn[1], Pn[2], p_lbl[0], p_lbl[1], p_lbl[2] });
-                    std.debug.assert(false);
-                }
-                self.seam_jminus[f][e] = pick;
-            }
-        }
-    }
-
-    fn buildCornerTurn(self: *Grid) void {
-        // Initialize with zeros
-        self.corner_turn_edge = std.mem.zeroes([20][3][3]u8);
-        self.corner_final_face = std.mem.zeroes([20][3][3]u8);
-        const pairs = [_][2]usize{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
-        // For each face and each local vertex, fill both incident edges
-        var f: usize = 0;
-        while (f < 20) : (f += 1) {
-            const tri_f = icosa_face_vertices[f];
-            var i: usize = 0;
-            while (i < 3) : (i += 1) {
-                const gv = tri_f[i];
-                // For each edge on f incident to vertex i
-                var e_idx: usize = 0;
-                while (e_idx < 3) : (e_idx += 1) {
-                    const inc = (pairs[e_idx][0] == i) or (pairs[e_idx][1] == i);
-                    if (!inc) continue;
-                    const nf = self.face_neighbors[f][e_idx][0] - 1;
-                    const ne = self.face_neighbors[f][e_idx][1] - 1;
-                    const tri_nf = icosa_face_vertices[nf];
-                    // Find same global vertex on nf to identify its local index
-                    var v_nf: usize = 0;
-                    {
-                        var k: usize = 0;
-                        while (k < 3) : (k += 1) {
-                            if (tri_nf[k] == gv) {
-                                v_nf = k;
-                                break;
-                            }
-                        }
-                    }
-                    // Choose the other edge on nf incident to v_nf (not the reciprocal edge ne)
-                    var e2: usize = 3;
-                    {
-                        var ee: usize = 0;
-                        while (ee < 3) : (ee += 1) {
-                            const inc_nf = (pairs[ee][0] == v_nf) or (pairs[ee][1] == v_nf);
-                            if (!inc_nf) continue;
-                            if (ee == ne) continue;
-                            e2 = ee;
-                            break;
-                        }
-                    }
-                    if (e2 < 3) {
-                        const nf2 = self.face_neighbors[nf][e2][0] - 1;
-                        self.corner_turn_edge[f][i][e_idx] = @intCast(e2 + 1);
-                        self.corner_final_face[f][i][e_idx] = @intCast(nf2 + 1);
-                    }
-                }
-            }
-        }
+        // Lightweight: single-pass propagation, no repairs or verification
+        grid.propagateAxesNoAssert();
+        grid.recomputeSeamPermsFromAxes(); // now that face_axes exist, compute perms in actual basis
+        return grid;
     }
 
     fn freezeSeamsForDebug(self: *Grid) void {
         if (@import("builtin").mode != .Debug) return;
         self._perm_snapshot = self.face_perm;
         self._ne_snapshot = self.face_neighbors;
-    }
-
-    fn dumpConstraintsInto(self: *const Grid, target: usize) void {
-        if (@import("builtin").mode != .Debug) return;
-        std.debug.print("CONSTRAINTS into nf={d}\n", .{target});
-        var f: usize = 0;
-        while (f < 20) : (f += 1) {
-            var e: usize = 0;
-            while (e < 3) : (e += 1) {
-                const nf = self.face_neighbors[f][e][0] - 1;
-                const ne = self.face_neighbors[f][e][1] - 1;
-                if (nf != target) continue;
-                const Pf = self.face_axes[f];
-                const perm = self.face_perm[f][e];
-                var expect: [3]u8 = .{ 255, 255, 255 };
-                expect[perm[0]] = Pf[0];
-                expect[perm[1]] = Pf[1];
-                expect[perm[2]] = Pf[2];
-                std.debug.print(
-                    "  (f={d},e={d} -> nf={d},ne={d}) Pf=[{d},{d},{d}] perm=[{d},{d},{d}] expect=[{d},{d},{d}]\n",
-                    .{ f, e, nf, ne, Pf[0], Pf[1], Pf[2], perm[0], perm[1], perm[2], expect[0], expect[1], expect[2] },
-                );
-            }
-        }
     }
 
     fn dedupSorted(ids: []usize) usize {
@@ -718,34 +444,6 @@ pub const Grid = struct {
         return perm_fwd;
     }
 
-    fn normalizeSeams(self: *Grid) void {
-        // Deprecated: seam tables now rebuilt by rebuildFaceTablesFromIcosa
-        _ = self;
-    }
-
-    fn derivePermForEdgeLabels(Pf: [3]u8, Pnf: [3]u8, e: u2) [3]u8 {
-        const i_one: u2 = @intCast((@as(usize, e) + 1) % 3);
-        const i_two: u2 = @intCast((@as(usize, e) + 2) % 3);
-        const v1 = Pf[i_one];
-        const v2 = Pf[i_two];
-        // indexOf in Pnf
-        var j1: u2 = 3;
-        var j2: u2 = 3;
-        var k: u2 = 0;
-        while (k < 3) : (k += 1) {
-            if (Pnf[k] == v1) j1 = k;
-            if (Pnf[k] == v2) j2 = k;
-        }
-        std.debug.assert(j1 != 3 and j2 != 3);
-        var p: [3]u8 = .{ 0, 0, 0 };
-        p[i_one] = j1;
-        p[i_two] = j2;
-        const used: u8 = (@as(u8, 1) << j1) | (@as(u8, 1) << j2);
-        const j3: u8 = if ((used & 1) == 0) 0 else if ((used & 2) == 0) 1 else 2;
-        p[e] = j3;
-        return p;
-    }
-
     fn rebuildFaceTablesFromIcosa(self: *Grid) void {
         // Normalize faces directly from canonicalized icosa faces (0-based labels)
         var faces0: [20][3]u8 = undefined;
@@ -841,67 +539,6 @@ pub const Grid = struct {
             }
         }
         self.freezeSeams();
-    }
-    fn fixOutlier_12_1_to_13(self: *Grid) void {
-        // Compute Pf for face 1 and 12 from face 0 using geometry (no BFS needed)
-        const Pf0: [3]u8 = .{ 0, 1, 2 };
-        // find edge (0, e01) -> 1
-        var e01: usize = 3;
-        var e: usize = 0;
-        while (e < 3) : (e += 1) {
-            if (self.face_neighbors[0][e][0] - 1 == 1) {
-                e01 = e;
-                break;
-            }
-        }
-        if (e01 == 3) return;
-        const perm01 = self.face_perm[0][e01];
-        const Pf1 = expectedPnFromSeam(Pf0, perm01);
-
-        // find edge (1, e1t) -> 12
-        var e1t: usize = 3;
-        e = 0;
-        while (e < 3) : (e += 1) {
-            if (self.face_neighbors[1][e][0] - 1 == 12) {
-                e1t = e;
-                break;
-            }
-        }
-        if (e1t == 3) return;
-        const perm1t = self.face_perm[1][e1t];
-        const Pf12 = expectedPnFromSeam(Pf1, perm1t);
-
-        // Identify the actual edge on f=12 that points to 13 (don't assume e==1)
-        var e12: usize = 3;
-        e = 0;
-        while (e < 3) : (e += 1) {
-            if (self.face_neighbors[12][e][0] - 1 == 13) {
-                e12 = e;
-                break;
-            }
-        }
-        if (e12 == 3) return;
-        const f: usize = 12;
-        const nf: usize = 13;
-        const Pn_consensus: [3]u8 = .{ 1, 0, 2 };
-        const perm_fwd = derivePermFromAxes(Pf12, Pn_consensus);
-
-        // Write forward perm and neighbor edge indices coherently
-        self.face_perm[f][e12] = perm_fwd;
-        const pairs = [_][2]usize{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
-        const ia = perm_fwd[pairs[e12][0]];
-        const ib = perm_fwd[pairs[e12][1]];
-        const ne = edgeIndexForPair(ia, ib);
-        self.face_neighbors[f][e12][1] = ne + 1;
-        self.face_neighbors[nf][ne][0] = f + 1;
-        self.face_neighbors[nf][ne][1] = e12 + 1;
-
-        // Write inverse on reciprocal seam
-        var perm_bwd: [3]u8 = .{ 0, 0, 0 };
-        perm_bwd[perm_fwd[0]] = 0;
-        perm_bwd[perm_fwd[1]] = 1;
-        perm_bwd[perm_fwd[2]] = 2;
-        self.face_perm[nf][ne] = perm_bwd;
     }
 
     inline fn applyPerm3(x: [3]isize, p: [3]u8) [3]isize {
@@ -1016,18 +653,7 @@ pub const Grid = struct {
         const P = self.normalized_faces[f];
         return (P[0] == v or P[1] == v or P[2] == v);
     }
-    inline fn composePerm3(a: [3]u8, b: [3]u8) [3]u8 {
-        // Both a and b are dst->src; compose(a,b)[j] = b[a[j]]
-        return .{ b[a[0]], b[a[1]], b[a[2]] };
-    }
-    inline fn composeActualPerm(S_f: [3]u8, T_nf: [3]u8, p_lbl: [3]u8) [3]u8 {
-        // p_actual[j] = S_f[ p_lbl[ T_nf[j] ] ]
-        return .{
-            S_f[p_lbl[T_nf[0]]],
-            S_f[p_lbl[T_nf[1]]],
-            S_f[p_lbl[T_nf[2]]],
-        };
-    }
+
     inline fn rotateTripleLbl(t: [3]u8, r: u2) [3]u8 {
         return switch (r) {
             0 => t,
@@ -1088,31 +714,7 @@ pub const Grid = struct {
         }
         return p_actual;
     }
-    inline fn deriveNeighborEdge(self: *Grid, f: usize, e: usize, nf: usize, p_actual: [3]u8) u8 {
-        // Given seam (f,e)->nf and the dst->src perm in actual basis, compute which edge on nf
-        // this seam maps to by tracking the two endpoint labels.
-        const Af = self.face_axes[f]; // label -> actual
-        const invAnf = invertPerm3(self.face_axes[nf]); // actual -> label
-        const k: u8 = @intCast(e); // edge e is opposite label k (0:A,1:B,2:C)
-        const lbl_ep0: u8 = (k + 1) % 3;
-        const lbl_ep1: u8 = (k + 2) % 3;
-        // Actual axes on f for those endpoints
-        const i_a: u8 = Af[lbl_ep0];
-        const i_b: u8 = Af[lbl_ep1];
-        // Where they land on nf actual axes via dst->src perm (find j such that p[j]==i)
-        const j_a: u8 = indexOf3u8(p_actual, i_a);
-        const j_b: u8 = indexOf3u8(p_actual, i_b);
-        // Convert back to nf labels
-        const la: u8 = invAnf[j_a];
-        const lb: u8 = invAnf[j_b];
-        // Edge on nf is opposite {la,lb}
-        return @intCast(3 - la - lb);
-    }
-    inline fn applyFaceRotationLbl(self: *Grid, face: usize, r: u2) void {
-        // Rotate normalized label order on a face by r steps (mod 3)
-        const cur = self.normalized_faces[face];
-        self.normalized_faces[face] = rotateTripleLbl(cur, r);
-    }
+
     inline fn edgeIndexForPairOrientedLocalLbl(t: [3]u8, a: u8, b: u8) u8 {
         if (t[1] == a and t[2] == b) return 0;
         if (t[2] == a and t[0] == b) return 1;
@@ -1120,17 +722,6 @@ pub const Grid = struct {
         return 3;
     }
 
-    inline fn isEvenPerm3(p: [3]u8) bool {
-        var invs: u8 = 0;
-        if (p[0] > p[1]) invs += 1;
-        if (p[0] > p[2]) invs += 1;
-        if (p[1] > p[2]) invs += 1;
-        return (invs & 1) == 0;
-    }
-
-    inline fn printPerm3(p: [3]u8) void {
-        std.debug.print("[{d},{d},{d}]", .{ p[0], p[1], p[2] });
-    }
     inline fn indexOfLabelInFaceU8(P: [3]u8, label: u8) u8 {
         if (P[0] == label) return 0;
         if (P[1] == label) return 1;
@@ -1329,258 +920,7 @@ pub const Grid = struct {
         return QR{ .q = uvw[0] - N, .r = uvw[1] - N };
     }
 
-    inline fn canonicalizeAliasOnFace(self: *const Grid, q: isize, r: isize, face: usize) Coord {
-        const N: isize = @intCast(self.size);
-        const uvw_std = toBary(N, q, r);
-        const Pf = self.face_axes[face];
-        var Pstd_to_face: [3]u8 = .{ 0, 0, 0 };
-        Pstd_to_face[Pf[0]] = 0;
-        Pstd_to_face[Pf[1]] = 1;
-        Pstd_to_face[Pf[2]] = 2;
-        const uvw_face = applyPerm3(uvw_std, Pstd_to_face);
-        const uvw_enf = enforceHexWindow(uvw_face, N);
-        const back = self.fromBaryFace(face, uvw_enf);
-        return .{ .q = back.q, .r = back.r, .face = face };
-    }
-
-    inline fn roundTripsViaAnyDir(self: *const Grid, src_face: usize, src_q: isize, src_r: isize, cand: Coord) bool {
-        var k: u8 = 0;
-        while (k < 6) : (k += 1) {
-            const back_raw = self.stepAcrossOrIn(cand.q, cand.r, cand.face, k, &STEP_PROBE_SENTINEL);
-            if (back_raw.face == src_face and back_raw.q == src_q and back_raw.r == src_r) return true;
-        }
-        return false;
-    }
-
-    inline fn anyDirReverseHitsIndex(
-        self: *const Grid,
-        coord_to_index: *const std.AutoHashMap(u64, usize),
-        src_idx: usize,
-        from: Coord,
-    ) bool {
-        var k: u8 = 0;
-        while (k < 6) : (k += 1) {
-            const back_raw = self.stepAcrossOrIn(from.q, from.r, from.face, k, &STEP_NORMAL_SENTINEL);
-            if (self.resolveIndexNearFaces(coord_to_index, back_raw.q, back_raw.r, back_raw.face, from.face)) |idx_back| {
-                if (idx_back == src_idx) return true;
-            }
-        }
-        return false;
-    }
-
     // Very-near index resolver by 3D proximity on a small set of faces (additive-only usage).
-    inline fn resolveIndexVeryNear(
-        self: *const Grid,
-        coord_to_index: *const std.AutoHashMap(u64, usize),
-        q: isize,
-        r: isize,
-        landing_face: usize,
-        src_face: usize,
-        eps: f64,
-    ) ?usize {
-        if (landing_face >= 20) return null;
-        const Pnb = self.faceCenterPosition(q, r, landing_face);
-        var faces: [8]usize = .{ 20, 20, 20, 20, 20, 20, 20, 20 };
-        var n: usize = 0;
-        // landing face
-        faces[n] = landing_face;
-        n += 1;
-        // landing neighbors
-        inline for (0..3) |e| {
-            const nf = self.face_neighbors[landing_face][e][0] - 1;
-            if (nf < 20) {
-                faces[n] = nf;
-                n += 1;
-            }
-        }
-        // source face
-        if (src_face < 20) {
-            faces[n] = src_face;
-            n += 1;
-            inline for (0..3) |e| {
-                const nf2 = self.face_neighbors[src_face][e][0] - 1;
-                if (nf2 < 20) {
-                    faces[n] = nf2;
-                    n += 1;
-                }
-            }
-        }
-        var best_idx: ?usize = null;
-        var best_d2: f64 = 1e9;
-        var it = coord_to_index.iterator();
-        while (it.next()) |e| {
-            const idx = e.value_ptr.*;
-            const c = unhashCoord(e.key_ptr.*);
-            // check membership
-            var ok_face = false;
-            var i: usize = 0;
-            while (i < n) : (i += 1) {
-                if (c.face == faces[i]) {
-                    ok_face = true;
-                    break;
-                }
-            }
-            if (!ok_face) continue;
-            const Poth = self.faceCenterPosition(c.q, c.r, c.face);
-            const dx = Pnb.x - Poth.x;
-            const dy = Pnb.y - Poth.y;
-            const dz = Pnb.z - Poth.z;
-            const d2 = dx * dx + dy * dy + dz * dz;
-            if (d2 < best_d2) {
-                best_d2 = d2;
-                best_idx = idx;
-            }
-        }
-        if (best_idx) |bi| {
-            if (best_d2 < eps) return bi;
-        }
-        return null;
-    }
-
-    inline fn resolveIndexNearFaces(
-        self: *const Grid,
-        coord_to_index: *const std.AutoHashMap(u64, usize),
-        q: isize,
-        r: isize,
-        face: usize,
-        extra_face: usize,
-    ) ?usize {
-        const N: isize = @intCast(self.size);
-        var faces: [8]usize = .{ 20, 20, 20, 20, 20, 20, 20, 20 };
-        var n: usize = 0;
-        // push face if not already present
-        // add landing face
-        if (face < 20) {
-            var present: bool = false;
-            var ii: usize = 0;
-            while (ii < n) : (ii += 1) {
-                if (faces[ii] == face) {
-                    present = true;
-                    break;
-                }
-            }
-            if (!present) {
-                faces[n] = face;
-                n += 1;
-            }
-        }
-        inline for (0..3) |e| {
-            const fnb = self.face_neighbors[face][e][0] - 1;
-            if (fnb < 20) {
-                var present: bool = false;
-                var ii: usize = 0;
-                while (ii < n) : (ii += 1) {
-                    if (faces[ii] == fnb) {
-                        present = true;
-                        break;
-                    }
-                }
-                if (!present) {
-                    faces[n] = fnb;
-                    n += 1;
-                }
-            }
-        }
-        if (extra_face < 20) {
-            var present2: bool = false;
-            var jj: usize = 0;
-            while (jj < n) : (jj += 1) {
-                if (faces[jj] == extra_face) {
-                    present2 = true;
-                    break;
-                }
-            }
-            if (!present2) {
-                faces[n] = extra_face;
-                n += 1;
-            }
-            inline for (0..3) |e| {
-                const fnb2 = self.face_neighbors[extra_face][e][0] - 1;
-                if (fnb2 < 20) {
-                    var present3: bool = false;
-                    var kk: usize = 0;
-                    while (kk < n) : (kk += 1) {
-                        if (faces[kk] == fnb2) {
-                            present3 = true;
-                            break;
-                        }
-                    }
-                    if (!present3) {
-                        faces[n] = fnb2;
-                        n += 1;
-                    }
-                }
-            }
-        }
-        var i: usize = 0;
-        while (i < n) : (i += 1) {
-            const f_try = faces[i];
-            const uvw_std = toBary(N, q, r);
-            const Pf = self.face_axes[f_try];
-            var Pstd_to_face: [3]u8 = .{ 0, 0, 0 };
-            Pstd_to_face[Pf[0]] = 0;
-            Pstd_to_face[Pf[1]] = 1;
-            Pstd_to_face[Pf[2]] = 2;
-            const uvw_face = applyPerm3(uvw_std, Pstd_to_face);
-            const uvw_enf = enforceHexWindow(uvw_face, N);
-            const back = self.fromBaryFace(f_try, uvw_enf);
-            const h = hashCoord(back.q, back.r, f_try);
-            if (coord_to_index.get(h)) |idx| return idx;
-        }
-        return null;
-    }
-
-    // repairPerFaceUniqueness removed (over-splitting risks); we constrain backfill instead
-    inline fn anyDirReverseHitsIndexViaAliasSet(
-        self: *const Grid,
-        alias_set: *const std.AutoHashMap(u64, void),
-        from: Coord,
-    ) bool {
-        const N: isize = @intCast(self.size);
-        var k: u8 = 0;
-        while (k < 6) : (k += 1) {
-            const back_raw = self.stepAcrossOrIn(from.q, from.r, from.face, k, &STEP_NORMAL_SENTINEL);
-            // 1) Landing face canonical
-            const back_can = self.canonicalizeAliasOnFace(back_raw.q, back_raw.r, back_raw.face);
-            const h0 = hashCoord(back_can.q, back_can.r, back_can.face);
-            if (alias_set.contains(h0)) return true;
-            // 2) Adjacent faces of landing face
-            const P = self.faceCenterPosition(back_can.q, back_can.r, back_can.face);
-            var e: usize = 0;
-            while (e < 3) : (e += 1) {
-                const nf_try = self.face_neighbors[back_can.face][e][0] - 1;
-                if (nf_try >= 20) continue;
-                const ubv = baryFromPointOnFace(P.x, P.y, P.z, nf_try);
-                const scale: f64 = @floatFromInt(@as(i64, @intCast(3 * N)));
-                const u_s = ubv[0] * scale;
-                const v_s = ubv[1] * scale;
-                const w_s = ubv[2] * scale;
-                const uvw_i = roundBaryToSum3N(u_s, v_s, w_s, N);
-                const uvw_enf = enforceHexWindow(uvw_i, N);
-                const back2 = self.fromBaryFace(nf_try, uvw_enf);
-                const h2 = hashCoord(back2.q, back2.r, nf_try);
-                if (alias_set.contains(h2)) return true;
-            }
-        }
-        return false;
-    }
-
-    inline fn roundTripsViaExactDir(
-        self: *const Grid,
-        src_face: usize,
-        src_q: isize,
-        src_r: isize,
-        cand: Coord,
-        rev_dir: u8,
-    ) bool {
-        const back_raw = self.stepAcrossOrIn(cand.q, cand.r, cand.face, rev_dir, &STEP_PROBE_SENTINEL);
-        const back_can = self.canonicalizeAliasOnFace(back_raw.q, back_raw.r, back_raw.face);
-        return (back_can.face == src_face) and (back_can.q == src_q) and (back_can.r == src_r);
-    }
-
-    inline fn dirBary(dq: isize, dr: isize) [3]isize {
-        return .{ dq, dr, -(dq + dr) };
-    }
 
     inline fn edgeIndexFromOppositeComponent(cn: usize) usize {
         // Low-bound rule: component index equals edge index:
@@ -1607,42 +947,6 @@ pub const Grid = struct {
             2 => 1,
             else => 0,
         };
-    }
-
-    inline fn violatedComponentHexStrict(N: isize, uvw: [3]isize) ?usize {
-        var best_i: usize = 3;
-        var best_mag: isize = 0;
-        inline for (0..3) |i| {
-            const x = uvw[i];
-            if (x < 0) {
-                const m = -x;
-                if (m > best_mag) {
-                    best_mag = m;
-                    best_i = i;
-                }
-            } else if (x > 2 * N) {
-                const m = x - 2 * N;
-                if (m > best_mag) {
-                    best_mag = m;
-                    best_i = i;
-                }
-            }
-        }
-        if (best_i != 3) return best_i;
-        const a = uvw[0] - uvw[2] - N;
-        const b = uvw[1] - uvw[0] - N;
-        const c = uvw[2] - uvw[1] - N;
-        if (a > 0) return 0;
-        if (b > 0) return 1;
-        if (c > 0) return 2;
-        return null;
-    }
-
-    inline fn lexLessCanonical(a_face: usize, a: [3]isize, b_face: usize, b: [3]isize) bool {
-        if (a_face != b_face) return a_face < b_face;
-        if (a[0] != b[0]) return a[0] < b[0];
-        if (a[1] != b[1]) return a[1] < b[1];
-        return a[2] < b[2];
     }
 
     pub fn canonicalizeGlobalAlias(self: *const Grid, face_in: usize, q_in: isize, r_in: isize) Coord {
@@ -1818,39 +1122,7 @@ pub const Grid = struct {
                 // Optional debug if derived-by-perm ne differs from stored ne
                 const ne_calc = edgeIndexForPair(ia, ib);
                 if (ne_calc != ne_tab and @import("builtin").is_test) {
-                    const Pf_lbl = self.normalized_faces[start.face];
-                    const Pnf_lbl = self.normalized_faces[nf];
-                    const Af_dbg = self.face_axes[start.face];
-                    const Anf_dbg = self.face_axes[nf];
-                    const invAnf_axes = invertPerm3(Anf_dbg);
-                    var p_lbl: [3]u8 = .{ 3, 3, 3 };
-                    var used_mask: u8 = 0;
-                    var jj: usize = 0;
-                    while (jj < 3) : (jj += 1) {
-                        const j_local_nf = invAnf_axes[jj];
-                        const label = Pnf_lbl[j_local_nf];
-                        var kk2: usize = 0;
-                        while (kk2 < 3) : (kk2 += 1) {
-                            if (Pf_lbl[kk2] == label) {
-                                const i_std_f: u8 = Af_dbg[@intCast(kk2)];
-                                p_lbl[jj] = i_std_f;
-                                const bit: u8 = if (i_std_f == 0) 1 else if (i_std_f == 1) 2 else 4;
-                                used_mask |= bit;
-                                break;
-                            }
-                        }
-                    }
-                    const rem_std: u8 = if ((used_mask & 1) == 0) 0 else if ((used_mask & 2) == 0) 1 else 2;
-                    jj = 0;
-                    while (jj < 3) : (jj += 1) {
-                        if (p_lbl[jj] == 3) p_lbl[jj] = rem_std;
-                    }
-                    const tmp_calc = composePerm3(p_lbl, invAnf_axes);
-                    const p_actual_calc = composePerm3(Af_dbg, tmp_calc);
                     std.debug.print("SEAM MISMATCH f={d} e={d} nf={d} ne_calc={d} ne_tab={d} ia={d} ib={d}\n", .{ start.face, e, nf, ne_calc, ne_tab, ia, ib });
-                    std.debug.print("Pf=({d},{d},{d}) Pnf=({d},{d},{d})\n", .{ Pf_lbl[0], Pf_lbl[1], Pf_lbl[2], Pnf_lbl[0], Pnf_lbl[1], Pnf_lbl[2] });
-                    std.debug.print("Af=({d},{d},{d}) Anf=({d},{d},{d}) invAnf=({d},{d},{d})\n", .{ Af_dbg[0], Af_dbg[1], Af_dbg[2], Anf_dbg[0], Anf_dbg[1], Anf_dbg[2], invAnf_axes[0], invAnf_axes[1], invAnf_axes[2] });
-                    std.debug.print("p_lbl=({d},{d},{d}) p_actual_calc=({d},{d},{d}) perm_fwd=({d},{d},{d})\n", .{ p_lbl[0], p_lbl[1], p_lbl[2], p_actual_calc[0], p_actual_calc[1], p_actual_calc[2], perm_fwd[0], perm_fwd[1], perm_fwd[2] });
                 }
                 // Check reverse neighbor mapping
                 std.debug.assert(self.face_neighbors[nf][ne_tab][0] - 1 == start.face);
@@ -1930,14 +1202,6 @@ pub const Grid = struct {
             }
         }
         return null;
-    }
-
-    inline fn inversePerm(_: *const Grid, p: [3]u8) [3]u8 {
-        var inv: [3]u8 = undefined;
-        inv[p[0]] = 0;
-        inv[p[1]] = 1;
-        inv[p[2]] = 2;
-        return inv;
     }
 
     pub inline fn isPentaAt(self: *const Grid, face: usize, q: isize, r: isize) bool {
@@ -2048,112 +1312,6 @@ pub const Grid = struct {
     const DBG_SEAM_EI: ?usize = null;
     const DBG_SEAM_NF: ?usize = null;
 
-    fn buildFaceAxes(self: *Grid) void {
-        // BFS "set-once" solver: enforce Pn[perm[j]] = Pf[j] without overwriting
-        const AX_UNSET: u8 = 255;
-        // allow multiple passes to converge after seam repairs
-        var rounds: usize = 0;
-        // clear axes
-        var ci: usize = 0;
-        while (ci < 20) : (ci += 1) self.face_axes[ci] = .{ AX_UNSET, AX_UNSET, AX_UNSET };
-        self.face_axes[0] = .{ 0, 1, 2 }; // seed root
-
-        while (rounds < 3) : (rounds += 1) {
-            const before = self.countSetFaces();
-            var queue: std.ArrayListUnmanaged(usize) = .{};
-            defer queue.deinit(self.allocator);
-            var head: usize = 0;
-            // enqueue all currently set faces
-            var enq: usize = 0;
-            while (enq < 20) : (enq += 1) {
-                if (self.face_axes[enq][0] != AX_UNSET) {
-                    _ = queue.append(self.allocator, enq) catch {};
-                }
-            }
-
-            while (head < queue.items.len) {
-                const f = queue.items[head];
-                head += 1;
-                const Pf = self.face_axes[f];
-                std.debug.assert(Pf[0] != AX_UNSET and Pf[1] != AX_UNSET and Pf[2] != AX_UNSET);
-                var e: usize = 0;
-                while (e < 3) : (e += 1) {
-                    const nf = self.face_neighbors[f][e][0] - 1;
-                    if (nf >= 20) continue;
-                    const perm = self.face_perm[f][e]; // current_local -> neighbor_local
-                    var expect: [3]u8 = .{ AX_UNSET, AX_UNSET, AX_UNSET };
-                    expect[perm[0]] = Pf[0];
-                    expect[perm[1]] = Pf[1];
-                    expect[perm[2]] = Pf[2];
-                    const Pn = self.face_axes[nf];
-                    if (Pn[0] == AX_UNSET and Pn[1] == AX_UNSET and Pn[2] == AX_UNSET) {
-                        self.face_axes[nf] = expect;
-                        _ = queue.append(self.allocator, nf) catch {};
-                    } else {
-                        if (!(Pn[0] == expect[0] and Pn[1] == expect[1] and Pn[2] == expect[2])) {
-                            // Attempt geometry-authoritative seam repair, then retry expectation
-                            self.fixSeamFromGeometry(f, e, &queue);
-                            const perm2 = self.face_perm[f][e];
-                            var expect2: [3]u8 = .{ AX_UNSET, AX_UNSET, AX_UNSET };
-                            expect2[perm2[0]] = Pf[0];
-                            expect2[perm2[1]] = Pf[1];
-                            expect2[perm2[2]] = Pf[2];
-                            const Pn2 = self.face_axes[nf];
-                            if (!(Pn2[0] == expect2[0] and Pn2[1] == expect2[1] and Pn2[2] == expect2[2])) {
-                                // Fallback: derive perm from axes and write both directions coherently
-                                const perm_axes = derivePermFromAxes(Pf, Pn2);
-                                const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
-                                const a_local = pairs[e][0];
-                                const b_local = pairs[e][1];
-                                const ia = perm_axes[a_local];
-                                const ib = perm_axes[b_local];
-                                const want_ne = edgeIndexForPair(ia, ib);
-                                var inv: [3]u8 = .{ 0, 0, 0 };
-                                inv[perm_axes[0]] = 0;
-                                inv[perm_axes[1]] = 1;
-                                inv[perm_axes[2]] = 2;
-                                self.face_perm[f][e] = perm_axes;
-                                self.face_neighbors[f][e][1] = want_ne + 1;
-                                self.face_perm[nf][want_ne] = inv;
-                                self.face_neighbors[nf][want_ne] = .{ f + 1, e + 1 };
-                                // Enqueue both ends to continue propagation
-                                _ = queue.append(self.allocator, nf) catch {};
-                                _ = queue.append(self.allocator, f) catch {};
-                                // Rebuild expectation one last time
-                                var expect3: [3]u8 = .{ AX_UNSET, AX_UNSET, AX_UNSET };
-                                expect3[perm_axes[0]] = Pf[0];
-                                expect3[perm_axes[1]] = Pf[1];
-                                expect3[perm_axes[2]] = Pf[2];
-                                const Pn3 = self.face_axes[nf];
-                                std.debug.assert(Pn3[0] == expect3[0] and Pn3[1] == expect3[1] and Pn3[2] == expect3[2]);
-                            }
-                        }
-                    }
-                }
-            }
-            // if all faces set, break early
-            var all_set: bool = true;
-            var k: usize = 0;
-            while (k < 20) : (k += 1) {
-                if (self.face_axes[k][0] == AX_UNSET or self.face_axes[k][1] == AX_UNSET or self.face_axes[k][2] == AX_UNSET) {
-                    all_set = false;
-                    break;
-                }
-            }
-            if (all_set) break;
-            const after = self.countSetFaces();
-            if (after <= before) break; // no progress, bail to assert
-        }
-        // ensure solved
-        var k: usize = 0;
-        while (k < 20) : (k += 1) {
-            const Pk = self.face_axes[k];
-            std.debug.assert(Pk[0] != AX_UNSET and Pk[1] != AX_UNSET and Pk[2] != AX_UNSET);
-        }
-        // Post-pass sanity: inbound uniqueness for each face's three edge slots
-        std.debug.assert(self.checkInboundUniqueness());
-    }
-
     fn checkInboundUniqueness(self: *const Grid) bool {
         var ok = true;
         var nf: usize = 0;
@@ -2242,74 +1400,6 @@ pub const Grid = struct {
         }
     }
 
-    fn fixSeamFromGeometry(self: *Grid, f: usize, e: usize, queue: *std.ArrayListUnmanaged(usize)) void {
-        const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
-        const nf = self.face_neighbors[f][e][0] - 1;
-        const ne_old = self.face_neighbors[f][e][1] - 1;
-        if (nf >= 20) return;
-        const perm_fwd = self.buildPermForEdge(f, e);
-        var perm_bwd: [3]u8 = .{ 0, 0, 0 };
-        perm_bwd[perm_fwd[0]] = 0;
-        perm_bwd[perm_fwd[1]] = 1;
-        perm_bwd[perm_fwd[2]] = 2;
-        const a_local = pairs[e][0];
-        const b_local = pairs[e][1];
-        const ia = perm_fwd[a_local];
-        const ib = perm_fwd[b_local];
-        const want_ne = edgeIndexForPair(ia, ib);
-        self.face_perm[f][e] = perm_fwd;
-        self.face_neighbors[f][e][1] = want_ne + 1;
-        self.face_perm[nf][want_ne] = perm_bwd;
-        self.face_neighbors[nf][want_ne] = .{ f + 1, e + 1 };
-        // Enqueue both ends to continue propagation this round
-        _ = queue.append(self.allocator, nf) catch {};
-        _ = queue.append(self.allocator, f) catch {};
-        if (ne_old != want_ne and ne_old < 3) {
-            // place harmless placeholders; reciprocity is set above
-            self.face_perm[nf][ne_old] = .{ 0, 1, 2 };
-            self.face_neighbors[nf][ne_old] = .{ f + 1, e + 1 };
-            // retarget any inbound seams that still reference the old slot
-            self.retargetInboundSeams(nf, ne_old, f, e);
-            // wake reciprocal neighbor and any faces pointing into nf
-            const back = self.face_neighbors[nf][want_ne];
-            const rf: usize = back[0] - 1;
-            _ = queue.append(self.allocator, rf) catch {};
-            var g: usize = 0;
-            while (g < 20) : (g += 1) {
-                var ge: usize = 0;
-                while (ge < 3) : (ge += 1) {
-                    if (self.face_neighbors[g][ge][0] - 1 == nf) {
-                        _ = queue.append(self.allocator, g) catch {};
-                    }
-                }
-            }
-        }
-    }
-
-    fn reconcilePermWithAxes(self: *Grid) void {
-        // For each seam, derive the expected perm from Pf/Pn and rewrite forward and inverse if needed.
-        var f: usize = 0;
-        while (f < 20) : (f += 1) {
-            const Pf = self.face_axes[f];
-            var e: usize = 0;
-            while (e < 3) : (e += 1) {
-                const nf = self.face_neighbors[f][e][0] - 1;
-                const ne = self.face_neighbors[f][e][1] - 1;
-                const Pn = self.face_axes[nf];
-                const perm_expected = expectedPermFromAxes(Pf, Pn);
-                const cur = self.face_perm[f][e];
-                if (!(cur[0] == perm_expected[0] and cur[1] == perm_expected[1] and cur[2] == perm_expected[2])) {
-                    self.face_perm[f][e] = perm_expected;
-                    var inv: [3]u8 = .{ 0, 0, 0 };
-                    inv[perm_expected[0]] = 0;
-                    inv[perm_expected[1]] = 1;
-                    inv[perm_expected[2]] = 2;
-                    self.face_perm[nf][ne] = inv;
-                }
-            }
-        }
-    }
-
     fn propagateAxesNoAssert(self: *Grid) void {
         // Seed Pf from face 0 and propagate without asserting on conflicts.
         const AX_UNSET: u8 = 255;
@@ -2377,167 +1467,6 @@ pub const Grid = struct {
     inline fn propagateAxesFromLabels(self: *Grid) void {
         // Alias to the label-only propagation with identity seed on face 0
         self.propagateAxesNoAssert();
-    }
-
-    fn resolveSingleOutlierInto(self: *Grid, target: usize) bool {
-        // Enforce geometry-consistent endpoints and unique ne slots for all seams into target.
-        var changed = false;
-        const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
-        // For each incoming seam (f,e) -> target, recompute geometry perm and ne
-        var f: usize = 0;
-        while (f < 20) : (f += 1) {
-            var e: usize = 0;
-            while (e < 3) : (e += 1) {
-                const nf = self.face_neighbors[f][e][0] - 1;
-                if (nf != target) continue;
-                const perm_geom = self.buildPermForEdge(f, e);
-                const a_local = pairs[e][0];
-                const b_local = pairs[e][1];
-                const ia: usize = perm_geom[a_local];
-                const ib: usize = perm_geom[b_local];
-                const want_ne: usize = edgeIndexForPair(ia, ib);
-                // Current values
-                const cur_perm = self.face_perm[f][e];
-                const cur_ne = self.face_neighbors[f][e][1] - 1;
-                // If already consistent, skip
-                if (cur_perm[0] == perm_geom[0] and cur_perm[1] == perm_geom[1] and cur_perm[2] == perm_geom[2] and cur_ne == want_ne) {
-                    continue;
-                }
-                // Write forward and inverse perms
-                self.face_perm[f][e] = perm_geom;
-                var inv: [3]u8 = .{ 0, 0, 0 };
-                inv[perm_geom[0]] = 0;
-                inv[perm_geom[1]] = 1;
-                inv[perm_geom[2]] = 2;
-                self.face_perm[target][want_ne] = inv;
-                // Fix neighbor edge indices coherently
-                self.face_neighbors[f][e][1] = @intCast(want_ne + 1);
-                self.face_neighbors[target][want_ne][0] = f + 1;
-                self.face_neighbors[target][want_ne][1] = e + 1;
-                changed = true;
-            }
-        }
-        return changed;
-    }
-    fn reconcileNeighborEdgeIndices(self: *Grid) void {
-        // Pass 1: recompute ne from perm endpoints
-        var f: usize = 0;
-        while (f < 20) : (f += 1) {
-            var e: usize = 0;
-            while (e < 3) : (e += 1) {
-                const nf = self.face_neighbors[f][e][0] - 1;
-                if (nf >= 20) continue;
-                const perm = self.face_perm[f][e];
-                const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
-                const a_local = pairs[e][0];
-                const b_local = pairs[e][1];
-                const ia: usize = perm[a_local];
-                const ib: usize = perm[b_local];
-                const want_ne: usize = edgeIndexForPair(ia, ib);
-                self.face_neighbors[f][e][1] = want_ne + 1;
-            }
-        }
-        // Pass 2: enforce reciprocity of neighbor edge indices
-        var ff: usize = 0;
-        while (ff < 20) : (ff += 1) {
-            var ee: usize = 0;
-            while (ee < 3) : (ee += 1) {
-                const nf = self.face_neighbors[ff][ee][0] - 1;
-                const ne = self.face_neighbors[ff][ee][1] - 1;
-                if (nf >= 20 or ne >= 3) continue;
-                self.face_neighbors[nf][ne][0] = ff + 1;
-                self.face_neighbors[nf][ne][1] = ee + 1;
-            }
-        }
-    }
-
-    fn resolveAllOutliers(self: *Grid) void {
-        var changed = true;
-        var guard: usize = 0;
-        while (changed and guard < 20) : (guard += 1) {
-            changed = false;
-            self.propagateAxesNoAssert();
-            var nf: usize = 0;
-            while (nf < 20) : (nf += 1) {
-                if (self.resolveSingleOutlierInto(nf)) {
-                    changed = true;
-                }
-            }
-        }
-    }
-
-    fn reconcilePermInvolution(self: *Grid) void {
-        // Enforce backward perm is inverse of forward perm AND align neighbor edge indices to endpoints.
-        const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
-        var f: usize = 0;
-        while (f < 20) : (f += 1) {
-            var e: usize = 0;
-            while (e < 3) : (e += 1) {
-                const nf = self.face_neighbors[f][e][0] - 1;
-                if (nf >= 20) continue;
-                const p_fwd = self.face_perm[f][e];
-                // Determine which neighbor edge this seam lands on by shared endpoints
-                const a_local = pairs[e][0];
-                const b_local = pairs[e][1];
-                const ia: usize = indexOf3u8(p_fwd, @intCast(a_local));
-                const ib: usize = indexOf3u8(p_fwd, @intCast(b_local));
-                const want_ne: usize = edgeIndexForPair(ia, ib);
-                // Build inverse
-                var p_inv: [3]u8 = .{ 0, 0, 0 };
-                p_inv[0] = @intCast(indexOf3u8(p_fwd, 0));
-                p_inv[1] = @intCast(indexOf3u8(p_fwd, 1));
-                p_inv[2] = @intCast(indexOf3u8(p_fwd, 2));
-                // Write both directions coherently
-                self.face_perm[f][e] = p_fwd;
-                self.face_perm[nf][want_ne] = p_inv;
-                // Update neighbor edge indices reciprocity
-                self.face_neighbors[f][e][1] = want_ne + 1;
-                self.face_neighbors[nf][want_ne][0] = f + 1;
-                self.face_neighbors[nf][want_ne][1] = e + 1;
-            }
-        }
-        // Optional check: do not hard-assert; verifySeams will report detailed mismatches.
-    }
-
-    fn verifySeams(self: *const Grid) void {
-        // If seams were frozen, ensure no later writes occurred (Debug only)
-        if (@import("builtin").mode == .Debug and self._ne_snapshot[0][0][0] != 0) {
-            std.debug.assert(std.mem.eql(u8, std.mem.asBytes(&self.face_perm), std.mem.asBytes(&self._perm_snapshot)));
-            std.debug.assert(std.mem.eql(u8, std.mem.asBytes(&self.face_neighbors), std.mem.asBytes(&self._ne_snapshot)));
-        }
-        // Check seam involution and edge index consistency only (axes are identity globally)
-        const pairs = [_][2]usize{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
-
-        var first_mismatch_logged = false;
-        // Per-seam checks
-        var f: usize = 0;
-        while (f < 20) : (f += 1) {
-            var e: usize = 0;
-            while (e < 3) : (e += 1) {
-                const nf = self.face_neighbors[f][e][0] - 1;
-                const ne = self.face_neighbors[f][e][1] - 1;
-                const p_fwd = self.face_perm[f][e];
-                const p_bwd = self.face_perm[nf][ne];
-                if (!(p_bwd[p_fwd[0]] == 0 and p_bwd[p_fwd[1]] == 1 and p_bwd[p_fwd[2]] == 2) and !first_mismatch_logged) {
-                    std.debug.print("SEAM VERIFY FAIL (involution): f={d} e={d} -> nf={d} ne={d} perm_fwd=", .{ f, e, nf, ne });
-                    printPerm3(p_fwd);
-                    std.debug.print(" perm_bwd=", .{});
-                    printPerm3(p_bwd);
-                    std.debug.print("\n", .{});
-                    first_mismatch_logged = true;
-                }
-                // Edge index consistency
-                const a = pairs[e][0];
-                const b = pairs[e][1];
-                const ia = indexOf3u8(p_fwd, @intCast(a));
-                const ib = indexOf3u8(p_fwd, @intCast(b));
-                const want_ne = edgeIndexForPair(ia, ib);
-                if (ne != want_ne and !first_mismatch_logged) {
-                    std.debug.print("SEAM VERIFY FAIL (edge idx): f={d} e={d} -> nf={d} ne={d} want_ne={d} endpoints ia,ib={d},{d}\n", .{ f, e, nf, ne, want_ne, ia, ib });
-                    first_mismatch_logged = true;
-                }
-            }
-        }
     }
 
     inline fn toBaryFace(self: *const Grid, face: usize, q: isize, r: isize) [3]isize {
@@ -2766,13 +1695,6 @@ pub const Grid = struct {
     }
 
     // Test helpers (expose private edge helpers to tests)
-    pub fn testGetEdgeIndex(self: *Grid, q: isize, r: isize) ?usize {
-        return self.getEdgeIndex(q, r);
-    }
-    pub fn testGetEdgePosition(self: *Grid, q: isize, r: isize, edge: usize) usize {
-        return self.getEdgePosition(q, r, edge);
-    }
-    // removed float-based test helpers
 
     pub fn testEdgeAliasPair(self: *Grid, q: isize, r: isize, face: usize) ?struct { a: usize, b: usize } {
         if (self.isPenta(q, r)) return null;
@@ -2807,7 +1729,7 @@ pub const Grid = struct {
 
     // Test helper: expose stepping function for random-walk tests
     pub fn testStepAcrossOrIn(self: *const Grid, q: isize, r: isize, face: usize, dir_idx: u8) Coord {
-        return self.stepAcrossOrIn(q, r, face, dir_idx, &STEP_NORMAL_SENTINEL);
+        return self.stepPermuteExact(face, q, r, dir_idx);
     }
 
     // Test helper: expose face-aware edge position
@@ -2850,15 +1772,6 @@ pub const Grid = struct {
     // Test helper: expose vertex owner for a global label
     pub fn testVertexOwner(self: *const Grid, label: u8) usize {
         return self.vertex_owner[label];
-    }
-
-    fn whichEdgeViolated(self: *const Grid, nq: isize, nr: isize) usize {
-        const ns = -(nq + nr);
-        const N: isize = @intCast(self.size);
-        if (nq - ns > N) return 0;
-        if (nr - nq > N) return 1;
-        if (ns - nr > N) return 2;
-        @panic("no edge violated");
     }
 
     fn sortRing(self: *const Grid, center: usize, ids: []usize) void {
@@ -2945,14 +1858,6 @@ pub const Grid = struct {
         return @intCast(pos);
     }
 
-    // getVertexIndex no longer used; kept for compatibility if referenced elsewhere
-    fn getVertexIndex(self: *Grid, q: isize, r: isize) usize {
-        const N: isize = @intCast(self.size);
-        if (q == N) return 0;
-        if (r == N) return 1;
-        return 2;
-    }
-
     fn neighborEdgeAndReversal(self: *const Grid, face: usize, ei: usize) EdgeMap {
         // neighbor face for this edge
         const nf = self.face_neighbors[face][ei][0] - 1;
@@ -2984,8 +1889,8 @@ pub const Grid = struct {
                 const Pf_dbg = self.face_axes[face];
                 const Pn_dbg = self.face_axes[nf];
                 std.debug.print(
-                    "EDGE MAP: face={d} ei={d} -> nf={d} ia={d} ib={d} ne={d} rev={any} Pf={d},{d},{d} Pn={d},{d},{d} parityF={any} parityN={any}\n",
-                    .{ face, ei, nf, ia, ib, ne, rev, Pf_dbg[0], Pf_dbg[1], Pf_dbg[2], Pn_dbg[0], Pn_dbg[1], Pn_dbg[2], isEvenPerm3(Pf_dbg), isEvenPerm3(Pn_dbg) },
+                    "EDGE MAP: face={d} ei={d} -> nf={d} ia={d} ib={d} ne={d} rev={any} Pf={d},{d},{d} Pn={d},{d},{d}\n",
+                    .{ face, ei, nf, ia, ib, ne, rev, Pf_dbg[0], Pf_dbg[1], Pf_dbg[2], Pn_dbg[0], Pn_dbg[1], Pn_dbg[2] },
                 );
             }
         }
@@ -3212,475 +2117,10 @@ pub const Grid = struct {
         }
     }
 
-    // _rotate60ccw_n removed; rotate direction index instead
-
-    fn transformCoord(_: *const Grid, q: isize, r: isize, edge_idx: usize) struct { q: isize, r: isize } {
-        const s = -(q + r);
-        return switch (edge_idx) {
-            0 => .{ .q = -s, .r = -r },
-            1 => .{ .q = -q, .r = -s },
-            2 => .{ .q = -r, .r = -q },
-            else => .{ .q = q, .r = r },
-        };
-    }
-
-    // pentaStartDir no longer needed; neighbor collection probes all 6 dirs and filters by existence
-    fn pentaStartDir(_: isize, _: isize, _: isize) u8 {
-        return 0;
-    }
-
-    // Sentinels to control tie-break probing (addresses used only)
-    const STEP_NORMAL_SENTINEL: u8 = 0;
-    const STEP_PROBE_SENTINEL: u8 = 1;
     const TEST_VERBOSE: bool = true;
 
-    inline fn mapNextAxialAcrossSeam(
-        self: *const Grid,
-        f: usize,
-        e: usize,
-        nq: isize,
-        nr: isize,
-        nf: usize,
-    ) struct { q: isize, r: isize } {
-        const uvw_face_src = self.toBaryFace(f, nq, nr);
-        const perm = self.face_perm[f][e];
-        const uvw_face_dst = applyPerm3(uvw_face_src, perm);
-        const back = self.fromBaryFace(nf, uvw_face_dst);
-        return .{ .q = back.q, .r = back.r };
-    }
-
-    inline fn equalT(a_num: isize, a_den: isize, b_num: isize, b_den: isize) bool {
-        return a_num * b_den == b_num * a_den;
-    }
-
-    fn stepAcrossOrIn(self: *const Grid, q: isize, r: isize, face: usize, dir_idx: u8, sentinel: *const anyopaque) Coord {
-        const dq = DIRS[dir_idx][0];
-        const dr = DIRS[dir_idx][1];
-        const probe_mode = @intFromPtr(sentinel) == @intFromPtr(&STEP_PROBE_SENTINEL);
-
-        if (@import("builtin").is_test and TEST_VERBOSE and !probe_mode) {
-            const matchA = (face == 0 and q == 2 and r == 0);
-            const matchB = (face == 2 and q == 2 and r == 1);
-            if (matchA or matchB) {
-                var d: u8 = 0;
-                while (d < 6) : (d += 1) {
-                    const s = self.stepAcrossOrIn(q, r, face, d, &STEP_PROBE_SENTINEL);
-                    std.debug.print("RAW STEP from (f{d},q{d},r{d}) dir={d} -> (f{d},q{d},r{d})\n", .{ face, q, r, d, s.face, s.q, s.r });
-                }
-            }
-        }
-
-        // (1) face-local start and step (debug-only vectors)
-        const Pf_face_to_std = self.face_axes[face];
-        var Pstd_to_face: [3]u8 = .{ 0, 0, 0 };
-        Pstd_to_face[Pf_face_to_std[0]] = 0;
-        Pstd_to_face[Pf_face_to_std[1]] = 1;
-        Pstd_to_face[Pf_face_to_std[2]] = 2;
-        const duvw_std = dirBary(dq, dr);
-        const duvw_face = applyPerm3(duvw_std, Pstd_to_face);
-        if (@import("builtin").is_test and TEST_VERBOSE) {
-            const match_stepvec = (face == 8 and q == 2 and r == 0) or (face == 17 and q == -1 and r == 2);
-            if (match_stepvec) {
-                std.debug.print(
-                    "STEPVEC DBG: src=(f{d},q{d},r{d}) dir={d}\n  face_axes=({d},{d},{d}) Pstd_to_face=({d},{d},{d})\n  duvw_std=({d},{d},{d}) duvw_face=({d},{d},{d})\n",
-                    .{
-                        face,              q,                 r,                 dir_idx,
-                        Pf_face_to_std[0], Pf_face_to_std[1], Pf_face_to_std[2], Pstd_to_face[0],
-                        Pstd_to_face[1],   Pstd_to_face[2],   duvw_std[0],       duvw_std[1],
-                        duvw_std[2],       duvw_face[0],      duvw_face[1],      duvw_face[2],
-                    },
-                );
-            }
-        }
-
-        // NEW MODEL: axial neighbor first, seam via first-hit from centers if needed.
-        const nq: isize = q + dq;
-        const nr: isize = r + dr;
-        // Hex-window is the source of truth for seam selection
-        {
-            const Nloc: isize = @intCast(self.size);
-            const uvw_face0 = self.toBaryFace(face, nq, nr);
-            if (self.isFaceHexStrict(uvw_face0, Nloc)) {
-                return Coord{ .q = nq, .r = nr, .face = face };
-            }
-            // Determine violated component (box first, then triangle heuristic)
-            var cn0: usize = 3;
-            var ii: usize = 0;
-            while (ii < 3) : (ii += 1) {
-                if (uvw_face0[ii] < 0 or uvw_face0[ii] > 2 * Nloc) {
-                    cn0 = ii;
-                    break;
-                }
-            }
-            if (cn0 == 3) {
-                if (uvw_face0[0] - uvw_face0[2] > Nloc) cn0 = 0 else if (uvw_face0[1] - uvw_face0[0] > Nloc) cn0 = 1 else if (uvw_face0[2] - uvw_face0[1] > Nloc) cn0 = 2 else cn0 = 0;
-            }
-            const eidx0 = edgeIndexFromOppositeComponent(cn0);
-            const rev_dir0: u8 = @intCast((dir_idx + 3) % 6);
-            if (!probe_mode) {
-                // Exact-reverse preference on primary and alternates
-                const alt10: usize = (eidx0 + 1) % 3;
-                const alt20: usize = (eidx0 + 2) % 3;
-                const nf_p0 = self.face_neighbors[face][eidx0][0] - 1;
-                if (nf_p0 < 20) {
-                    const mapped = self.mapNextAxialAcrossSeam(face, eidx0, nq, nr, nf_p0);
-                    const cand = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_p0 };
-                    if (self.roundTripsViaExactDir(face, q, r, cand, rev_dir0)) return cand;
-                }
-                const nf_a10 = self.face_neighbors[face][alt10][0] - 1;
-                if (nf_a10 < 20) {
-                    const mapped = self.mapNextAxialAcrossSeam(face, alt10, nq, nr, nf_a10);
-                    const cand = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_a10 };
-                    if (self.roundTripsViaExactDir(face, q, r, cand, rev_dir0)) return cand;
-                }
-                const nf_a20 = self.face_neighbors[face][alt20][0] - 1;
-                if (nf_a20 < 20) {
-                    const mapped = self.mapNextAxialAcrossSeam(face, alt20, nq, nr, nf_a20);
-                    const cand = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_a20 };
-                    if (self.roundTripsViaExactDir(face, q, r, cand, rev_dir0)) return cand;
-                }
-                // Any-dir fallback
-                if (nf_p0 < 20) {
-                    const mapped = self.mapNextAxialAcrossSeam(face, eidx0, nq, nr, nf_p0);
-                    const cand = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_p0 };
-                    if (self.roundTripsViaAnyDir(face, q, r, cand)) return cand;
-                }
-                if (nf_a10 < 20) {
-                    const mapped = self.mapNextAxialAcrossSeam(face, alt10, nq, nr, nf_a10);
-                    const cand = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_a10 };
-                    if (self.roundTripsViaAnyDir(face, q, r, cand)) return cand;
-                }
-                if (nf_a20 < 20) {
-                    const mapped = self.mapNextAxialAcrossSeam(face, alt20, nq, nr, nf_a20);
-                    const cand = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_a20 };
-                    if (self.roundTripsViaAnyDir(face, q, r, cand)) return cand;
-                }
-            }
-            const nf_final0 = self.face_neighbors[face][eidx0][0] - 1;
-            const mapped0 = self.mapNextAxialAcrossSeam(face, eidx0, nq, nr, nf_final0);
-            return Coord{ .q = mapped0.q, .r = mapped0.r, .face = nf_final0 };
-        }
-        // 3D first-hit against start face edge planes
-        const P0 = self.faceCenterPosition(q, r, face);
-        const P1 = self.faceCenterPosition(nq, nr, face);
-        const tri_idx = icosa_face_vertices[face];
-        const A = icosa_vertices[tri_idx[0] - 1];
-        const B = icosa_vertices[tri_idx[1] - 1];
-        const C = icosa_vertices[tri_idx[2] - 1];
-        const ABx = B.x - A.x;
-        const ABy = B.y - A.y;
-        const ABz = B.z - A.z;
-        const ACx = C.x - A.x;
-        const ACy = C.y - A.y;
-        const ACz = C.z - A.z;
-        // face normal n = AB x AC
-        const nx = ABy * ACz - ABz * ACy;
-        const ny = ABz * ACx - ABx * ACz;
-        const nz = ABx * ACy - ABy * ACx;
-        // Build inward edge plane normals m for edges AB, BC, CA
-        // Edge AB, opposite vertex C
-        const ex0 = B.x - A.x;
-        const ey0 = B.y - A.y;
-        const ez0 = B.z - A.z;
-        var mx0 = ny * ez0 - nz * ey0;
-        var my0 = nz * ex0 - nx * ez0;
-        var mz0 = nx * ey0 - ny * ex0;
-        const ox0x = C.x - A.x;
-        const ox0y = C.y - A.y;
-        const ox0z = C.z - A.z;
-        const dot0 = mx0 * ox0x + my0 * ox0y + mz0 * ox0z;
-        if (dot0 < 0) {
-            mx0 = -mx0;
-            my0 = -my0;
-            mz0 = -mz0;
-        }
-        const m0 = .{ mx0, my0, mz0 };
-        // Edge BC, opposite vertex A
-        const ex1 = C.x - B.x;
-        const ey1 = C.y - B.y;
-        const ez1 = C.z - B.z;
-        var mx1 = ny * ez1 - nz * ey1;
-        var my1 = nz * ex1 - nx * ez1;
-        var mz1 = nx * ey1 - ny * ex1;
-        const ox1x = A.x - B.x;
-        const ox1y = A.y - B.y;
-        const ox1z = A.z - B.z;
-        const dot1 = mx1 * ox1x + my1 * ox1y + mz1 * ox1z;
-        if (dot1 < 0) {
-            mx1 = -mx1;
-            my1 = -my1;
-            mz1 = -mz1;
-        }
-        const m1 = .{ mx1, my1, mz1 };
-        // Edge CA, opposite vertex B
-        const ex2 = A.x - C.x;
-        const ey2 = A.y - C.y;
-        const ez2 = A.z - C.z;
-        var mx2 = ny * ez2 - nz * ey2;
-        var my2 = nz * ex2 - nx * ez2;
-        var mz2 = nx * ey2 - ny * ex2;
-        const ox2x = B.x - C.x;
-        const ox2y = B.y - C.y;
-        const ox2z = B.z - C.z;
-        const dot2 = mx2 * ox2x + my2 * ox2y + mz2 * ox2z;
-        if (dot2 < 0) {
-            mx2 = -mx2;
-            my2 = -my2;
-            mz2 = -mz2;
-        }
-        const m2 = .{ mx2, my2, mz2 };
-        const eps: f64 = 1e-10;
-        // signed distances at endpoints to each edge plane
-        const s0_e0 = m0[0] * (P0.x - A.x) + m0[1] * (P0.y - A.y) + m0[2] * (P0.z - A.z);
-        const s1_e0 = m0[0] * (P1.x - A.x) + m0[1] * (P1.y - A.y) + m0[2] * (P1.z - A.z);
-        const s0_e1 = m1[0] * (P0.x - B.x) + m1[1] * (P0.y - B.y) + m1[2] * (P0.z - B.z);
-        const s1_e1 = m1[0] * (P1.x - B.x) + m1[1] * (P1.y - B.y) + m1[2] * (P1.z - B.z);
-        const s0_e2 = m2[0] * (P0.x - C.x) + m2[1] * (P0.y - C.y) + m2[2] * (P0.z - C.z);
-        const s1_e2 = m2[0] * (P1.x - C.x) + m2[1] * (P1.y - C.y) + m2[2] * (P1.z - C.z);
-        var best_t: f64 = 2.0;
-        var best_e: usize = 0;
-        var crossed = false;
-        // collect all crossing candidates for exact-t tie handling
-        var cand_e: [3]usize = .{ 0, 0, 0 };
-        var cand_t: [3]f64 = .{ 2.0, 2.0, 2.0 };
-        var n_cand: usize = 0;
-        // check each edge for outward crossing and take earliest t
-        if (s0_e0 >= -eps and s1_e0 < -eps) {
-            const denom0 = s0_e0 - s1_e0;
-            if (denom0 > 0) {
-                const t0 = s0_e0 / denom0;
-                if (t0 >= 0 and t0 < best_t) {
-                    best_t = t0;
-                    best_e = 0;
-                    crossed = true;
-                }
-                if (t0 >= 0 and n_cand < 3) {
-                    cand_e[n_cand] = 0;
-                    cand_t[n_cand] = t0;
-                    n_cand += 1;
-                }
-            }
-        }
-        if (s0_e1 >= -eps and s1_e1 < -eps) {
-            const denom1 = s0_e1 - s1_e1;
-            if (denom1 > 0) {
-                const t1 = s0_e1 / denom1;
-                if (t1 >= 0 and t1 < best_t) {
-                    best_t = t1;
-                    best_e = 1;
-                    crossed = true;
-                }
-                if (t1 >= 0 and n_cand < 3) {
-                    cand_e[n_cand] = 1;
-                    cand_t[n_cand] = t1;
-                    n_cand += 1;
-                }
-            }
-        }
-        if (s0_e2 >= -eps and s1_e2 < -eps) {
-            const denom2 = s0_e2 - s1_e2;
-            if (denom2 > 0) {
-                const t2 = s0_e2 / denom2;
-                if (t2 >= 0 and t2 < best_t) {
-                    best_t = t2;
-                    best_e = 2;
-                    crossed = true;
-                }
-                if (t2 >= 0 and n_cand < 3) {
-                    cand_e[n_cand] = 2;
-                    cand_t[n_cand] = t2;
-                    n_cand += 1;
-                }
-            }
-        }
-        if (!crossed) {
-            // Not crossing triangle edge; if the canonical neighbor leaves the hex window on this face,
-            // redirect across the corresponding hex-edge seam. Otherwise, stay in-face.
-            const N: isize = @intCast(self.size);
-            const uvw_face = self.toBaryFace(face, nq, nr);
-            if (self.isFaceHexValid(uvw_face, @intCast(self.size))) {
-                return Coord{ .q = nq, .r = nr, .face = face };
-            }
-            // Determine violated box plane component
-            var cn: usize = 3;
-            var i: usize = 0;
-            while (i < 3) : (i += 1) {
-                if (uvw_face[i] < 0) {
-                    cn = i;
-                    break;
-                }
-                if (uvw_face[i] > 2 * N) {
-                    cn = i;
-                    break;
-                }
-            }
-            if (cn == 3) {
-                // fallback using triangle deltas if needed
-                if (uvw_face[0] - uvw_face[2] > N) cn = 0 else if (uvw_face[1] - uvw_face[0] > N) cn = 1 else if (uvw_face[2] - uvw_face[1] > N) cn = 2 else cn = 0;
-            }
-            const eidx = edgeIndexFromOppositeComponent(cn);
-            const rev_dir: u8 = @intCast((dir_idx + 3) % 6);
-            if (!probe_mode) {
-                // Tier 1: exact reverse preference
-                const nf_primary = self.face_neighbors[face][eidx][0] - 1;
-                if (nf_primary < 20) {
-                    const mapped = self.mapNextAxialAcrossSeam(face, eidx, nq, nr, nf_primary);
-                    const cand_primary = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_primary };
-                    if (self.roundTripsViaExactDir(face, q, r, cand_primary, rev_dir)) {
-                        return cand_primary;
-                    }
-                }
-                // Try alternates with exact reverse
-                const alt1: usize = (eidx + 1) % 3;
-                const alt2: usize = (eidx + 2) % 3;
-                const nf_alt1 = self.face_neighbors[face][alt1][0] - 1;
-                if (nf_alt1 < 20) {
-                    const mapped = self.mapNextAxialAcrossSeam(face, alt1, nq, nr, nf_alt1);
-                    const cand_alt1 = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt1 };
-                    if (self.roundTripsViaExactDir(face, q, r, cand_alt1, rev_dir)) {
-                        return cand_alt1;
-                    }
-                }
-                const nf_alt2 = self.face_neighbors[face][alt2][0] - 1;
-                if (nf_alt2 < 20) {
-                    const mapped = self.mapNextAxialAcrossSeam(face, alt2, nq, nr, nf_alt2);
-                    const cand_alt2 = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt2 };
-                    if (self.roundTripsViaExactDir(face, q, r, cand_alt2, rev_dir)) {
-                        return cand_alt2;
-                    }
-                }
-                // Tier 2: any-dir fallback (current behavior)
-                if (nf_primary < 20) {
-                    const mapped = self.mapNextAxialAcrossSeam(face, eidx, nq, nr, nf_primary);
-                    const cand_primary2 = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_primary };
-                    if (self.roundTripsViaAnyDir(face, q, r, cand_primary2)) {
-                        return cand_primary2;
-                    }
-                }
-                if (nf_alt1 < 20) {
-                    const mapped = self.mapNextAxialAcrossSeam(face, alt1, nq, nr, nf_alt1);
-                    const cand_alt1b = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt1 };
-                    if (self.roundTripsViaAnyDir(face, q, r, cand_alt1b)) {
-                        return cand_alt1b;
-                    }
-                }
-                if (nf_alt2 < 20) {
-                    const mapped = self.mapNextAxialAcrossSeam(face, alt2, nq, nr, nf_alt2);
-                    const cand_alt2b = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt2 };
-                    if (self.roundTripsViaAnyDir(face, q, r, cand_alt2b)) {
-                        return cand_alt2b;
-                    }
-                }
-            }
-            const nf2 = self.face_neighbors[face][eidx][0] - 1;
-            const mapped2 = self.mapNextAxialAcrossSeam(face, eidx, nq, nr, nf2);
-            return Coord{ .q = mapped2.q, .r = mapped2.r, .face = nf2 };
-        }
-        // Reciprocity-aware arbitration only on exact-t ties
-        const TIE_EPS: f64 = 1e-12;
-        if (n_cand > 1) {
-            // find min t among candidates
-            var min_t = cand_t[0];
-            var i: usize = 1;
-            while (i < n_cand) : (i += 1) {
-                if (cand_t[i] < min_t) min_t = cand_t[i];
-            }
-            // collect ties
-            var tie_e: [3]usize = .{ 0, 0, 0 };
-            var tie_n: usize = 0;
-            i = 0;
-            while (i < n_cand) : (i += 1) {
-                if (cand_t[i] <= min_t + TIE_EPS) {
-                    tie_e[tie_n] = cand_e[i];
-                    tie_n += 1;
-                }
-            }
-            if (tie_n > 1 and !probe_mode) {
-                // default pick in case probes don't resolve
-                best_e = tie_e[0];
-                const rdir: u8 = @intCast((dir_idx + 3) % 6);
-                var k: usize = 0;
-                while (k < tie_n) : (k += 1) {
-                    const e_try = tie_e[k];
-                    const nf_try = self.face_neighbors[face][e_try][0] - 1;
-                    const mapped = self.mapNextAxialAcrossSeam(face, e_try, nq, nr, nf_try);
-                    const fwd = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_try };
-                    const back = self.stepAcrossOrIn(fwd.q, fwd.r, fwd.face, rdir, &STEP_PROBE_SENTINEL);
-                    if (back.q == q and back.r == r and back.face == face) {
-                        best_e = e_try;
-                        break;
-                    }
-                }
-            } else if (tie_n > 0) {
-                best_e = tie_e[0];
-            }
-        }
-        const chosen_e: usize = best_e;
-        const chosen_nf: usize = self.face_neighbors[face][chosen_e][0] - 1;
-        std.debug.assert(chosen_nf < 20);
-        const mapped_chosen = self.mapNextAxialAcrossSeam(face, chosen_e, nq, nr, chosen_nf);
-        var out = Coord{ .q = mapped_chosen.q, .r = mapped_chosen.r, .face = chosen_nf };
-        // Reverse-consistency fallback even when not an exact-t tie
-        if (!probe_mode) {
-            const rev_dir: u8 = @intCast((dir_idx + 3) % 6);
-            const alt1: usize = (chosen_e + 1) % 3;
-            const alt2: usize = (chosen_e + 2) % 3;
-            const nf_primary = self.face_neighbors[face][chosen_e][0] - 1;
-            // Tier 1: exact reverse on primary
-            if (nf_primary < 20) {
-                const mapped = self.mapNextAxialAcrossSeam(face, chosen_e, nq, nr, nf_primary);
-                const cand_primary = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_primary };
-                if (self.roundTripsViaExactDir(face, q, r, cand_primary, rev_dir)) {
-                    out = cand_primary;
-                    return out;
-                }
-            }
-            // Tier 1: exact reverse on alternates
-            const nf_alt1 = self.face_neighbors[face][alt1][0] - 1;
-            if (nf_alt1 < 20) {
-                const mapped = self.mapNextAxialAcrossSeam(face, alt1, nq, nr, nf_alt1);
-                const cand_alt1 = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt1 };
-                if (self.roundTripsViaExactDir(face, q, r, cand_alt1, rev_dir)) {
-                    out = cand_alt1;
-                    return out;
-                }
-            }
-            const nf_alt2 = self.face_neighbors[face][alt2][0] - 1;
-            if (nf_alt2 < 20) {
-                const mapped = self.mapNextAxialAcrossSeam(face, alt2, nq, nr, nf_alt2);
-                const cand_alt2 = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt2 };
-                if (self.roundTripsViaExactDir(face, q, r, cand_alt2, rev_dir)) {
-                    out = cand_alt2;
-                    return out;
-                }
-            }
-            // Tier 2: any-dir on primary then alternates
-            if (nf_primary < 20) {
-                const mapped = self.mapNextAxialAcrossSeam(face, chosen_e, nq, nr, nf_primary);
-                const cand_primary2 = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_primary };
-                if (self.roundTripsViaAnyDir(face, q, r, cand_primary2)) {
-                    out = cand_primary2;
-                    return out;
-                }
-            }
-            if (nf_alt1 < 20) {
-                const mapped = self.mapNextAxialAcrossSeam(face, alt1, nq, nr, nf_alt1);
-                const cand_alt1b = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt1 };
-                if (self.roundTripsViaAnyDir(face, q, r, cand_alt1b)) {
-                    out = cand_alt1b;
-                    return out;
-                }
-            }
-            if (nf_alt2 < 20) {
-                const mapped = self.mapNextAxialAcrossSeam(face, alt2, nq, nr, nf_alt2);
-                const cand_alt2b = Coord{ .q = mapped.q, .r = mapped.r, .face = nf_alt2 };
-                if (self.roundTripsViaAnyDir(face, q, r, cand_alt2b)) {
-                    out = cand_alt2b;
-                    return out;
-                }
-            }
-        }
-        return out;
+    fn stepAcrossOrIn(self: *const Grid, q: isize, r: isize, face: usize, dir_idx: u8, _: *const anyopaque) Coord {
+        return self.stepPermuteExact(face, q, r, dir_idx);
     }
 
     pub fn populateIndices(self: *Grid) !std.AutoHashMap(u64, usize) {
@@ -3717,7 +2157,7 @@ pub const Grid = struct {
 
             var dir: u8 = 0;
             while (dir < 6) : (dir += 1) {
-                const nb_raw = self.stepAcrossOrIn(cur.q, cur.r, cur.face, dir, &STEP_NORMAL_SENTINEL);
+                const nb_raw = self.stepPermuteExact(cur.face, cur.q, cur.r, dir);
                 // Global canonical representative for indexing
                 const nb = self.canonicalCoord(nb_raw.face, nb_raw.q, nb_raw.r);
                 const alias_hash = self.canonicalKey(nb.face, nb.q, nb.r);
@@ -3781,14 +2221,6 @@ pub const Grid = struct {
 
         // Global canonicalization makes local face-window alias completion unnecessary
 
-        // No extra pentagon alias insertion; global canonicalization + penta_indices define membership
-
-        // Cross-face alias backfill removed to avoid gluing distinct seam neighbors to the same index
-
-        // Post-fill canonical face-0 mapping removed to avoid over-aliasing and index collapse
-
-        // One-hop alias backfill removed; global canonical keys are inserted during BFS only
-
         self.tile_count = next_index;
 
         if (self.coords.len > 0) self.allocator.free(self.coords);
@@ -3805,34 +2237,6 @@ pub const Grid = struct {
             filled[idx] = true;
         }
         return coord_to_index;
-    }
-
-    fn assertOneHopAliasClosure(self: *Grid, coord_to_index: *const std.AutoHashMap(u64, usize)) void {
-        var it = coord_to_index.iterator();
-        while (it.next()) |e| {
-            const c = unhashCoord(e.key_ptr.*);
-            var d: u8 = 0;
-            while (d < 6) : (d += 1) {
-                const nb = self.stepAcrossOrIn(c.q, c.r, c.face, d, &STEP_NORMAL_SENTINEL);
-                const h_raw = hashCoord(nb.q, nb.r, nb.face);
-                const nb_can = self.canonicalizeAliasOnFace(nb.q, nb.r, nb.face);
-                const h_can = hashCoord(nb_can.q, nb_can.r, nb_can.face);
-                const idx_raw_opt = coord_to_index.get(h_raw);
-                const idx_can_opt = coord_to_index.get(h_can);
-                if (idx_raw_opt == null or idx_can_opt == null) {
-                    std.debug.print("ALIAS_CLOSURE_MISS: raw={any} can={any}\n", .{ unhashCoord(h_raw), unhashCoord(h_can) });
-                    unreachable;
-                }
-                const idx_raw = idx_raw_opt.?;
-                const idx_can = idx_can_opt.?;
-                if (idx_raw != idx_can or idx_raw >= self.tile_count or idx_can >= self.tile_count) {
-                    std.debug.print("ALIAS_CLOSURE_MISMATCH: raw={any}->{d} can={any}->{d}\n", .{
-                        unhashCoord(h_raw), idx_raw, unhashCoord(h_can), idx_can,
-                    });
-                    unreachable;
-                }
-            }
-        }
     }
 
     pub fn generateMesh(self: *Grid) !void {
@@ -3892,7 +2296,7 @@ pub const Grid = struct {
 
     // Test helper: print full violation vector and seam decision for diagnostics
     pub fn testSeamDebug(self: *const Grid, q: isize, r: isize, face: usize, dir_idx: u8) void {
-        _ = self.stepAcrossOrIn(q, r, face, dir_idx, &STEP_NORMAL_SENTINEL);
+        _ = self.stepPermuteExact(face, q, r, dir_idx);
     }
 
     // Test helper: expose geometry-derived perm for seam (f,e)
@@ -3906,97 +2310,11 @@ pub const Grid = struct {
 
     // Test helper: return a step result (q,r,face) triple
     pub fn testStep(self: *const Grid, q: isize, r: isize, face: usize, dir_idx: u8) struct { q: isize, r: isize, face: usize } {
-        const c = self.stepAcrossOrIn(q, r, face, dir_idx, &STEP_NORMAL_SENTINEL);
+        const c = self.stepPermuteExact(face, q, r, dir_idx);
         return .{ .q = c.q, .r = c.r, .face = c.face };
     }
 
     // Post-BFS alias completion for pentagon vertices: ensure all 5 face-aliases exist per global vertex
-    fn completePentagonAliases(
-        self: *Grid,
-        coord_to_index: *std.AutoHashMap(u64, usize),
-        next_index: *usize,
-    ) !void {
-        const N: isize = @intCast(self.size);
-
-        // gv -> idx mapping: use existing self.penta_indices if present; assign new otherwise
-        var gv_to_idx = std.AutoHashMap(usize, usize).init(self.allocator);
-        defer gv_to_idx.deinit();
-        const V: usize = icosa_vertices.len; // 12
-        var gv1: usize = 1;
-        while (gv1 <= V) : (gv1 += 1) {
-            const gv = gv1;
-            var idx: usize = self.penta_indices[gv - 1];
-            if (idx == 0) {
-                idx = next_index.*;
-                next_index.* += 1;
-                self.penta_indices[gv - 1] = idx;
-            }
-            try gv_to_idx.put(gv, idx);
-        }
-
-        // Now, for each face/vertex, insert both valid corner aliases using the gv's idx
-        var f_ins: usize = 0;
-        while (f_ins < 20) : (f_ins += 1) {
-            const tri = icosa_face_vertices[f_ins];
-            inline for (0..3) |v_local| {
-                const gv = tri[v_local];
-                if (gv_to_idx.contains(gv)) {
-                    const idx = gv_to_idx.get(gv).?;
-                    const a = v_local;
-                    const b = (v_local + 1) % 3;
-                    const cix = (v_local + 2) % 3;
-                    var uvwA: [3]isize = .{ 0, 0, 0 };
-                    var uvwB: [3]isize = .{ 0, 0, 0 };
-                    uvwA[a] = 0;
-                    uvwA[b] = N;
-                    uvwA[cix] = 2 * N;
-                    uvwB[a] = 0;
-                    uvwB[b] = 2 * N;
-                    uvwB[cix] = N;
-                    if (self.isFaceHexValid(uvwA, N)) {
-                        const backA = self.fromBaryFace(f_ins, uvwA);
-                        const hA = hashCoord(backA.q, backA.r, f_ins);
-                        if (!coord_to_index.contains(hA)) {
-                            try coord_to_index.put(hA, idx);
-                        }
-                    }
-                    if (self.isFaceHexValid(uvwB, N)) {
-                        const backB = self.fromBaryFace(f_ins, uvwB);
-                        const hB = hashCoord(backB.q, backB.r, f_ins);
-                        if (!coord_to_index.contains(hB)) {
-                            try coord_to_index.put(hB, idx);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Also align with test's face-0-based pentagon predicate:
-        // for each face, any (q,r) that is pentagon under face-0 predicate should be present.
-        var f_fix: usize = 0;
-        while (f_fix < 20) : (f_fix += 1) {
-            var qv: isize = -N;
-            while (qv <= N) : (qv += 1) {
-                var rv: isize = -N;
-                while (rv <= N) : (rv += 1) {
-                    if (!self.isValid(qv, rv) or !self.isPenta(qv, rv)) continue;
-                    const uvw_face = self.toBaryFace(f_fix, qv, rv);
-                    // identify vertex slot
-                    var v_local: usize = 0;
-                    inline for (0..3) |i| {
-                        if (uvw_face[i] == 0) v_local = i;
-                    }
-                    const gv = icosa_face_vertices[f_fix][v_local];
-                    if (!gv_to_idx.contains(gv)) continue;
-                    const idx = gv_to_idx.get(gv).?;
-                    const h = hashCoord(qv, rv, f_fix);
-                    if (!coord_to_index.contains(h)) {
-                        try coord_to_index.put(h, idx);
-                    }
-                }
-            }
-        }
-    }
 
     // Debug: audit a single corner-turn table entry against topology
     pub fn debugCornerTurnEntry(self: *const Grid, f: usize, v_local: usize, eidx: usize) void {
@@ -4057,287 +2375,5 @@ pub const Grid = struct {
     inline fn axesSet(self: *const Grid, face: usize) bool {
         const ax = self.face_axes[face];
         return (ax[0] < 3 and ax[1] < 3 and ax[2] < 3);
-    }
-
-    // Focused seam transport check across a specific directed seam using the exact stepper.
-    fn seamTransportPasses(self: *Grid, f: u8, e_want: u8, nf_want: u8) bool {
-        const N: isize = @intCast(self.size);
-        var start = Coord{ .face = f, .q = 0, .r = 0 };
-        var last = start;
-        var crossed = false;
-        var d_hit: u8 = 255;
-        var nb: Coord = undefined;
-        // Find a direction that first crosses the desired seam from this interior
-        var d: u8 = 0;
-        while (d < 6 and !crossed) : (d += 1) {
-            last = start;
-            var k: usize = 0;
-            const max_steps: usize = @intCast(2 * N + 4);
-            while (k < max_steps) : (k += 1) {
-                // Avoid crossing via stepPermuteExact here; compute locally and stop on first violation
-                const uvw0 = self.toBaryFace(last.face, last.q, last.r);
-                const duvw = self.dirCubeStep(last.face, d);
-                const uvw1 = .{ uvw0[0] + duvw[0], uvw0[1] + duvw[1], uvw0[2] + duvw[2] };
-                if (!self.isFaceHexStrict(uvw1, @intCast(N))) {
-                    const cn_opt = self.pickViolatedEdgePost(last.face, uvw1, duvw);
-                    if (cn_opt == null) break;
-                    const eidx = edgeIndexFromOppositeComponent(cn_opt.?);
-                    const seam = self.getNeighbor0Based(last.face, eidx) orelse break;
-                    if (eidx == e_want and seam.nf == nf_want) {
-                        crossed = true;
-                        d_hit = d;
-                        start = last;
-                        nb = .{ .face = seam.nf, .q = 0, .r = 0 };
-                    }
-                    break;
-                }
-                const back_in = self.fromBaryFace(last.face, uvw1);
-                last = .{ .face = last.face, .q = back_in.q, .r = back_in.r };
-            }
-        }
-        if (!crossed or d_hit == 255) return false;
-        const uvw_nb = self.toBaryFace(nb.face, nb.q, nb.r);
-        if (!self.isFaceHexStrict(uvw_nb, @intCast(N))) return false;
-        const uvw0b = self.toBaryFace(start.face, start.q, start.r);
-        const duvwb = self.dirCubeStep(start.face, d_hit);
-        const cnb_opt = self.pickViolatedEdgePost(start.face, .{ uvw0b[0] + duvwb[0], uvw0b[1] + duvwb[1], uvw0b[2] + duvwb[2] }, duvwb);
-        if (cnb_opt == null) return false;
-        const eidxb = edgeIndexFromOppositeComponent(cnb_opt.?);
-        const perm = self.face_perm[start.face][eidxb];
-        const uvw_nf0 = applyPerm3(uvw0b, perm);
-        const duvw_nf = applyPerm3(duvwb, perm);
-        const uvw2 = .{ uvw_nf0[0] + duvw_nf[0], uvw_nf0[1] + duvw_nf[1], uvw_nf0[2] + duvw_nf[2] };
-        const R = 2 * N;
-        if (!(uvw2[0] >= 0 and uvw2[1] >= 0 and uvw2[2] >= 0 and uvw2[0] <= R and uvw2[1] <= R and uvw2[2] <= R)) return false;
-        // Reverse direction for exact round-trip
-        const rdu = -duvw_nf[0];
-        const rdv = -duvw_nf[1];
-        const rdw = -duvw_nf[2];
-        const rev_d = self.findDirByDelta(nb.face, .{ rdu, rdv, rdw }) orelse return false;
-        const back = self.stepPermuteExact(nb.face, nb.q, nb.r, rev_d);
-        const back_can = self.canonicalCoord(back.face, back.q, back.r);
-        const start_can = self.canonicalCoord(start.face, start.q, start.r);
-        return self.coordEq(back_can, start_can);
-    }
-
-    // Non-fatal seam self-test across all faces/directions: returns false if any check fails.
-    fn seamSelfTestNonFatal(self: *Grid) bool {
-        const N: isize = @intCast(self.size);
-        const base: isize = if (N >= 3) 2 else if (N >= 2) 1 else 0;
-        const pairs = [_][2]usize{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
-        var f: usize = 0;
-        while (f < 20) : (f += 1) {
-            var d: u8 = 0;
-            while (d < 6) : (d += 1) {
-                var start = Coord{ .face = f, .q = base, .r = base };
-                var last = start;
-                var k: usize = 0;
-                var crossed = false;
-                const max_steps: usize = @intCast(2 * N + 4);
-                while (k < max_steps) : (k += 1) {
-                    // Avoid crossing via stepPermuteExact here; compute locally and stop on first violation
-                    const uvw0a = self.toBaryFace(last.face, last.q, last.r);
-                    const duvwa = self.dirCubeStep(last.face, d);
-                    const uvw1a = .{ uvw0a[0] + duvwa[0], uvw0a[1] + duvwa[1], uvw0a[2] + duvwa[2] };
-                    if (!self.isFaceHexStrict(uvw1a, @intCast(N))) {
-                        start = last;
-                        crossed = true;
-                        break;
-                    }
-                    const back_in_a = self.fromBaryFace(last.face, uvw1a);
-                    last = .{ .face = last.face, .q = back_in_a.q, .r = back_in_a.r };
-                }
-                if (!crossed) continue;
-                const uvw0 = self.toBaryFace(start.face, start.q, start.r);
-                const duvw = self.dirCubeStep(start.face, d);
-                const uvw1 = .{ uvw0[0] + duvw[0], uvw0[1] + duvw[1], uvw0[2] + duvw[2] };
-                const cn_opt2 = self.pickViolatedEdgePost(start.face, uvw1, duvw);
-                if (cn_opt2 == null) continue;
-                const eidx = edgeIndexFromOppositeComponent(cn_opt2.?);
-                const seam = self.getNeighbor0Based(start.face, eidx) orelse continue;
-                const nf = seam.nf;
-                const ne = seam.ne;
-                // Skip if neighbor face axes are not yet resolved
-                if (!self.axesSet(nf)) {
-                    continue;
-                }
-                // Oriented reversed-edge assertion on labels
-                const Pf_chk = self.normalized_faces[start.face];
-                const Pn_chk = self.normalized_faces[nf];
-                const a_lbl: u8 = Pf_chk[(eidx + 1) % 3];
-                const b_lbl: u8 = Pf_chk[(eidx + 2) % 3];
-                const ne_geom_oriented = findReversedOnNF(Pn_chk, a_lbl, b_lbl) orelse @panic("no reversed");
-                std.debug.assert(ne == ne_geom_oriented);
-                const perm = self.face_perm[start.face][eidx];
-                // Label-space position transport with integer offset
-                const Af_axes = self.face_axes[start.face];
-                const invAf_axes = invertPerm3(Af_axes);
-                const invAnf_axes = invertPerm3(self.face_axes[nf]);
-                const Pf_lbl = self.normalized_faces[start.face];
-                const Pnf_lbl = self.normalized_faces[nf];
-                const p_lbl = buildPLblByEquality(.{ Pf_lbl[0], Pf_lbl[1], Pf_lbl[2] }, .{ Pnf_lbl[0], Pnf_lbl[1], Pnf_lbl[2] });
-                const uvw1_f_lab = applyPerm3(uvw1, invAf_axes);
-                const R: isize = uvw1_f_lab[0] + uvw1_f_lab[1] + uvw1_f_lab[2];
-                const uvw_nf_lab = self.seamHopLabelSpace(uvw1_f_lab, d, start.face, eidx, nf, ne, p_lbl, R);
-                if (!(R > 0)) {
-                    std.debug.print("SEAM_FAIL_MIN: bad R f={d} d={d} e={d} nf={d} ne={d} R={d}\n", .{ start.face, d, eidx, nf, ne, R });
-                    return false;
-                }
-                // Sums must be preserved by permutation
-                if (!((uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2]) == R)) {
-                    if (@import("builtin").is_test and TEST_VERBOSE) {
-                        std.debug.print("SEAM_FAIL_MIN: sum mismatch f={d} d={d} e={d} nf={d} ne={d} R={d} uvw1_f_lab=({d},{d},{d}) uvw_nf_lab=({d},{d},{d})\n", .{ start.face, d, eidx, nf, ne, R, uvw1_f_lab[0], uvw1_f_lab[1], uvw1_f_lab[2], uvw_nf_lab[0], uvw_nf_lab[1], uvw_nf_lab[2] });
-                    }
-                    return false;
-                }
-                // Gate: if already in-window on nf, skip offset
-                const in_window_nf = (uvw_nf_lab[0] >= 0 and uvw_nf_lab[1] >= 0 and uvw_nf_lab[2] >= 0 and
-                    uvw_nf_lab[0] <= R and uvw_nf_lab[1] <= R and uvw_nf_lab[2] <= R);
-                if (!in_window_nf) {
-                    if (@import("builtin").is_test and TEST_VERBOSE) {
-                        std.debug.print("SEAM_FAIL_MIN: out-of-window after hop f={d} d={d} e={d} nf={d} ne={d} R={d} uvw_nf_lab=({d},{d},{d})\n", .{ start.face, d, eidx, nf, ne, R, uvw_nf_lab[0], uvw_nf_lab[1], uvw_nf_lab[2] });
-                    }
-                    return false;
-                }
-                // Sums must still be R here
-                const uvw2 = applyPerm3(uvw_nf_lab, invAnf_axes);
-                if (!(uvw_nf_lab[0] >= 0 and uvw_nf_lab[1] >= 0 and uvw_nf_lab[2] >= 0)) {
-                    if (@import("builtin").is_test and TEST_VERBOSE) {
-                        // Focused dump for failing seam
-                        const Pf_dbg = self.normalized_faces[start.face];
-                        const Pn_dbg = self.normalized_faces[nf];
-                        const Af_dbg2 = self.face_axes[start.face];
-                        const Anf_dbg2 = self.face_axes[nf];
-                        const pairs2 = [_][2]usize{ .{ 1, 2 }, .{ 2, 0 }, .{ 0, 1 } };
-                        const a_local = pairs2[eidx][0];
-                        const b_local = pairs2[eidx][1];
-                        const la = Pf_lbl[a_local];
-                        const lb = Pf_lbl[b_local];
-                        const ne_tab = ne;
-                        std.debug.print("SEAM_FAIL: uvw_nf outside window\n", .{});
-                        std.debug.print("  start=(f={d},q={d},r={d}) dir={d}\n", .{ start.face, start.q, start.r, d });
-                        std.debug.print("  eidx={d} nf={d} ne(tab)={d}\n", .{ eidx, nf, ne_tab });
-                        std.debug.print("  Pf=({d},{d},{d}) Pn=({d},{d},{d})\n", .{ Pf_dbg[0], Pf_dbg[1], Pf_dbg[2], Pn_dbg[0], Pn_dbg[1], Pn_dbg[2] });
-                        std.debug.print("  Af=({d},{d},{d}) Anf=({d},{d},{d})\n", .{ Af_dbg2[0], Af_dbg2[1], Af_dbg2[2], Anf_dbg2[0], Anf_dbg2[1], Anf_dbg2[2] });
-                        std.debug.print("  perm=({d},{d},{d})\n", .{ perm[0], perm[1], perm[2] });
-                        std.debug.print("  endpoints labels: la={d} lb={d}\n", .{ la, lb });
-                        std.debug.print("  uvw0=({d},{d},{d}) duvw=({d},{d},{d}) uvw2_lab=({d},{d},{d})\n", .{ uvw0[0], uvw0[1], uvw0[2], duvw[0], duvw[1], duvw[2], uvw_nf_lab[0], uvw_nf_lab[1], uvw_nf_lab[2] });
-                    }
-                    return false;
-                }
-                // Reverse direction (label route to resolve exactly)
-                const duvw_f_lab = applyPerm3(duvw, invAf_axes);
-                const duvw_nf_lab = applyPerm3(duvw_f_lab, p_lbl);
-                const duvw_nf = applyPerm3(duvw_nf_lab, invAnf_axes);
-                const rdu = -duvw_nf[0];
-                const rdv = -duvw_nf[1];
-                const rdw = -duvw_nf[2];
-                const rev_d = self.findDirByDelta(nf, .{ rdu, rdv, rdw }) orelse {
-                    if (@import("builtin").is_test and TEST_VERBOSE) {
-                        std.debug.print("SEAM_FAIL: no reverse dir match; nf={d} target=({d},{d},{d})\n", .{ nf, rdu, rdv, rdw });
-                    }
-                    return false;
-                };
-                const back_nb = self.fromBaryFace(nf, uvw2);
-                const back = self.stepPermuteExact(nf, back_nb.q, back_nb.r, rev_d);
-                const back_can = self.canonicalCoord(back.face, back.q, back.r);
-                const start_can = self.canonicalCoord(start.face, start.q, start.r);
-                if (!(back_can.face == start_can.face and back_can.q == start_can.q and back_can.r == start_can.r)) {
-                    if (@import("builtin").is_test and TEST_VERBOSE) {
-                        const Pf_dbg3 = self.normalized_faces[start.face];
-                        const Pn_dbg3 = self.normalized_faces[nf];
-                        const Af_dbg3 = self.face_axes[start.face];
-                        const Anf_dbg3 = self.face_axes[nf];
-                        std.debug.print("SEAM_FAIL: round-trip mismatch (f={d} e={d} -> nf={d})\n", .{ start.face, eidx, nf });
-                        std.debug.print("  start_can=(f={d},q={d},r={d}) back_can=(f={d},q={d},r={d})\n", .{ start_can.face, start_can.q, start_can.r, back_can.face, back_can.q, back_can.r });
-                        std.debug.print("  Pf=({d},{d},{d}) Pn=({d},{d},{d})\n", .{ Pf_dbg3[0], Pf_dbg3[1], Pf_dbg3[2], Pn_dbg3[0], Pn_dbg3[1], Pn_dbg3[2] });
-                        const perm_geom = self.buildPermForEdge(start.face, eidx);
-                        std.debug.print("  Af=({d},{d},{d}) Anf=({d},{d},{d}) perm=({d},{d},{d}) perm_geom=({d},{d},{d})\n", .{ Af_dbg3[0], Af_dbg3[1], Af_dbg3[2], Anf_dbg3[0], Anf_dbg3[1], Anf_dbg3[2], perm[0], perm[1], perm[2], perm_geom[0], perm_geom[1], perm_geom[2] });
-                        const sum_f = uvw1_f_lab[0] + uvw1_f_lab[1] + uvw1_f_lab[2];
-                        const sum_nf = uvw_nf_lab[0] + uvw_nf_lab[1] + uvw_nf_lab[2];
-                        std.debug.print("  R={d} sum_f={d} sum_nf={d} alpha_f={d}\n", .{ R, sum_f, sum_nf, cn_opt2.? });
-                        std.debug.print("  uvw1_f_lab=({d},{d},{d}) uvw_nf_lab=({d},{d},{d})\n", .{ uvw1_f_lab[0], uvw1_f_lab[1], uvw1_f_lab[2], uvw_nf_lab[0], uvw_nf_lab[1], uvw_nf_lab[2] });
-                    }
-                    return false;
-                }
-                // involution across stored ne
-                const ne2 = ne;
-                const pf = self.face_perm[start.face][eidx];
-                const pb = self.face_perm[nf][ne2];
-                if (!(pb[pf[0]] == 0 and pb[pf[1]] == 1 and pb[pf[2]] == 2)) {
-                    if (@import("builtin").is_test and TEST_VERBOSE) {
-                        std.debug.print("SEAM_FAIL: inverse perm mismatch f={d} e={d} nf={d} ne={d}\n", .{ start.face, eidx, nf, ne2 });
-                        std.debug.print("  pf=({d},{d},{d}) pb=({d},{d},{d})\n", .{ pf[0], pf[1], pf[2], pb[0], pb[1], pb[2] });
-                    }
-                    return false;
-                }
-                // geometric ne check
-                const tri = icosa_face_vertices[start.face];
-                const a_local = pairs[eidx][0];
-                const b_local = pairs[eidx][1];
-                const va = tri[a_local];
-                const vb = tri[b_local];
-                const ntri = icosa_face_vertices[nf];
-                var ne_geom: usize = 3;
-                var ee: usize = 0;
-                while (ee < 3) : (ee += 1) {
-                    const na = pairs[ee][0];
-                    const nb = pairs[ee][1];
-                    if (ntri[na] == vb and ntri[nb] == va) {
-                        ne_geom = ee;
-                        break;
-                    }
-                }
-                if (!(ne_geom != 3 and ne_geom == ne)) {
-                    if (@import("builtin").is_test and TEST_VERBOSE) {
-                        std.debug.print("SEAM_FAIL: geometric ne mismatch f={d} e={d} nf={d} ne(tab)={d} ne(geom)={d}\n", .{ start.face, eidx, nf, ne, ne_geom });
-                    }
-                    return false;
-                }
-            }
-        }
-        return true;
-    }
-    // Deterministic seam-offset self-test: for every directed seam, replay two near-edge samples
-    // and ensure the table-driven single-fold hop lands in-window on the neighbor face.
-    fn seamOffsetSelfTest(self: *Grid) bool {
-        const N: isize = @intCast(self.size);
-        const R: isize = 2 * N;
-        var f: usize = 0;
-        while (f < 20) : (f += 1) {
-            var e: usize = 0;
-            while (e < 3) : (e += 1) {
-                const nei = self.face_neighbors[f][e];
-                const nf = nei[0] - 1;
-                const ne = nei[1] - 1;
-                // axes must be set for both faces
-                if (!self.axesSet(f) or !self.axesSet(nf)) continue;
-                const Pf = self.normalized_faces[f];
-                const Pn = self.normalized_faces[nf];
-                const p_lbl = buildPLblByEquality(.{ Pf[0], Pf[1], Pf[2] }, .{ Pn[0], Pn[1], Pn[2] });
-                const jminus = self.seam_jminus[f][e];
-                if (jminus == 255) return false;
-                const ks = [_]isize{ 1, R - 1 };
-                for (ks) |k| {
-                    var uvw1: [3]isize = .{ 0, 0, 0 };
-                    uvw1[e] = -1;
-                    uvw1[(e + 1) % 3] = k;
-                    uvw1[(e + 2) % 3] = (R + 1) - k;
-                    var v = applyPerm3(uvw1, p_lbl);
-                    const jplus: usize = indexOf3u8(p_lbl, @intCast(e));
-                    v[jplus] += R;
-                    v[jminus] -= R;
-                    const ok = (v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R);
-                    if (!ok) {
-                        if (@import("builtin").is_test and TEST_VERBOSE) {
-                            std.debug.print("SEAM_OFFSET_FAIL f={d} e={d} nf={d} ne={d} R={d} pick={d} v=({d},{d},{d})\n", .{ f, e, nf, ne, R, jminus, v[0], v[1], v[2] });
-                            std.debug.print("  Pf=({d},{d},{d}) Pn=({d},{d},{d}) p_lbl=({d},{d},{d})\n", .{ Pf[0], Pf[1], Pf[2], Pn[0], Pn[1], Pn[2], p_lbl[0], p_lbl[1], p_lbl[2] });
-                        }
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
     }
 };
