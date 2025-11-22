@@ -4,6 +4,9 @@ const types = @import("core");
 const math = @import("math");
 const physics = @import("physics");
 const planet = @import("planet");
+const prebaked = planet.prebaked;
+const prebaked_loader = planet.prebaked_loader;
+const prebaked_format = planet.prebaked_format;
 
 // Import JS logging function for error reporting
 extern "env" fn log_error(ptr: [*]const u8, len: usize) void;
@@ -38,9 +41,13 @@ pub export fn get_query_scratch_ptr() callconv(.c) u32 {
 }
 
 // General purpose scratch buffer for string/JSON inputs from host
-var scratch_buffer: [4096]u8 = undefined;
+var scratch_buffer: [256 * 1024]u8 = undefined;
 pub export fn get_scratch_buffer_ptr() callconv(.c) u32 {
     return @intCast(@intFromPtr(&scratch_buffer));
+}
+
+pub export fn get_scratch_buffer_len() callconv(.c) u32 {
+    return scratch_buffer.len;
 }
 
 pub export fn get_input_buffer() callconv(.c) u32 {
@@ -260,94 +267,73 @@ pub export fn destroy_simulator(simulator: *sim.Simulator) callconv(.c) void {
     simulator.destroy();
 }
 
-// --- Coarse Grid Bridge ---
-var active_grid: ?*planet.Grid = null;
+// --- Prebaked Planet Bridge ---
+const PlanetState = struct {
+    header: prebaked_format.PlanetHeader,
+    tiles: []prebaked.Tile,
+};
 
-pub export fn create_grid(size: u32) callconv(.c) void {
-    const alloc = wasmAllocator();
-    if (active_grid) |g| {
-        g.deinit();
-        alloc.destroy(g);
-        active_grid = null;
+var active_planet: ?PlanetState = null;
+
+fn freeActivePlanet(alloc: std.mem.Allocator) void {
+    if (active_planet) |state| {
+        alloc.free(state.tiles);
+        active_planet = null;
     }
-    const g_ptr = alloc.create(planet.Grid) catch return;
-    g_ptr.* = planet.Grid.init(alloc, @intCast(size)) catch {
-        alloc.destroy(g_ptr);
-        return;
+}
+
+pub export fn load_prebaked_planet(blob_ptr: u32, blob_len: u32) callconv(.c) bool {
+    const alloc = wasmAllocator();
+    const ptr: [*]const u8 = @ptrFromInt(blob_ptr);
+    const bytes = ptr[0..blob_len];
+
+    const loaded = prebaked_loader.loadPlanetGrid(alloc, bytes) catch {
+        return false;
     };
-    const g = g_ptr;
-    var coord_map = g.populateIndices() catch {
-        g.deinit();
-        alloc.destroy(g);
-        return;
+
+    freeActivePlanet(alloc);
+    active_planet = .{
+        .header = loaded.header,
+        .tiles = loaded.tiles,
     };
-    defer coord_map.deinit();
-    g.populateNeighbors(&coord_map) catch {
-        g.deinit();
-        alloc.destroy(g);
-        return;
-    };
-    g.generateMesh() catch {
-        g.deinit();
-        alloc.destroy(g);
-        return;
-    };
-    // Phase 2: populate per-vertex bedrock elevations immediately after mesh generation
-    planet.planet_gen.generateBedrock(g, 42);
-    active_grid = g;
+    return true;
 }
 
-fn asSliceU8(ptr: [*]const u8, len_bytes: usize) SliceU8 {
-    return .{ .ptr = @intCast(@intFromPtr(ptr)), .len = @intCast(len_bytes) };
+pub export fn unload_prebaked_planet() callconv(.c) void {
+    freeActivePlanet(wasmAllocator());
 }
 
-pub export fn get_grid_vertex_buffer() callconv(.c) SliceU8 {
-    if (active_grid == null) return .{ .ptr = 0, .len = 0 };
-    const g = active_grid.?;
-    if (g.vertices == null) return .{ .ptr = 0, .len = 0 };
-    const verts = g.vertices.?;
-    const bytes: usize = verts.len * @sizeOf(f32);
-    const base: [*]const u8 = @ptrCast(verts.ptr);
-    return asSliceU8(base, bytes);
+pub export fn get_planet_resolution() callconv(.c) u32 {
+    if (active_planet) |state| return state.header.R;
+    return 0;
 }
 
-pub export fn get_grid_vertex_buffer_out(out_ptr: u32) callconv(.c) void {
-    const r = get_grid_vertex_buffer();
-    const out: [*]u32 = @ptrFromInt(out_ptr);
-    out[0] = r.ptr;
-    out[1] = r.len;
+pub export fn get_planet_tile_count() callconv(.c) u32 {
+    if (active_planet) |state| return @intCast(state.tiles.len);
+    return 0;
 }
 
-pub export fn get_grid_elevation_buffer() callconv(.c) SliceU8 {
-    if (active_grid == null) return .{ .ptr = 0, .len = 0 };
-    const g = active_grid.?;
-    if (g.elevations == null) return .{ .ptr = 0, .len = 0 };
-    const arr = g.elevations.?;
-    const bytes: usize = arr.len * @sizeOf(f32);
-    const base: [*]const u8 = @ptrCast(arr.ptr);
-    return asSliceU8(base, bytes);
+pub export fn get_planet_tile_stride() callconv(.c) u32 {
+    return @intCast(@sizeOf(prebaked_format.DiskTile));
 }
 
-pub export fn get_grid_elevation_buffer_out(out_ptr: u32) callconv(.c) void {
-    const r = get_grid_elevation_buffer();
-    const out: [*]u32 = @ptrFromInt(out_ptr);
-    out[0] = r.ptr;
-    out[1] = r.len;
+pub export fn read_planet_tile(tile_index: u32, out_ptr: u32) callconv(.c) bool {
+    const state = active_planet orelse return false;
+    const idx: usize = @intCast(tile_index);
+    if (idx >= state.tiles.len) return false;
+
+    const tile = state.tiles[idx];
+    const disk = prebaked_format.tileToDisk(tile);
+    const bytes = std.mem.asBytes(&disk);
+    const out_bytes: [*]u8 = @ptrFromInt(out_ptr);
+    std.mem.copyForwards(u8, out_bytes[0..bytes.len], bytes);
+    return true;
 }
 
-pub export fn get_grid_index_buffer() callconv(.c) SliceU8 {
-    if (active_grid == null) return .{ .ptr = 0, .len = 0 };
-    const g = active_grid.?;
-    if (g.indices == null) return .{ .ptr = 0, .len = 0 };
-    const arr = g.indices.?;
-    const bytes: usize = arr.len * @sizeOf(u32);
-    const base: [*]const u8 = @ptrCast(arr.ptr);
-    return asSliceU8(base, bytes);
-}
-
-pub export fn get_grid_index_buffer_out(out_ptr: u32) callconv(.c) void {
-    const r = get_grid_index_buffer();
-    const out: [*]u32 = @ptrFromInt(out_ptr);
-    out[0] = r.ptr;
-    out[1] = r.len;
+pub export fn get_planet_neighbor(tile_index: u32, dir: u32) callconv(.c) u32 {
+    const state = active_planet orelse return prebaked.UNSET_NEIGHBOR;
+    if (dir >= 6) return prebaked.UNSET_NEIGHBOR;
+    const idx: usize = @intCast(tile_index);
+    if (idx >= state.tiles.len) return prebaked.UNSET_NEIGHBOR;
+    return state.tiles[idx].neighbors[dir];
 }

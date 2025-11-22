@@ -15,7 +15,7 @@ import type { Theme } from '@shared/types';
 import { HUDManager } from '../hud';
 import type { SystemState } from '@shared/types';
 import type { IRenderPipeline } from './pipelines/base';
-import { WasmGridBridge } from '../authority/wasmGrid';
+import { WasmGridBridge, type PlanetBuffers } from '../authority/wasmGrid';
  
 import type { RenderPayload } from '@client/orchestration/types';
 import { SceneDataProcessor } from './data/sceneDataProcessor';
@@ -95,8 +95,8 @@ export class Renderer {
     this.terrainBakePass = new TerrainBakePass();
     await this.terrainBakePass.initialize(this.core, this.scene);
 
-    // Initialize coarse grid and upload to GPU once
-    await this.initializeGrid(3);
+    // Initialize prebaked planet mesh and upload to GPU once
+    await this.initializeGrid('/packages/game-sim/planet_R4.gridbin');
 
     for (const pipeline of Object.values(this.pipelines)) {
       await pipeline.initialize(this.core, this.scene);
@@ -173,14 +173,20 @@ export class Renderer {
     } as unknown as RenderContext;
   }
 
-  private async initializeGrid(size: number): Promise<void> {
+  private async initializeGrid(assetPath: string): Promise<void> {
     const bridge = await WasmGridBridge.create();
-    bridge.createGrid(size);
-    const vertices = bridge.getGridVertexBuffer(); // Float32Array of xyz triplets
-    const elevations = bridge.getGridElevationBuffer(); // Float32Array per-vertex
-    const indices = bridge.getGridIndexBuffer(); // Uint32Array triangle indices
+    try {
+      const planet = await bridge.loadPlanetFromUrl(assetPath);
+      this.uploadGridBuffers(planet);
+    } finally {
+      bridge.dispose();
+    }
+  }
 
-    const device = this.core.device;
+  private uploadGridBuffers(planet: PlanetBuffers): void {
+    const { device } = this.core;
+    const { vertices, elevations, indices } = planet;
+
     this.gridVertexBuffer = device.createBuffer({
       label: 'Grid Vertex Buffer',
       size: Math.max(4, vertices.byteLength),

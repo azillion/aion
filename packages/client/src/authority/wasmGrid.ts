@@ -1,17 +1,38 @@
 type WasmGridExports = {
   memory: WebAssembly.Memory;
-  get_query_scratch_ptr: () => number;
   get_scratch_buffer_ptr: () => number;
-  create_grid: (size: number) => void;
-  get_grid_vertex_buffer_out: (outPtr: number) => void;
-  get_grid_elevation_buffer_out: (outPtr: number) => void;
-  get_grid_index_buffer_out: (outPtr: number) => void;
+  get_scratch_buffer_len: () => number;
+  load_prebaked_planet: (ptr: number, len: number) => boolean;
+  unload_prebaked_planet: () => void;
+  get_planet_resolution: () => number;
+  get_planet_tile_count: () => number;
+  get_planet_tile_stride: () => number;
+  read_planet_tile: (tileIndex: number, outPtr: number) => boolean;
+  get_planet_neighbor: (tileIndex: number, dir: number) => number;
 };
+
+export type PlanetBuffers = {
+  vertices: Float32Array;
+  elevations: Float32Array;
+  indices: Uint32Array;
+  resolution: number;
+};
+
+const UNSET_NEIGHBOR = 0xFFFFFFFF;
+const DISK_TILE_OFFSETS = {
+  pos: 0,
+  face: 12,
+  axialQ: 16,
+  axialR: 20,
+  neighbors: 24,
+  flags: 48,
+} as const;
 
 export class WasmGridBridge {
   private instance: WebAssembly.Instance | null = null;
   private exports!: WasmGridExports;
-  private scratchPtr: number = 0;
+  private scratchPtr = 0;
+  private scratchLen = 0;
 
   public static async create(): Promise<WasmGridBridge> {
     const bridge = new WasmGridBridge();
@@ -36,39 +57,82 @@ export class WasmGridBridge {
     const { instance } = await WebAssembly.instantiate(bytes, importObject);
     this.instance = instance;
     this.exports = instance.exports as unknown as WasmGridExports;
-    this.scratchPtr = this.exports.get_query_scratch_ptr();
+    this.scratchPtr = this.exports.get_scratch_buffer_ptr();
+    this.scratchLen = this.exports.get_scratch_buffer_len();
   }
 
-  public createGrid(size: number): void {
-    this.exports.create_grid(size >>> 0);
+  private getMemoryU8(): Uint8Array {
+    return new Uint8Array(this.exports.memory.buffer);
   }
 
-  private readSlice(outPtr: number): { ptr: number; len: number } {
-    const dv = new DataView(this.exports.memory.buffer);
-    const ptr = dv.getUint32(outPtr + 0, true);
-    const len = dv.getUint32(outPtr + 4, true);
-    return { ptr, len };
+  private getScratchView(byteLength: number): DataView {
+    return new DataView(this.exports.memory.buffer, this.scratchPtr, byteLength);
   }
 
-  public getGridVertexBuffer(): Float32Array {
-    this.exports.get_grid_vertex_buffer_out(this.scratchPtr);
-    const { ptr, len } = this.readSlice(this.scratchPtr);
-    if (!ptr || !len) return new Float32Array(0);
-    return new Float32Array(this.exports.memory.buffer, ptr, len / 4);
+  public async loadPlanetFromUrl(url: string): Promise<PlanetBuffers> {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch planet blob: ${response.status} ${response.statusText}`);
+    }
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    if (bytes.length > this.scratchLen) {
+      throw new Error(`Planet blob (${bytes.length} bytes) exceeds scratch buffer (${this.scratchLen} bytes)`);
+    }
+
+    this.getMemoryU8().set(bytes, this.scratchPtr);
+    if (!this.exports.load_prebaked_planet(this.scratchPtr, bytes.length)) {
+      throw new Error('load_prebaked_planet returned false');
+    }
+
+    const tileCount = this.exports.get_planet_tile_count();
+    const stride = this.exports.get_planet_tile_stride();
+    const vertices = new Float32Array(tileCount * 3);
+    const elevations = new Float32Array(tileCount); // Placeholder until we bake height data offline
+    const triangleList: number[] = [];
+    const neighborScratch = new Array<number>(6);
+
+    for (let i = 0; i < tileCount; i++) {
+      if (!this.exports.read_planet_tile(i, this.scratchPtr)) {
+        throw new Error(`read_planet_tile failed for tile ${i}`);
+      }
+      const view = this.getScratchView(stride);
+      const base = i * 3;
+      vertices[base + 0] = view.getFloat32(DISK_TILE_OFFSETS.pos + 0, true);
+      vertices[base + 1] = view.getFloat32(DISK_TILE_OFFSETS.pos + 4, true);
+      vertices[base + 2] = view.getFloat32(DISK_TILE_OFFSETS.pos + 8, true);
+
+      let neighborCount = 0;
+      for (let dir = 0; dir < 6; dir++) {
+        const nb = view.getUint32(DISK_TILE_OFFSETS.neighbors + dir * 4, true);
+        if (nb !== UNSET_NEIGHBOR) {
+          neighborScratch[neighborCount++] = nb;
+        }
+      }
+      this.appendTrianglesForTile(i, neighborScratch, neighborCount, triangleList);
+    }
+
+    return {
+      vertices,
+      elevations,
+      indices: new Uint32Array(triangleList),
+      resolution: this.exports.get_planet_resolution(),
+    };
   }
 
-  public getGridElevationBuffer(): Float32Array {
-    this.exports.get_grid_elevation_buffer_out(this.scratchPtr);
-    const { ptr, len } = this.readSlice(this.scratchPtr);
-    if (!ptr || !len) return new Float32Array(0);
-    return new Float32Array(this.exports.memory.buffer, ptr, len / 4);
+  private appendTrianglesForTile(tileIndex: number, neighbors: number[], neighborCount: number, out: number[]): void {
+    if (neighborCount < 2) return;
+    for (let i = 0; i < neighborCount; i++) {
+      const b = neighbors[i];
+      const c = neighbors[(i + 1) % neighborCount];
+      if (tileIndex < b && tileIndex < c) {
+        out.push(tileIndex, b, c);
+      }
+    }
   }
 
-  public getGridIndexBuffer(): Uint32Array {
-    this.exports.get_grid_index_buffer_out(this.scratchPtr);
-    const { ptr, len } = this.readSlice(this.scratchPtr);
-    if (!ptr || !len) return new Uint32Array(0);
-    return new Uint32Array(this.exports.memory.buffer, ptr, len / 4);
+  public dispose(): void {
+    this.exports.unload_prebaked_planet();
   }
 }
 

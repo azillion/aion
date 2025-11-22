@@ -70,28 +70,6 @@ pub fn build(b: *std.Build) void {
     sim_host.addImport("math", math_host);
     planet_host.addImport("math", math_host);
 
-    const test_root = b.createModule(.{
-        .root_source_file = b.path("src/planet/test_grid.zig"),
-        .target = host_target,
-        .optimize = optimize,
-    });
-    test_root.addImport("core", core_host);
-    test_root.addImport("math", math_host);
-    test_root.addImport("physics", physics_host);
-    test_root.addImport("sim", sim_host);
-    test_root.addImport("planet", planet_host);
-    const unit_tests = b.addTest(.{ .root_module = test_root });
-
-    const run_tests = b.addRunArtifact(unit_tests);
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_tests.step);
-
-    // Focused seam self-test
-    const run_seam = b.addRunArtifact(unit_tests);
-    run_seam.addArgs(&.{ "--test-filter", "seam tables consistent" });
-    const seam_step = b.step("test-seam", "Run only seam self-test");
-    seam_step.dependOn(&run_seam.step);
-
     // ----------------------------
     // Tool: Grid Generator (native host)
     // ----------------------------
