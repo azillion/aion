@@ -15,6 +15,7 @@ export type PlanetBuffers = {
   vertices: Float32Array;
   elevations: Float32Array;
   indices: Uint32Array;
+  edges: Uint32Array;
   resolution: number;
 };
 
@@ -90,6 +91,8 @@ export class WasmGridBridge {
     const vertices = new Float32Array(tileCount * 3);
     const elevations = new Float32Array(tileCount); // Placeholder until we bake height data offline
     const triangleList: number[] = [];
+    const edgeList: number[] = [];
+    const edgeSet = new Set<string>();
     const neighborScratch = new Array<number>(6);
 
     for (let i = 0; i < tileCount; i++) {
@@ -106,6 +109,13 @@ export class WasmGridBridge {
       for (let dir = 0; dir < 6; dir++) {
         const nb = view.getUint32(DISK_TILE_OFFSETS.neighbors + dir * 4, true);
         if (nb !== UNSET_NEIGHBOR) {
+          const min = Math.min(i, nb);
+          const max = Math.max(i, nb);
+          const key = `${min}_${max}`;
+          if (!edgeSet.has(key)) {
+            edgeSet.add(key);
+            edgeList.push(min, max);
+          }
           neighborScratch[neighborCount++] = nb;
         }
       }
@@ -116,6 +126,7 @@ export class WasmGridBridge {
       vertices,
       elevations,
       indices: new Uint32Array(triangleList),
+      edges: new Uint32Array(edgeList),
       resolution: this.exports.get_planet_resolution(),
     };
   }

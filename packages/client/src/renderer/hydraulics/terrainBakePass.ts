@@ -5,7 +5,7 @@ import terrainBakeWGSL from './shaders/terrainBake.wgsl?raw';
 import { createShaderModule } from '../shaderUtils';
 import cameraWGSL from '../shaders/camera.wgsl?raw';
 import sceneUniformsWGSL from '../shaders/sceneUniforms.wgsl?raw';
-import coarseGridWGSL from '../shaders/coarseGrid.wgsl?raw';
+import coarseGridMeshWGSL from '../shaders/coarseGridMesh.wgsl?raw';
 import planetHeightWGSL from '../scene/shaders/planetHeight.wgsl?raw';
 import noiseWGSL from '../shaders/noise.wgsl?raw';
 import cubeSphereWGSL from '../shaders/cubeSphere.wgsl?raw';
@@ -23,7 +23,7 @@ export class TerrainBakePass implements IRenderPass {
     const module = await createShaderModule(core.device, 'Terrain Bake Module', terrainBakeWGSL, {
       'camera.wgsl': cameraWGSL,
       'sceneUniforms.wgsl': sceneUniformsWGSL,
-      'coarseGrid.wgsl': coarseGridWGSL,
+      'coarseGrid.wgsl': coarseGridMeshWGSL,
       'planetHeight.wgsl': planetHeightWGSL,
       'noise.wgsl': noiseWGSL,
       'cubeSphere.wgsl': cubeSphereWGSL,

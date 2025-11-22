@@ -58,6 +58,8 @@ export class Renderer {
   private gridVertexBuffer!: GPUBuffer;
   private gridElevationBuffer!: GPUBuffer;
   private gridIndexBuffer!: GPUBuffer;
+  private gridEdgeIndexBuffer!: GPUBuffer;
+  private gridEdgeIndexCount: number = 0;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -94,7 +96,6 @@ export class Renderer {
     await this.hydraulicsPass.initialize(this.core, this.scene);
     this.terrainBakePass = new TerrainBakePass();
     await this.terrainBakePass.initialize(this.core, this.scene);
-
     // Initialize prebaked planet mesh and upload to GPU once
     await this.initializeGrid('/packages/game-sim/planet_R4.gridbin');
 
@@ -167,7 +168,9 @@ export class Renderer {
       gridVertexBuffer: this.gridVertexBuffer,
       gridElevationBuffer: this.gridElevationBuffer,
       gridIndexBuffer: this.gridIndexBuffer,
-      terrainHeight: this.terrainHeightTexture,
+      gridEdgeIndexBuffer: this.gridEdgeIndexBuffer,
+      gridEdgeIndexCount: this.gridEdgeIndexCount,
+      terrainHeightTexture: this.terrainHeightTexture,
       waterRead: this.waterStateTextureA,
       waterWrite: this.waterStateTextureB,
     } as unknown as RenderContext;
@@ -185,12 +188,12 @@ export class Renderer {
 
   private uploadGridBuffers(planet: PlanetBuffers): void {
     const { device } = this.core;
-    const { vertices, elevations, indices } = planet;
+    const { vertices, elevations, indices, edges } = planet;
 
     this.gridVertexBuffer = device.createBuffer({
       label: 'Grid Vertex Buffer',
       size: Math.max(4, vertices.byteLength),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX,
     });
     this.gridElevationBuffer = device.createBuffer({
       label: 'Grid Elevation Buffer',
@@ -202,10 +205,17 @@ export class Renderer {
       size: Math.max(4, indices.byteLength),
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    this.gridEdgeIndexBuffer = device.createBuffer({
+      label: 'Grid Edge Index Buffer',
+      size: Math.max(4, edges.byteLength),
+      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    });
+    this.gridEdgeIndexCount = edges.length;
 
     device.queue.writeBuffer(this.gridVertexBuffer, 0, vertices.buffer, vertices.byteOffset, vertices.byteLength);
     device.queue.writeBuffer(this.gridElevationBuffer, 0, elevations.buffer, elevations.byteOffset, elevations.byteLength);
     device.queue.writeBuffer(this.gridIndexBuffer, 0, indices.buffer, indices.byteOffset, indices.byteLength);
+    device.queue.writeBuffer(this.gridEdgeIndexBuffer, 0, edges.buffer, edges.byteOffset, edges.byteLength);
   }
 
   
@@ -285,8 +295,11 @@ export class Renderer {
       gridVertexBuffer: this.gridVertexBuffer,
       gridElevationBuffer: this.gridElevationBuffer,
       gridIndexBuffer: this.gridIndexBuffer,
+      gridEdgeIndexBuffer: this.gridEdgeIndexBuffer,
+      gridEdgeIndexCount: this.gridEdgeIndexCount,
       waterRead: waterReadTex,
       waterWrite: waterWriteTex,
+      terrainHeightTexture: this.terrainHeightTexture,
     };
 
     const encoder = this.core.device.createCommandEncoder();

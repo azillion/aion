@@ -3,6 +3,7 @@ import type { RenderContext } from '../types';
 import type { IRenderPipeline } from './base';
 import { PostFXPass } from '../postfx/postfxPass';
 import { SceneRenderPass } from '../scene/sceneRenderPass';
+import { GridOutlinePass } from '../scene/gridOutlinePass';
 import type { WebGPUCore } from '../core';
 import type { Scene } from '../scene';
 import type { RenderPayload, ShipRelativePayload } from '@client/orchestration/types';
@@ -11,15 +12,18 @@ import { CameraMode } from '@client/state';
 export class ShipRelativePipeline implements IRenderPipeline {
   private sceneRenderPass: SceneRenderPass;
   private postfxPass: PostFXPass;
+  private gridOutlinePass: GridOutlinePass;
 
   constructor() {
     this.sceneRenderPass = new SceneRenderPass();
     this.postfxPass = new PostFXPass();
+    this.gridOutlinePass = new GridOutlinePass();
   }
 
   public async initialize(core: WebGPUCore, scene: Scene): Promise<void> {
     await this.sceneRenderPass.initialize(core, scene);
     await this.postfxPass.initialize(core, scene);
+    await this.gridOutlinePass.initialize(core);
   }
 
   public onResize(_size: { width: number; height: number }, _core: WebGPUCore): void {
@@ -38,6 +42,7 @@ export class ShipRelativePipeline implements IRenderPipeline {
       this.updateSceneUniforms(context.core, frameData, context);
       this.sceneRenderPass.run(encoder, context);
     }
+    this.drawGridOutlines(encoder, context, frameData);
 
     PostFXPass.clearTexture(context.core.device, context.orbitsTexture);
     this.postfxPass.run(encoder, context, theme, frameData.rawState.bodies ?? []);
@@ -84,6 +89,22 @@ export class ShipRelativePipeline implements IRenderPipeline {
 
   public prepare(_frameData: RenderPayload, _renderer: any): void {
     // No-op for this pipeline
+  }
+
+  private drawGridOutlines(
+    encoder: GPUCommandEncoder,
+    context: RenderContext,
+    frameData: RenderPayload,
+  ) {
+    const planet = frameData.rawState.bodies.find((body) => body.terrain);
+    if (!planet) return;
+    const radius = planet.terrain?.radius ?? planet.radius;
+    const relPos: [number, number, number] = [
+      planet.position[0] - frameData.worldCameraEye[0],
+      planet.position[1] - frameData.worldCameraEye[1],
+      planet.position[2] - frameData.worldCameraEye[2],
+    ];
+    this.gridOutlinePass.run(encoder, context, { position: relPos, radius });
   }
 }
 

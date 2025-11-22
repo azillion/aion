@@ -5,7 +5,7 @@ import sceneRenderWGSL from './shaders/sceneRender.wgsl?raw';
 import cameraWGSL from '../shaders/camera.wgsl?raw';
 import cubeSphereWGSL from '../shaders/cubeSphere.wgsl?raw';
 import sceneUniformsWGSL from '../shaders/sceneUniforms.wgsl?raw';
-import coarseGridWGSL from '../shaders/coarseGrid.wgsl?raw';
+import coarseGridRuntimeWGSL from '../shaders/coarseGridRuntime.wgsl?raw';
 import planetSdfWGSL from './shaders/planetSdf.wgsl?raw';
 import noiseWGSL from '../shaders/noise.wgsl?raw';
 import atmosphereWGSL from './shaders/atmosphere.wgsl?raw';
@@ -34,7 +34,7 @@ export class SceneRenderPass implements IRenderPass {
         'camera.wgsl': cameraWGSL,
         'cubeSphere.wgsl': cubeSphereWGSL,
         'sceneUniforms.wgsl': sceneUniformsWGSL,
-        'coarseGrid.wgsl': coarseGridWGSL,
+        'coarseGrid.wgsl': coarseGridRuntimeWGSL,
         'terrainCommon.wgsl': terrainCommonWGSL,
         'planetSdf.wgsl': planetSdfWGSL,
         'planetHeight.wgsl': planetHeightWGSL,
@@ -57,10 +57,8 @@ export class SceneRenderPass implements IRenderPass {
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 10, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' } },
+        { binding: 11, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' } },
       ]
     });
 
@@ -86,7 +84,10 @@ export class SceneRenderPass implements IRenderPass {
   }
 
   public run(encoder: GPUCommandEncoder, context: RenderContext): void {
-    const { core, scene, mainSceneTexture } = context;
+    const { core, scene, mainSceneTexture, terrainHeightTexture } = context;
+    if (!terrainHeightTexture) {
+      throw new Error('SceneRenderPass: terrainHeightTexture is not set in the render context.');
+    }
 
     core.device.queue.writeBuffer(this.bodyCountBuffer, 0, new Uint32Array([scene.sceneObjectCount]));
 
@@ -110,10 +111,8 @@ export class SceneRenderPass implements IRenderPass {
           { binding: 4, resource: { buffer: context.sceneUniformBuffer! } },
           { binding: 5, resource: { buffer: scene.shadowCasterBuffer } },
           { binding: 6, resource: { buffer: scene.shadowCasterCountBuffer } },
-          { binding: 7, resource: { buffer: (context as any).gridVertexBuffer } },
-          { binding: 8, resource: { buffer: (context as any).gridElevationBuffer } },
-          { binding: 9, resource: { buffer: (context as any).gridIndexBuffer } },
           { binding: 10, resource: waterWriteTex.createView({ dimension: '2d-array' }) },
+          { binding: 11, resource: terrainHeightTexture.createView({ dimension: '2d-array' }) },
         ]
       });
       this.bindGroupCache.set(waterWriteTex, bindGroup);
