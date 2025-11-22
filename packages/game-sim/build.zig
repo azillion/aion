@@ -91,4 +91,25 @@ pub fn build(b: *std.Build) void {
     run_seam.addArgs(&.{ "--test-filter", "seam tables consistent" });
     const seam_step = b.step("test-seam", "Run only seam self-test");
     seam_step.dependOn(&run_seam.step);
+
+    // ----------------------------
+    // Tool: Grid Generator (native host)
+    // ----------------------------
+    const gridgen_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/gridgen.zig"),
+        .target = host_target,
+        .optimize = optimize,
+    });
+    const gridgen_exe = b.addExecutable(.{
+        .name = "gridgen",
+        .root_module = gridgen_mod,
+    });
+    // Reuse the host-native planet module which includes math
+    gridgen_mod.addImport("planet", planet_host);
+
+    b.installArtifact(gridgen_exe);
+
+    const run_gridgen = b.addRunArtifact(gridgen_exe);
+    const gridgen_step = b.step("gridgen", "Generate prebaked grid");
+    gridgen_step.dependOn(&run_gridgen.step);
 }

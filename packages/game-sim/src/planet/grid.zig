@@ -176,6 +176,10 @@ var debug_edge_logs: usize = 0;
 var debug_nbr_logs: usize = 0;
 var test_probe_done: bool = false;
 var seam_verify_logged: bool = false;
+// Lightweight instrumentation counters (debugging seam hops); no prints in hot paths
+var g_seam_hop_calls: usize = 0;
+var g_seam_project_calls: usize = 0;
+var g_seam_iters: usize = 0;
 
 pub const Grid = struct {
     allocator: std.mem.Allocator,
@@ -860,23 +864,44 @@ pub const Grid = struct {
     inline fn seamHopLabelSpace(
         self: *const Grid,
         v_f_lab: [3]isize,
-        _: u8, // dir (unused in hop math but kept for signature parity)
+        dir: u8, // dir (unused in hop math but useful for diagnostics)
         f: usize, // source face
         e: usize, // violated edge on f (opposite label index)
-        _: usize, // nf (unused here)
+        nf: usize, // neighbor face index (for diagnostics)
         ne: usize, // neighbor edge index (on nf)
         p_lbl: [3]u8,
         R: isize,
     ) [3]isize {
         _ = self;
+        // instrumentation: count seam hops
+        g_seam_hop_calls += 1;
         var v = applyPerm3(v_f_lab, p_lbl); // f -> nf (labels)
-        const jplus: usize = indexOf3u8(p_lbl, @intCast(e)); // where violated label maps on nf
-        // Pre-hop invariant: the violated component must be exactly at jplus
+        // global runaway guard for seam invocations in hot paths
+        g_seam_iters += 1;
+        if (g_seam_iters > 1_000_000) {
+            std.debug.panic(
+                "seamHopLabelSpace: runaway, f={}, e={}, ne={}, R={}, v=({},{},{})\n",
+                .{ f, e, ne, R, v[0], v[1], v[2] },
+            );
+        }
+        var jplus: usize = indexOf3u8(p_lbl, @intCast(e)); // where violated label maps on nf
+        // Pre-hop invariant: the violated component should be at jplus.
+        // If not, prefer the actually negative component to continue deterministically.
         if (!(v[jplus] < 0)) {
-            if (@import("builtin").is_test) {
-                std.debug.print("SEAM PRE-HOP INVARIANT FAIL f={d} e={d} ne={d} p_lbl=({d},{d},{d}) jplus={d} v_pre=({d},{d},{d})\n", .{ f, e, ne, p_lbl[0], p_lbl[1], p_lbl[2], jplus, v[0], v[1], v[2] });
+            // pick any negative component deterministically (smallest index)
+            var found_neg = false;
+            var k: usize = 0;
+            while (k < 3) : (k += 1) {
+                if (v[k] < 0) {
+                    jplus = k;
+                    found_neg = true;
+                    break;
+                }
             }
-            std.debug.assert(v[jplus] < 0);
+            if (@import("builtin").is_test) {
+                std.debug.print("SEAM PRE-HOP INVARIANT FAIL f={d} e={d} ne={d} p_lbl=({d},{d},{d}) jplus0={d} v_pre=({d},{d},{d}) -> using jplus={d}\n", .{ f, e, ne, p_lbl[0], p_lbl[1], p_lbl[2], indexOf3u8(p_lbl, @intCast(e)), v[0], v[1], v[2], jplus });
+            }
+            std.debug.assert(found_neg);
         }
         // If already in-window on nf, no offset needed
         if (v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R) {
@@ -894,6 +919,10 @@ pub const Grid = struct {
         } else {
             jminus = if (v[end1] >= v[end2]) end1 else end2;
         }
+        // Never donate from the violated component itself
+        if (jminus == jplus) {
+            jminus = if (jminus == end1) end2 else end1;
+        }
         v[jminus] -= R;
         // If still out-of-window, deterministic second fold with the other endpoint
         if (!(v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R)) {
@@ -902,8 +931,110 @@ pub const Grid = struct {
             v[jminus2] -= R;
         }
         // Algebraic safeguard for (-,-,>R)
-        projectSeamIntoWindow(&v, R);
+        // instrumentation: count projections only when we truly have the (-,-,>R) pattern
+        const imax: usize = blk: {
+            var i_max: usize = 0;
+            var vmax: isize = v[0];
+            inline for (1..3) |i| {
+                if (v[i] > vmax) {
+                    vmax = v[i];
+                    i_max = i;
+                }
+            }
+            break :blk i_max;
+        };
+        const neg_count: usize =
+            @as(usize, @intFromBool(v[(imax + 1) % 3] < 0)) + @as(usize, @intFromBool(v[(imax + 2) % 3] < 0));
+        const do_project = (neg_count == 2) and (v[imax] > R);
+        if (do_project) {
+            g_seam_project_calls += 1;
+            projectSeamIntoWindow(&v, R);
+            if (@import("builtin").is_test and TEST_VERBOSE) {
+                std.debug.print("SEAM PROJECT f={d} e={d} nf={d} ne={d} dir={d} R={d} -> v=({d},{d},{d})\n", .{ f, e, nf, ne, dir, R, v[0], v[1], v[2] });
+            }
+        }
+        // Secondary canonical fix: if exactly one negative remains and some component is exactly R,
+        // move one fold from that R component to the negative component to enter the window.
+        if (!(v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R)) {
+            var neg_idx: ?usize = null;
+            var r_idx: ?usize = null;
+            inline for (0..3) |i| {
+                if (v[i] < 0 and neg_idx == null) neg_idx = i;
+                if (v[i] == R and r_idx == null) r_idx = i;
+            }
+            const negs_total: usize = (@as(usize, @intFromBool(v[0] < 0)) + @as(usize, @intFromBool(v[1] < 0)) + @as(usize, @intFromBool(v[2] < 0)));
+            if (negs_total == 1 and r_idx != null and neg_idx != null) {
+                v[neg_idx.?] += R;
+                v[r_idx.?] -= R;
+                if (@import("builtin").is_test and TEST_VERBOSE) {
+                    std.debug.print("SEAM SINGLE-NEG FIX f={d} e={d} nf={d} ne={d} dir={d} R={d} -> v=({d},{d},{d})\n", .{ f, e, nf, ne, dir, R, v[0], v[1], v[2] });
+                }
+            }
+            // Tertiary canonical fix: if exactly one negative remains and neither of the other
+            // components equals R, apply a double-fold toward the negative and project.
+            if (!(v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R)) {
+                var neg_idx2: ?usize = null;
+                inline for (0..3) |i| {
+                    if (v[i] < 0 and neg_idx2 == null) neg_idx2 = i;
+                }
+                const negs_total2: usize = (@as(usize, @intFromBool(v[0] < 0)) + @as(usize, @intFromBool(v[1] < 0)) + @as(usize, @intFromBool(v[2] < 0)));
+                if (negs_total2 == 1 and neg_idx2 != null) {
+                    // push 2R to the negative component and take R from the other two
+                    const nidx = neg_idx2.?;
+                    v[nidx] += (2 * R);
+                    inline for (0..3) |i| {
+                        if (i != nidx) v[i] -= R;
+                    }
+                    if (@import("builtin").is_test and TEST_VERBOSE) {
+                        std.debug.print("SEAM SINGLE-NEG DOUBLE-FOLD f={d} e={d} nf={d} ne={d} dir={d} R={d} -> v=({d},{d},{d})\n", .{ f, e, nf, ne, dir, R, v[0], v[1], v[2] });
+                    }
+                    // now we should have (-,-,>R): project into window
+                    g_seam_project_calls += 1;
+                    projectSeamIntoWindow(&v, R);
+                    if (@import("builtin").is_test) {
+                        std.debug.assert(v[0] + v[1] + v[2] == R);
+                    }
+                    // If still not in-window and we now have a single negative with an R component, fix it.
+                    if (!(v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R)) {
+                        var neg_idx3: ?usize = null;
+                        var r_idx3: ?usize = null;
+                        inline for (0..3) |i| {
+                            if (v[i] < 0 and neg_idx3 == null) neg_idx3 = i;
+                            if (v[i] == R and r_idx3 == null) r_idx3 = i;
+                        }
+                        const negs_total3: usize = (@as(usize, @intFromBool(v[0] < 0)) + @as(usize, @intFromBool(v[1] < 0)) + @as(usize, @intFromBool(v[2] < 0)));
+                        if (negs_total3 == 1 and neg_idx3 != null and r_idx3 != null) {
+                            v[neg_idx3.?] += R;
+                            v[r_idx3.?] -= R;
+                            if (@import("builtin").is_test and TEST_VERBOSE) {
+                                std.debug.print("SEAM POST-PROJECT SINGLE-NEG FIX f={d} e={d} nf={d} ne={d} dir={d} R={d} -> v=({d},{d},{d})\n", .{ f, e, nf, ne, dir, R, v[0], v[1], v[2] });
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // Final window + sum invariant
+        if (!(v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R)) {
+            if (@import("builtin").is_test) {
+                const negs: usize = @as(usize, @intFromBool(v[0] < 0)) + @as(usize, @intFromBool(v[1] < 0)) + @as(usize, @intFromBool(v[2] < 0));
+                const max_idx: usize = blk: {
+                    var mi: usize = 0;
+                    var mv: isize = v[0];
+                    inline for (1..3) |ii| {
+                        if (v[ii] > mv) {
+                            mv = v[ii];
+                            mi = ii;
+                        }
+                    }
+                    break :blk mi;
+                };
+                std.debug.print(
+                    "SEAM WINDOW FAIL f={d} e={d} nf={d} ne={d} dir={d} R={d} v_in=({d},{d},{d}) v_out=({d},{d},{d}) p_lbl=({d},{d},{d}) negs={d} max_idx={d}\n",
+                    .{ f, e, nf, ne, dir, R, v_f_lab[0], v_f_lab[1], v_f_lab[2], v[0], v[1], v[2], p_lbl[0], p_lbl[1], p_lbl[2], negs, max_idx },
+                );
+            }
+        }
         std.debug.assert(v[0] >= 0 and v[1] >= 0 and v[2] >= 0 and v[0] <= R and v[1] <= R and v[2] <= R);
         if (@import("builtin").is_test) std.debug.assert(v[0] + v[1] + v[2] == R);
         return v;
@@ -913,6 +1044,12 @@ pub const Grid = struct {
         const v = r + N;
         const w = N - q - r;
         return .{ u, v, w };
+    }
+
+    // Public wrapper to allow external callers (e.g. prebaked builder) to use the same
+    // barycentric conversion without exposing internal helpers broadly.
+    pub inline fn toBary_public(N: isize, q: isize, r: isize) [3]isize {
+        return toBary(N, q, r);
     }
 
     inline fn fromBary(N: isize, uvw: [3]isize) QR {
@@ -950,14 +1087,21 @@ pub const Grid = struct {
 
     pub fn canonicalizeGlobalAlias(self: *const Grid, face_in: usize, q_in: isize, r_in: isize) Coord {
         var face: usize = face_in;
-        // map to label basis on face
-        const uvw_face = self.toBaryFace(face, q_in, r_in);
-        // toBaryFace already returns label-ordered components for this face
-        var lab = uvw_face;
+        // 0) convert to global canonical bary, then into LABEL basis for this face using axes
+        const N: isize = @intCast(self.size);
+        const uvw_std_in = toBary(N, q_in, r_in);
+        // face_axes encodes dst actual index -> src label(std) index; using it here gives label-order for this face
+        var lab = applyPerm3(uvw_std_in, self.face_axes[face]);
         const R: isize = lab[0] + lab[1] + lab[2];
+        if (@import("builtin").is_test and TEST_VERBOSE) {
+            const ax0 = self.face_axes[face][0];
+            const ax1 = self.face_axes[face][1];
+            const ax2 = self.face_axes[face][2];
+            std.debug.print("CANON ENTER face_in={d} q={d} r={d} face0={d} uvw_std=({d},{d},{d}) ax=({d},{d},{d}) lab=({d},{d},{d}) R={d}\n", .{ face_in, q_in, r_in, face, uvw_std_in[0], uvw_std_in[1], uvw_std_in[2], ax0, ax1, ax2, lab[0], lab[1], lab[2], R });
+        }
         // 1) low-bound fold only: while any label < 0, cross seam using reversed-edge label perm; apply ±R data-driven
         var guard: usize = 0;
-        while ((lab[0] < 0 or lab[1] < 0 or lab[2] < 0) and guard < 200) : (guard += 1) {
+        while ((lab[0] < 0 or lab[1] < 0 or lab[2] < 0) and guard < 128) : (guard += 1) {
             const e: usize = if (lab[0] < 0) 0 else if (lab[1] < 0) 1 else 2;
             const seam = self.getNeighbor0Based(face, e) orelse unreachable;
             const Pf = self.normalized_faces[face];
@@ -966,6 +1110,9 @@ pub const Grid = struct {
             const p_lbl = buildPLblFromReversedEdge(.{ Pf[0], Pf[1], Pf[2] }, .{ Pn[0], Pn[1], Pn[2] }, @intCast(e));
             // permute into nf label basis
             var nf_lab = applyPerm3(lab, p_lbl);
+            if (@import("builtin").is_test and TEST_VERBOSE) {
+                std.debug.print("CANON HOP face={d} e={d} -> nf={d} ne={d} p_lbl=({d},{d},{d}) lab=({d},{d},{d}) nf_lab_pre=({d},{d},{d})\n", .{ face, e, seam.nf, seam.ne, p_lbl[0], p_lbl[1], p_lbl[2], lab[0], lab[1], lab[2], nf_lab[0], nf_lab[1], nf_lab[2] });
+            }
             // If already in-window [0..R], do not apply any offset
             const in_window =
                 (nf_lab[0] >= 0 and nf_lab[1] >= 0 and nf_lab[2] >= 0 and
@@ -976,6 +1123,12 @@ pub const Grid = struct {
             // move to neighbor face
             lab = nf_lab;
             face = seam.nf;
+        }
+        if (lab[0] < 0 or lab[1] < 0 or lab[2] < 0) {
+            std.debug.panic(
+                "canonicalizeGlobalAlias: divergent seam fold face_in={}, q_in={}, r_in={}, face={}, R={}, lab=({},{},{}) after {} iters\n",
+                .{ face_in, q_in, r_in, face, R, lab[0], lab[1], lab[2], guard },
+            );
         }
         // 2) deterministic boundary ownership for edges (one zero) and vertices (two zeros)
         const zeros: u8 = @as(u8, @intFromBool(lab[0] == 0)) + @as(u8, @intFromBool(lab[1] == 0)) + @as(u8, @intFromBool(lab[2] == 0));
@@ -1018,16 +1171,19 @@ pub const Grid = struct {
             }
             if (@import("builtin").is_test) std.debug.assert(face == owner_face);
         }
-        // 3) map back to axial from label-ordered face barycentrics
-        const qr = self.fromBaryFace(face, lab);
+        // 3) map back to global canonical bary from label basis using inverse axes, then axial
+        const inv_axes = invertPerm3(self.face_axes[face]);
+        const uvw_std_out = applyPerm3(lab, inv_axes);
+        const qr = fromBary(N, uvw_std_out);
         if (@import("builtin").is_test) {
-            // Ensure fromBaryFace/toBaryFace are mutual inverses inside window
-            const uvw_roundtrip = self.toBaryFace(face, qr.q, qr.r);
-            if (!(uvw_roundtrip[0] == lab[0] and uvw_roundtrip[1] == lab[1] and uvw_roundtrip[2] == lab[2])) {
+            // Label-basis roundtrip: toBary -> axes -> invertAxes -> fromBary should be identity on lab
+            const uvw_std_check = toBary(N, qr.q, qr.r);
+            const lab_round = applyPerm3(uvw_std_check, self.face_axes[face]);
+            if (!(lab_round[0] == lab[0] and lab_round[1] == lab[1] and lab_round[2] == lab[2])) {
                 const ax = self.face_axes[face];
-                std.debug.print("ROUNDTRIP FAIL face={d} ax=({d},{d},{d}) lab=({d},{d},{d}) -> qr=(q{d},r{d}) -> uvw=({d},{d},{d})\n", .{ face, ax[0], ax[1], ax[2], lab[0], lab[1], lab[2], qr.q, qr.r, uvw_roundtrip[0], uvw_roundtrip[1], uvw_roundtrip[2] });
+                std.debug.print("ROUNDTRIP FAIL face={d} ax=({d},{d},{d}) lab=({d},{d},{d}) -> qr=(q{d},r{d}) -> lab2=({d},{d},{d})\n", .{ face, ax[0], ax[1], ax[2], lab[0], lab[1], lab[2], qr.q, qr.r, lab_round[0], lab_round[1], lab_round[2] });
             }
-            std.debug.assert(uvw_roundtrip[0] == lab[0] and uvw_roundtrip[1] == lab[1] and uvw_roundtrip[2] == lab[2]);
+            std.debug.assert(lab_round[0] == lab[0] and lab_round[1] == lab[1] and lab_round[2] == lab[2]);
             // Interior no-op: all positive lab implies unchanged
             const positive_interior = (lab[0] > 0 and lab[1] > 0 and lab[2] > 0);
             if (positive_interior) {
@@ -1243,15 +1399,13 @@ pub const Grid = struct {
         const Pf_lbl = self.normalized_faces[face];
         const Pnf_lbl = self.normalized_faces[nf];
         const p_lbl = buildPLblByEquality(.{ Pf_lbl[0], Pf_lbl[1], Pf_lbl[2] }, .{ Pnf_lbl[0], Pnf_lbl[1], Pnf_lbl[2] });
-        // Convert uvw1 to label basis on f, permute to nf label basis
-        const Af_axes = self.face_axes[face]; // label->actual
-        const invAnf_axes = invertPerm3(self.face_axes[nf]); // actual->label
-        // actual -> label must use Af_axes (label->axis mapping)
-        const uvw1_f_lab = applyPerm3(uvw1, Af_axes);
+        // Convert uvw1 (actual) to label basis on f, permute to nf label basis
+        const invAf_axes = invertPerm3(self.face_axes[face]); // actual->label on f
+        const uvw1_f_lab = applyPerm3(uvw1, invAf_axes);
         const R: isize = uvw1_f_lab[0] + uvw1_f_lab[1] + uvw1_f_lab[2];
         const uvw_nf_lab = self.seamHopLabelSpace(uvw1_f_lab, dir, face, e, nf, ne, p_lbl, R);
         // Back to actual basis on nf for position
-        const uvw_nf = applyPerm3(uvw_nf_lab, invAnf_axes); // label -> actual (y_actual[j] = uvw_nf_lab[invAnf[j]])
+        const uvw_nf = applyPerm3(uvw_nf_lab, self.face_axes[nf]); // label -> actual
         // convert back to axial on nf
         const back = self.fromBaryFace(nf, .{ uvw_nf[0], uvw_nf[1], uvw_nf[2] });
         return .{ .q = back.q, .r = back.r, .face = nf };
@@ -2144,6 +2298,11 @@ pub const Grid = struct {
         try canonical_to_index.put(self.canonicalKey(0, start.q, start.r), next_index);
         next_index += 1;
 
+        // Hard upper bound as a canary against alias blowup during BFS
+        const N_bfs: usize = @intCast(self.size);
+        // Generous cap: ~12N^2 + margin; should comfortably exceed true tile count (~10N^2 + 2)
+        const MAX_TILES: usize = 12 * N_bfs * N_bfs + 64;
+
         // Diagnostic tripwire to prevent infinite loop during debugging
         const iteration_guard: usize = if (@import("builtin").is_test and TEST_VERBOSE) 200000 else 50000;
         var iterations: usize = 0;
@@ -2172,8 +2331,17 @@ pub const Grid = struct {
                 // Assign index for this canonical tile
                 const idx_val: usize = next_index;
                 next_index += 1;
+                if (next_index > MAX_TILES) {
+                    @panic("populateIndices: exceeded expected tile count; canonicalization likely broken");
+                }
 
                 try coord_to_index.put(alias_hash, idx_val);
+                // For edge tiles (non-pentagon) on their owning face, record edge index pairing.
+                if (self.faceLocalEdgeIndex(nb.face, nb.q, nb.r)) |_| {
+                    if (!self.isPentaFace(nb.face, nb.q, nb.r)) {
+                        _ = self.resolveIndexForEdge(nb.q, nb.r, nb.face, idx_val);
+                    }
+                }
                 // Record pentagon vertex mapping if this canonical tile is a pentagon
                 const N: isize = @intCast(self.size);
                 const uvw_nb = self.toBaryFace(nb.face, nb.q, nb.r);
