@@ -2,6 +2,7 @@ const std = @import("std");
 const grid_mod = @import("grid.zig");
 const Grid = grid_mod.Grid;
 const icosa_face_vertices = grid_mod.icosa_face_vertices;
+const icosa_vertices = grid_mod.icosa_vertices;
 const prebaked = @import("prebaked.zig");
 const Tile = prebaked.Tile;
 const TileId = prebaked.TileId;
@@ -37,8 +38,8 @@ const EdgeEntry = struct {
 const EdgeEntryGrid = [20][3]std.ArrayListUnmanaged(EdgeEntry);
 const CornerEntry = struct {
     face: usize,
+    local_vertex: u8,
     tile_index: usize,
-    vertex: u8,
 };
 const CornerLists = [12]std.ArrayListUnmanaged(CornerEntry);
 
@@ -49,6 +50,9 @@ const FaceEdgeAdj = struct {
 };
 const FaceEdgeAdjTable = [20][3]FaceEdgeAdj;
 const face_edge_adj: FaceEdgeAdjTable = buildFaceEdgeAdjacency();
+
+const VertexCycle = [5]struct { face: usize, vertex: u8 };
+const vertex_cycles = buildVertexCycles();
 
 const BuiltPlanet = struct {
     tiles: []Tile,
@@ -97,6 +101,68 @@ fn buildFaceEdgeAdjacency() FaceEdgeAdjTable {
         }
     }
     return table;
+}
+
+fn buildVertexCycles() [12]VertexCycle {
+    @setEvalBranchQuota(20000);
+    var cycles: [12]VertexCycle = undefined;
+    const faces = icosa_face_vertices;
+    var vid: usize = 0;
+    while (vid < 12) : (vid += 1) {
+        var info: [5]struct { face: usize, vertex: u8, angle: f64 } = undefined;
+        var count: usize = 0;
+        var face_idx: usize = 0;
+        const vpos = icosa_vertices[vid];
+        const basis = makeBasis(.{
+            @floatCast(vpos.x),
+            @floatCast(vpos.y),
+            @floatCast(vpos.z),
+        });
+        while (face_idx < faces.len and count < 5) : (face_idx += 1) {
+            const face = faces[face_idx];
+            inline for (0..3) |local_v| {
+                if (face[local_v] == vid + 1 and count < 5) {
+                    const tri = faces[face_idx];
+                    const A = icosa_vertices[tri[0] - 1];
+                    const B = icosa_vertices[tri[1] - 1];
+                    const C = icosa_vertices[tri[2] - 1];
+                    const centroid_x = (A.x + B.x + C.x) / 3.0;
+                    const centroid_y = (A.y + B.y + C.y) / 3.0;
+                    const centroid_z = (A.z + B.z + C.z) / 3.0;
+                    const rel = [3]f64{
+                        centroid_x - vpos.x,
+                        centroid_y - vpos.y,
+                        centroid_z - vpos.z,
+                    };
+                    const x = rel[0] * basis.u[0] + rel[1] * basis.u[1] + rel[2] * basis.u[2];
+                    const y = rel[0] * basis.v[0] + rel[1] * basis.v[1] + rel[2] * basis.v[2];
+                    info[count] = .{
+                        .face = face_idx,
+                        .vertex = @intCast(local_v),
+                        .angle = std.math.atan2(y, x),
+                    };
+                    count += 1;
+                }
+            }
+        }
+        if (count != 5) @compileError("Vertex cycle must have 5 entries");
+        var i: usize = 1;
+        while (i < 5) : (i += 1) {
+            var j = i;
+            while (j > 0 and info[j - 1].angle > info[j].angle) : (j -= 1) {
+                const tmp = info[j - 1];
+                info[j - 1] = info[j];
+                info[j] = tmp;
+            }
+        }
+        var cycle: VertexCycle = undefined;
+        var c: usize = 0;
+        while (c < 5) : (c += 1) {
+            cycle[c] = .{ .face = info[c].face, .vertex = info[c].vertex };
+        }
+        cycles[vid] = cycle;
+    }
+    return cycles;
 }
 
 fn maxNeighbors(is_penta: bool) u8 {
@@ -166,16 +232,22 @@ fn stitchSeamNeighbors(tiles: []BuilderTile, edge_lists: *EdgeEntryGrid, edge_le
 fn stitchPentagonFans(tiles: []BuilderTile, corners: *CornerLists) void {
     var gv: usize = 0;
     while (gv < corners.len) : (gv += 1) {
-        const list = corners[gv].items;
-        if (list.len == 0) continue;
-        const entries = list;
-        const count = entries.len;
-        if (count <= 1) continue;
-        var k: usize = 0;
-        while (k < count) : (k += 1) {
-            const curr = entries[k].tile_index;
-            const next = entries[(k + 1) % count].tile_index;
-            addNeighborPair(tiles, curr, next);
+        const entries = corners[gv].items;
+        if (entries.len == 0) continue;
+        const cycle = vertex_cycles[gv];
+        var idx: usize = 0;
+        while (idx < cycle.len) : (idx += 1) {
+            const cur = cycle[idx];
+            const nxt = cycle[(idx + 1) % cycle.len];
+
+            var cur_tile: ?usize = null;
+            var nxt_tile: ?usize = null;
+
+            for (entries) |entry| {
+                if (entry.face == cur.face and entry.local_vertex == cur.vertex) cur_tile = entry.tile_index;
+                if (entry.face == nxt.face and entry.local_vertex == nxt.vertex) nxt_tile = entry.tile_index;
+            }
+            if (cur_tile) |a| if (nxt_tile) |b| addNeighborPair(tiles, a, b);
         }
     }
 }
@@ -324,20 +396,22 @@ pub fn build_prebaked(grid: *Grid, alloc: std.mem.Allocator) !BuiltPlanet {
                 });
                 try map.put(makeKey(@intCast(face), @intCast(q), @intCast(r)), @intCast(tile_index));
 
-                if (is_penta) {
-                    const face_tri = icosa_face_vertices[face];
-                    var local: usize = 0;
-                    inline for (0..3) |comp| {
-                        if (uvw[comp] == 2 * N) {
-                            local = comp;
-                            break;
-                        }
+                var corner_vertex: ?usize = null;
+                var corner_local: usize = 0;
+                inline for (0..3) |comp| {
+                    if (uvw[comp] == 2 * N) {
+                        corner_vertex = comp;
+                        corner_local = comp;
+                        break;
                     }
-                    const global_vertex = face_tri[local] - 1;
+                }
+                if (corner_vertex) |local_corner| {
+                    const face_tri = icosa_face_vertices[face];
+                    const global_vertex = face_tri[local_corner] - 1;
                     try corner_lists[global_vertex].append(alloc, .{
                         .face = face,
+                        .local_vertex = @intCast(local_corner),
                         .tile_index = tile_index,
-                        .vertex = @intCast(local),
                     });
                 } else if (edge_len > 0) {
                     var edge_opt: ?usize = null;
