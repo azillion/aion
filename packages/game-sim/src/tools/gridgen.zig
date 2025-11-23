@@ -16,10 +16,19 @@ pub fn main() !void {
     var grid = try Grid.init(alloc, R);
     defer grid.deinit();
 
-    const tiles = try prebaked_builder.build_prebaked(&grid, alloc);
-    defer alloc.free(tiles);
+    const planet_data = try prebaked_builder.build_prebaked(&grid, alloc);
+    defer {
+        alloc.free(planet_data.tiles);
+        alloc.free(planet_data.vertices);
+        alloc.free(planet_data.elevations);
+        alloc.free(planet_data.indices);
+        alloc.free(planet_data.edges);
+    }
 
-    std.debug.print("GRIDGEN: Generated {d} tiles.\n", .{tiles.len});
+    std.debug.print(
+        "GRIDGEN: Generated {d} tiles, {d} unique verts, {d} triangles.\n",
+        .{ planet_data.tiles.len, planet_data.vertices.len / 3, planet_data.indices.len / 3 },
+    );
 
     // Persist the prebaked data for runtime consumption.
     var name_buf: [32]u8 = undefined;
@@ -29,21 +38,28 @@ pub fn main() !void {
 
     var header = prebaked_format.PlanetHeader{
         .R = R,
-        .tile_count = @intCast(tiles.len),
+        .tile_count = @intCast(planet_data.tiles.len),
+        .vertex_count = @intCast(planet_data.vertices.len / 3),
+        .index_count = @intCast(planet_data.indices.len),
+        .edge_index_count = @intCast(planet_data.edges.len),
     };
     try file.writeAll(std.mem.asBytes(&header));
 
     var i: usize = 0;
-    while (i < tiles.len) : (i += 1) {
-        const disk = prebaked_format.tileToDisk(tiles[i]);
+    while (i < planet_data.tiles.len) : (i += 1) {
+        const disk = prebaked_format.tileToDisk(planet_data.tiles[i]);
         try file.writeAll(std.mem.asBytes(&disk));
     }
+    try file.writeAll(std.mem.sliceAsBytes(planet_data.vertices));
+    try file.writeAll(std.mem.sliceAsBytes(planet_data.elevations));
+    try file.writeAll(std.mem.sliceAsBytes(planet_data.indices));
+    try file.writeAll(std.mem.sliceAsBytes(planet_data.edges));
 
-    std.debug.print("GRIDGEN: wrote {s} ({d} tiles)\n", .{ file_name, tiles.len });
+    std.debug.print("GRIDGEN: wrote {s} ({d} tiles)\n", .{ file_name, planet_data.tiles.len });
 
     // Sample a few tiles to prove coordinate mapping works
-    if (tiles.len > 0) {
-        const t = tiles[0];
+    if (planet_data.tiles.len > 0) {
+        const t = planet_data.tiles[0];
         std.debug.print(
             "  Tile[0]: face={d} q={d} r={d} pos=({d:.3}, {d:.3}, {d:.3}) penta={any}\n",
             .{
@@ -59,8 +75,8 @@ pub fn main() !void {
         std.debug.print("    neighbors={any}\n", .{t.neighbors});
     }
 
-    if (tiles.len > 12) {
-        const t = tiles[12];
+    if (planet_data.tiles.len > 12) {
+        const t = planet_data.tiles[12];
         std.debug.print(
             "  Tile[12]: face={d} q={d} r={d} pos=({d:.3}, {d:.3}, {d:.3}) penta={any}\n",
             .{

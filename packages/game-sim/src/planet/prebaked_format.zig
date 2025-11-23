@@ -9,7 +9,7 @@ pub const magic_u32: u32 =
     (@as(u32, 'N') << 16) |
     (@as(u32, 'T') << 24);
 
-pub const version: u16 = 1;
+pub const version: u16 = 2;
 pub const flag_is_pentagon: u8 = 1;
 
 /// Header describing a prebaked planet blob on disk (little-endian).
@@ -19,6 +19,9 @@ pub const PlanetHeader = extern struct {
     _pad: u16 = 0,
     R: u32,
     tile_count: u32,
+    vertex_count: u32,
+    index_count: u32,
+    edge_index_count: u32,
 };
 
 /// Packed representation of a `Tile` on disk.

@@ -9,6 +9,13 @@ type WasmGridExports = {
   get_planet_tile_stride: () => number;
   read_planet_tile: (tileIndex: number, outPtr: number) => boolean;
   get_planet_neighbor: (tileIndex: number, dir: number) => number;
+  get_planet_vertex_count: () => number;
+  get_planet_vertices_ptr: () => number;
+  get_planet_elevations_ptr: () => number;
+  get_planet_index_count: () => number;
+  get_planet_indices_ptr: () => number;
+  get_planet_edge_index_count: () => number;
+  get_planet_edge_indices_ptr: () => number;
 };
 
 export type PlanetBuffers = {
@@ -18,16 +25,6 @@ export type PlanetBuffers = {
   edges: Uint32Array;
   resolution: number;
 };
-
-const UNSET_NEIGHBOR = 0xFFFFFFFF;
-const DISK_TILE_OFFSETS = {
-  pos: 0,
-  face: 12,
-  axialQ: 16,
-  axialR: 20,
-  neighbors: 24,
-  flags: 48,
-} as const;
 
 export class WasmGridBridge {
   private instance: WebAssembly.Instance | null = null;
@@ -66,10 +63,6 @@ export class WasmGridBridge {
     return new Uint8Array(this.exports.memory.buffer);
   }
 
-  private getScratchView(byteLength: number): DataView {
-    return new DataView(this.exports.memory.buffer, this.scratchPtr, byteLength);
-  }
-
   public async loadPlanetFromUrl(url: string): Promise<PlanetBuffers> {
     const response = await fetch(url);
     if (!response.ok) {
@@ -86,60 +79,34 @@ export class WasmGridBridge {
       throw new Error('load_prebaked_planet returned false');
     }
 
-    const tileCount = this.exports.get_planet_tile_count();
-    const stride = this.exports.get_planet_tile_stride();
-    const vertices = new Float32Array(tileCount * 3);
-    const elevations = new Float32Array(tileCount); // Placeholder until we bake height data offline
-    const triangleList: number[] = [];
-    const edgeList: number[] = [];
-    const edgeSet = new Set<string>();
-    const neighborScratch = new Array<number>(6);
+    const vertexCount = this.exports.get_planet_vertex_count();
+    const vertexPtr = this.exports.get_planet_vertices_ptr();
+    const elevationPtr = this.exports.get_planet_elevations_ptr();
+    const indexCount = this.exports.get_planet_index_count();
+    const indexPtr = this.exports.get_planet_indices_ptr();
+    const edgeCount = this.exports.get_planet_edge_index_count();
+    const edgePtr = this.exports.get_planet_edge_indices_ptr();
 
-    for (let i = 0; i < tileCount; i++) {
-      if (!this.exports.read_planet_tile(i, this.scratchPtr)) {
-        throw new Error(`read_planet_tile failed for tile ${i}`);
-      }
-      const view = this.getScratchView(stride);
-      const base = i * 3;
-      vertices[base + 0] = view.getFloat32(DISK_TILE_OFFSETS.pos + 0, true);
-      vertices[base + 1] = view.getFloat32(DISK_TILE_OFFSETS.pos + 4, true);
-      vertices[base + 2] = view.getFloat32(DISK_TILE_OFFSETS.pos + 8, true);
-
-      let neighborCount = 0;
-      for (let dir = 0; dir < 6; dir++) {
-        const nb = view.getUint32(DISK_TILE_OFFSETS.neighbors + dir * 4, true);
-        if (nb !== UNSET_NEIGHBOR) {
-          const min = Math.min(i, nb);
-          const max = Math.max(i, nb);
-          const key = `${min}_${max}`;
-          if (!edgeSet.has(key)) {
-            edgeSet.add(key);
-            edgeList.push(min, max);
-          }
-          neighborScratch[neighborCount++] = nb;
-        }
-      }
-      this.appendTrianglesForTile(i, neighborScratch, neighborCount, triangleList);
-    }
+    const vertices = vertexCount > 0 && vertexPtr !== 0
+      ? new Float32Array(new Float32Array(this.exports.memory.buffer, vertexPtr, vertexCount * 3))
+      : new Float32Array();
+    const elevations = vertexCount > 0 && elevationPtr !== 0
+      ? new Float32Array(new Float32Array(this.exports.memory.buffer, elevationPtr, vertexCount))
+      : new Float32Array();
+    const indices = indexCount > 0 && indexPtr !== 0
+      ? new Uint32Array(new Uint32Array(this.exports.memory.buffer, indexPtr, indexCount))
+      : new Uint32Array();
+    const edges = edgeCount > 0 && edgePtr !== 0
+      ? new Uint32Array(new Uint32Array(this.exports.memory.buffer, edgePtr, edgeCount))
+      : new Uint32Array();
 
     return {
       vertices,
       elevations,
-      indices: new Uint32Array(triangleList),
-      edges: new Uint32Array(edgeList),
+      indices,
+      edges,
       resolution: this.exports.get_planet_resolution(),
     };
-  }
-
-  private appendTrianglesForTile(tileIndex: number, neighbors: number[], neighborCount: number, out: number[]): void {
-    if (neighborCount < 2) return;
-    for (let i = 0; i < neighborCount; i++) {
-      const b = neighbors[i];
-      const c = neighbors[(i + 1) % neighborCount];
-      if (tileIndex < b && tileIndex < c) {
-        out.push(tileIndex, b, c);
-      }
-    }
   }
 
   public dispose(): void {

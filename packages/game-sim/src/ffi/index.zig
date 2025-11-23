@@ -271,6 +271,10 @@ pub export fn destroy_simulator(simulator: *sim.Simulator) callconv(.c) void {
 const PlanetState = struct {
     header: prebaked_format.PlanetHeader,
     tiles: []prebaked.Tile,
+    vertices: []f32,
+    elevations: []f32,
+    indices: []u32,
+    edges: []u32,
 };
 
 var active_planet: ?PlanetState = null;
@@ -278,6 +282,10 @@ var active_planet: ?PlanetState = null;
 fn freeActivePlanet(alloc: std.mem.Allocator) void {
     if (active_planet) |state| {
         alloc.free(state.tiles);
+        alloc.free(state.vertices);
+        alloc.free(state.elevations);
+        alloc.free(state.indices);
+        alloc.free(state.edges);
         active_planet = null;
     }
 }
@@ -295,6 +303,10 @@ pub export fn load_prebaked_planet(blob_ptr: u32, blob_len: u32) callconv(.c) bo
     active_planet = .{
         .header = loaded.header,
         .tiles = loaded.tiles,
+        .vertices = loaded.vertices,
+        .elevations = loaded.elevations,
+        .indices = loaded.indices,
+        .edges = loaded.edges,
     };
     return true;
 }
@@ -336,4 +348,44 @@ pub export fn get_planet_neighbor(tile_index: u32, dir: u32) callconv(.c) u32 {
     const idx: usize = @intCast(tile_index);
     if (idx >= state.tiles.len) return prebaked.UNSET_NEIGHBOR;
     return state.tiles[idx].neighbors[dir];
+}
+
+fn ptrOrZero(slice: anytype) u32 {
+    if (slice.len == 0) return 0;
+    return @intCast(@intFromPtr(slice.ptr));
+}
+
+pub export fn get_planet_vertex_count() callconv(.c) u32 {
+    if (active_planet) |state| return @intCast(state.vertices.len / 3);
+    return 0;
+}
+
+pub export fn get_planet_vertices_ptr() callconv(.c) u32 {
+    if (active_planet) |state| return ptrOrZero(state.vertices);
+    return 0;
+}
+
+pub export fn get_planet_elevations_ptr() callconv(.c) u32 {
+    if (active_planet) |state| return ptrOrZero(state.elevations);
+    return 0;
+}
+
+pub export fn get_planet_index_count() callconv(.c) u32 {
+    if (active_planet) |state| return @intCast(state.indices.len);
+    return 0;
+}
+
+pub export fn get_planet_indices_ptr() callconv(.c) u32 {
+    if (active_planet) |state| return ptrOrZero(state.indices);
+    return 0;
+}
+
+pub export fn get_planet_edge_index_count() callconv(.c) u32 {
+    if (active_planet) |state| return @intCast(state.edges.len);
+    return 0;
+}
+
+pub export fn get_planet_edge_indices_ptr() callconv(.c) u32 {
+    if (active_planet) |state| return ptrOrZero(state.edges);
+    return 0;
 }
