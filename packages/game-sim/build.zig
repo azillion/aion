@@ -70,6 +70,26 @@ pub fn build(b: *std.Build) void {
     sim_host.addImport("math", math_host);
     planet_host.addImport("math", math_host);
 
+    const math_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/math/index.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+
+    const grid_test_module = b.createModule(.{
+        .root_source_file = b.path("src/planet/grid_test.zig"),
+        .target = host_target,
+        .optimize = optimize,
+    });
+    grid_test_module.addImport("planet", planet_host);
+    const grid_tests = b.addTest(.{ .root_module = grid_test_module });
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&math_tests.step);
+    test_step.dependOn(&grid_tests.step);
+
     // ----------------------------
     // Tool: Grid Generator (native host)
     // ----------------------------

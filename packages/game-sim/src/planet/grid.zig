@@ -427,6 +427,9 @@ pub const Grid = struct {
 
     pub fn hashCoord(q: isize, r: isize, face: usize) u64 {
         const sz: i64 = 1 << 20;
+        const max_coord: isize = @intCast(sz);
+        std.debug.assert(q >= -max_coord and q < max_coord);
+        std.debug.assert(r >= -max_coord and r < max_coord);
         const q_u: u64 = @intCast(q + sz);
         const r_u: u64 = @intCast(r + sz);
         return (@as(u64, @intCast(face)) << 42) | (q_u << 21) | r_u;

@@ -104,6 +104,14 @@ pub const Mat4 = struct {
         const v4y = v.x * self.m[1] + v.y * self.m[5] + v.z * self.m[9] + self.m[13];
         const v4z = v.x * self.m[2] + v.y * self.m[6] + v.z * self.m[10] + self.m[14];
         const v4w = v.x * self.m[3] + v.y * self.m[7] + v.z * self.m[11] + self.m[15];
+        const eps: f64 = 1e-9;
+        if (@abs(v4w) < eps) {
+            return vec3.Vec3{
+                .x = v4x,
+                .y = v4y,
+                .z = v4z,
+            };
+        }
         const inv_w = 1.0 / v4w;
 
         return vec3.Vec3{
@@ -187,3 +195,60 @@ pub const Mat4 = struct {
         try writer.print("]", .{});
     }
 };
+
+test "Mat4 invert random affine transforms" {
+    var prng = std.Random.DefaultPrng.init(0);
+    var random = prng.random();
+
+    var iteration: usize = 0;
+    while (iteration < 64) : (iteration += 1) {
+        const axis_raw = vec3.Vec3{
+            .x = random.float(f64) * 2.0 - 1.0,
+            .y = random.float(f64) * 2.0 - 1.0,
+            .z = random.float(f64) * 2.0 - 1.0,
+        };
+        const axis = if (axis_raw.isZero()) vec3.Vec3{ .x = 0.0, .y = 0.0, .z = 1.0 } else axis_raw.normalize();
+        const angle = random.float(f64) * 2.0 * std.math.pi;
+        const rotation = Mat4.fromQuaternion(quat.Quat.fromAxisAngle(axis, angle));
+
+        const scale_vec = vec3.Vec3{
+            .x = random.float(f64) * 2.0 + 0.25,
+            .y = random.float(f64) * 2.0 + 0.25,
+            .z = random.float(f64) * 2.0 + 0.25,
+        };
+        const scale_mat = Mat4.identity().scale(scale_vec);
+
+        const translation = vec3.Vec3{
+            .x = random.float(f64) * 200.0 - 100.0,
+            .y = random.float(f64) * 200.0 - 100.0,
+            .z = random.float(f64) * 200.0 - 100.0,
+        };
+        const translation_mat = Mat4.identity().translate(translation);
+
+        const transform = Mat4.multiply(translation_mat, Mat4.multiply(rotation, scale_mat));
+        const inv = transform.invert();
+
+        const ident = Mat4.multiply(transform, inv);
+        const other = Mat4.multiply(inv, transform);
+        inline for (0..16) |idx| {
+            const expected = if (idx % 5 == 0) 1.0 else 0.0;
+            try std.testing.expectApproxEqAbs(expected, ident.m[idx], 1e-9);
+            try std.testing.expectApproxEqAbs(expected, other.m[idx], 1e-9);
+        }
+    }
+}
+
+test "Mat4 multiplyVec3 tolerates zero w" {
+    var mat = Mat4.identity();
+    mat.m[3] = 0.0;
+    mat.m[7] = 0.0;
+    mat.m[11] = 0.0;
+    mat.m[15] = 0.0;
+
+    const dir = vec3.Vec3{ .x = 2.0, .y = -3.0, .z = 5.0 };
+    const result = mat.multiplyVec3(dir);
+
+    try std.testing.expectApproxEqAbs(2.0, result.x, 1e-12);
+    try std.testing.expectApproxEqAbs(-3.0, result.y, 1e-12);
+    try std.testing.expectApproxEqAbs(5.0, result.z, 1e-12);
+}

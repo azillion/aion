@@ -49,32 +49,40 @@ pub fn aabbSphere(aabb: Bound3, sphere: Sphere) bool {
         dist_sq -= diff * diff;
     }
 
-    return dist_sq > 0;
+    return dist_sq >= 0;
+}
+
+inline fn axisIntersect(
+    origin: f64,
+    dir: f64,
+    min_val: f64,
+    max_val: f64,
+    tmin_ref: *f64,
+    tmax_ref: *f64,
+    eps: f64,
+) bool {
+    if (@abs(dir) < eps) {
+        return !(origin < min_val or origin > max_val);
+    }
+    const inv = 1.0 / dir;
+    const t1 = (min_val - origin) * inv;
+    const t2 = (max_val - origin) * inv;
+    tmin_ref.* = @max(tmin_ref.*, @min(t1, t2));
+    tmax_ref.* = @min(tmax_ref.*, @max(t1, t2));
+    return tmin_ref.* <= tmax_ref.*;
 }
 
 pub fn rayAabb(ray: Ray, aabb: Bound3) ?f64 {
-    const dir = ray.direction.normalize();
-    const dirfrac = Vec3.init(1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z);
+    const eps: f64 = 1e-12;
+    const d = ray.direction;
+    var tmin = -std.math.inf(f64);
+    var tmax = std.math.inf(f64);
 
-    const t1 = (aabb.min.x - ray.origin.x) * dirfrac.x;
-    const t2 = (aabb.max.x - ray.origin.x) * dirfrac.x;
-    const t3 = (aabb.min.y - ray.origin.y) * dirfrac.y;
-    const t4 = (aabb.max.y - ray.origin.y) * dirfrac.y;
-    const t5 = (aabb.min.z - ray.origin.z) * dirfrac.z;
-    const t6 = (aabb.max.z - ray.origin.z) * dirfrac.z;
+    if (!axisIntersect(ray.origin.x, d.x, aabb.min.x, aabb.max.x, &tmin, &tmax, eps)) return null;
+    if (!axisIntersect(ray.origin.y, d.y, aabb.min.y, aabb.max.y, &tmin, &tmax, eps)) return null;
+    if (!axisIntersect(ray.origin.z, d.z, aabb.min.z, aabb.max.z, &tmin, &tmax, eps)) return null;
 
-    const tmin = @max(@max(@min(t1, t2), @min(t3, t4)), @min(t5, t6));
-    const tmax = @min(@min(@max(t1, t2), @max(t3, t4)), @max(t5, t6));
-
-    // ray is intersecting AABB, but whole AABB is behind us
-    if (tmax < 0) {
-        return null;
-    }
-
-    // ray does not intersect AABB
-    if (tmin > tmax) {
-        return null;
-    }
-
+    if (tmax < 0) return null;
+    if (tmin > tmax) return null;
     return tmin;
 }
